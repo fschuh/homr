@@ -5,6 +5,7 @@ import numpy as np
 from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
+from homr.note_detection import combine_noteheads_with_stems
 from homr.sidecar import PreprocessingMetadata, SidecarCollector
 from homr.transformer.vocabulary import EncodedSymbol
 
@@ -62,6 +63,23 @@ class TestSidecar(unittest.TestCase):
         xml = generate_xml(XmlGeneratorArguments(), [[symbol]], "")
 
         self.assertEqual(self._musicxml_note_ids(xml), [])
+
+    def test_split_stem_fragments_are_combined_for_note_geometry(self) -> None:
+        notehead = BoundingEllipse(((50, 50), (12, 10), 0), np.array([[44, 45], [56, 55]]))
+        lower_fragment = RotatedBoundingBox(
+            ((56, 44), (2, 14), 0), np.array([[55, 37], [57, 51]])
+        )
+        upper_fragment = RotatedBoundingBox(
+            ((56, 18), (2, 24), 0), np.array([[55, 6], [57, 30]])
+        )
+
+        [note_with_stem] = combine_noteheads_with_stems(
+            [notehead], [lower_fragment, upper_fragment]
+        )
+
+        self.assertIsNotNone(note_with_stem.stem)
+        assert note_with_stem.stem is not None
+        self.assertGreater(note_with_stem.stem.size[1], lower_fragment.size[1] + 15)
 
     def _musicxml_note_ids(self, xml: object) -> list[str]:
         ids = []

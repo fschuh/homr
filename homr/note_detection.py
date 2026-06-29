@@ -1,3 +1,4 @@
+import cv2
 import cv2.typing as cvt
 import numpy as np
 
@@ -134,6 +135,7 @@ def combine_noteheads_with_stems(
         found_stem = False
         for stem in stems:
             if stem.is_overlapping(thickened_notehead):
+                stem = _merge_collinear_stem_fragments(notehead, stem, stems)
                 is_stem_above = stem.center[1] < notehead.center[1]
                 if is_stem_above:
                     direction = StemDirection.UP
@@ -146,6 +148,50 @@ def combine_noteheads_with_stems(
         if not found_stem:
             result.append(NoteheadWithStem(notehead, None, None))
     return result
+
+
+def _merge_collinear_stem_fragments(
+    notehead: BoundingEllipse, seed: RotatedBoundingBox, stems: list[RotatedBoundingBox]
+) -> RotatedBoundingBox:
+    notehead_height = max(float(notehead.size[1]), 1.0)
+    x_tolerance = max(4.0, float(notehead.size[0]) * 0.6)
+    max_vertical_gap = notehead_height * 3
+    fragments = [seed]
+    changed = True
+    while changed:
+        changed = False
+        for candidate in stems:
+            if candidate in fragments:
+                continue
+            if not _is_collinear_stem_fragment(candidate, fragments, x_tolerance, max_vertical_gap):
+                continue
+            fragments.append(candidate)
+            changed = True
+
+    if len(fragments) == 1:
+        return seed
+
+    contour = np.concatenate([fragment.polygon.reshape(-1, 1, 2) for fragment in fragments])
+    return RotatedBoundingBox(cv2.minAreaRect(contour), contour, seed.debug_id)
+
+
+def _is_collinear_stem_fragment(
+    candidate: RotatedBoundingBox,
+    fragments: list[RotatedBoundingBox],
+    x_tolerance: float,
+    max_vertical_gap: float,
+) -> bool:
+    for fragment in fragments:
+        if abs(candidate.center[0] - fragment.center[0]) > x_tolerance:
+            continue
+        candidate_top = min(candidate.top_left[1], candidate.top_right[1])
+        candidate_bottom = max(candidate.bottom_left[1], candidate.bottom_right[1])
+        fragment_top = min(fragment.top_left[1], fragment.top_right[1])
+        fragment_bottom = max(fragment.bottom_left[1], fragment.bottom_right[1])
+        vertical_gap = max(candidate_top - fragment_bottom, fragment_top - candidate_bottom, 0)
+        if vertical_gap <= max_vertical_gap:
+            return True
+    return False
 
 
 def add_notes_to_staffs(
