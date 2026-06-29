@@ -139,10 +139,12 @@ class Note(SymbolOnStaff):
         position: int,
         stem: RotatedBoundingBox | None,
         stem_direction: StemDirection | None,
+        visual_id: str | None = None,
     ):
         super().__init__(box.center)
         self.box = box
         self.position = position
+        self.visual_id = visual_id
         self.has_dot = False
         self.stem = stem
         self.circle_of_fifth = 0
@@ -177,7 +179,12 @@ class Note(SymbolOnStaff):
         return str(self)
 
     def copy(self) -> "Note":
-        return Note(self.box, self.position, self.stem, self.stem_direction)
+        result = Note(self.box, self.position, self.stem, self.stem_direction, self.visual_id)
+        result.has_dot = self.has_dot
+        result.circle_of_fifth = self.circle_of_fifth
+        result.beams = self.beams.copy()
+        result.flags = self.flags.copy()
+        return result
 
 
 class BarLine(SymbolOnStaff):

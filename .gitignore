@@ -13,6 +13,9 @@ _build/
 
 # Build
 /dist
+/webapp/dist
+/webapp/node_modules
+/webapp/*.tsbuildinfo
 
 # Datasets
 /datasets/*

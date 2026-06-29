@@ -1,15 +1,25 @@
 import cv2
 import numpy as np
+from dataclasses import dataclass
 
 from homr.type_definitions import NDArray
 
 
-def autocrop(img: NDArray) -> NDArray:
+@dataclass(frozen=True)
+class AutocropResult:
+    image: NDArray
+    crop_box: tuple[int, int, int, int]
+    original_size: tuple[int, int]
+
+
+def autocrop_with_metadata(img: NDArray) -> AutocropResult:
     """
     Find the largest contour on the image, which is expected to be the paper of sheet music
     and extracts it from the image. If no contour is found, then the image is assumed to be
     a full page view of sheet music and is returned as is.
     """
+    original_size = (img.shape[1], img.shape[0])
+
     # convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     hist = cv2.calcHist([img], [0], None, [256], [0, 256])
@@ -37,7 +47,7 @@ def autocrop(img: NDArray) -> NDArray:
             big_contour = c
 
     if big_contour is None:
-        return img
+        return AutocropResult(img, (0, 0, img.shape[1], img.shape[0]), original_size)
 
     # get bounding box
     x, y, w, h = cv2.boundingRect(big_contour)  # type: ignore
@@ -46,8 +56,12 @@ def autocrop(img: NDArray) -> NDArray:
     # If we can't find a large contour, then we assume that the picture doesn't have page borders
     is_full_page_view = x < page_width * 0.25 or y < page_height * 0.25
     if is_full_page_view:
-        return img
+        return AutocropResult(img, (0, 0, img.shape[1], img.shape[0]), original_size)
 
     # crop result
     result = img[y : y + h, x : x + w]
-    return result
+    return AutocropResult(result, (x, y, w, h), original_size)
+
+
+def autocrop(img: NDArray) -> NDArray:
+    return autocrop_with_metadata(img).image

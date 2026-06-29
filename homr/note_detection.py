@@ -106,14 +106,16 @@ def split_clumps_of_noteheads(
     for box in split_boxes:
         center = get_center(box)
         size = (box[2] - box[0], box[3] - box[1])
-        notehead = NoteheadWithStem(
+        split_notehead = NoteheadWithStem(
             BoundingEllipse(
-                (center, size, 0), notehead.notehead.contours, notehead.notehead.debug_id
+                (center, size, 0),
+                np.array(box, dtype=np.int32).reshape(2, 2),
+                notehead.notehead.debug_id,
             ),
             notehead.stem,
             notehead.stem_direction,
         )
-        result.append(notehead)
+        result.append(split_notehead)
     return result
 
 
@@ -150,6 +152,7 @@ def add_notes_to_staffs(
     staffs: list[Staff], noteheads: list[NoteheadWithStem], symbols: NDArray, notehead_pred: NDArray
 ) -> list[Note]:
     result = []
+    next_visual_id = 1
     for staff in staffs:
         for notehead_chunk in noteheads:
             if not staff.is_on_staff_zone(notehead_chunk.notehead):
@@ -175,7 +178,14 @@ def add_notes_to_staffs(
                 ):
                     continue
                 position = point.find_position_in_unit_sizes(notehead.notehead)
-                note = Note(notehead.notehead, position, notehead.stem, notehead.stem_direction)
+                note = Note(
+                    notehead.notehead,
+                    position,
+                    notehead.stem,
+                    notehead.stem_direction,
+                    f"vnote-{next_visual_id}",
+                )
+                next_visual_id += 1
                 result.append(note)
                 staff.add_symbol(note)
     number_of_notes = 0

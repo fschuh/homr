@@ -2,6 +2,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 import musicxml.xmlelement.xmlelement as mxl
 import numpy as np
@@ -15,6 +16,9 @@ from homr.transformer.vocabulary import (
     nonote,
     sort_token_chords,
 )
+
+if TYPE_CHECKING:
+    from homr.sidecar import SidecarCollector
 
 
 class ConversionState:
@@ -108,7 +112,10 @@ def build_identification() -> mxl.XMLIdentification:
 
 
 def generate_xml(
-    args: XmlGeneratorArguments, staffs: list[list[EncodedSymbol]], title: str
+    args: XmlGeneratorArguments,
+    staffs: list[list[EncodedSymbol]],
+    title: str,
+    sidecar: "SidecarCollector | None" = None,
 ) -> mxl.XMLElement:
     root = mxl.XMLScorePartwise(version="4.0")
     root.add_child(build_work(title))
@@ -117,7 +124,7 @@ def generate_xml(
     has_two_staves_by_part = [_voice_has_two_staves(staff) for staff in staffs]
     root.add_child(build_part_list(has_two_staves_by_part))
     for index, staff in enumerate(staffs):
-        root.add_child(build_part(args, staff, index, has_two_staves_by_part[index]))
+        root.add_child(build_part(args, staff, index, has_two_staves_by_part[index], sidecar))
     return root
 
 
@@ -127,11 +134,15 @@ def _voice_has_two_staves(voice: list[EncodedSymbol]) -> bool:
 
 
 def build_part(
-    args: XmlGeneratorArguments, voice: list[EncodedSymbol], index: int, has_two_staves: bool
+    args: XmlGeneratorArguments,
+    voice: list[EncodedSymbol],
+    index: int,
+    has_two_staves: bool,
+    sidecar: "SidecarCollector | None" = None,
 ) -> mxl.XMLPart:
     part = mxl.XMLPart(id=get_part_id(index))
     is_first_part = index == 0
-    measures = build_measures(args, voice, is_first_part, has_two_staves)
+    measures = build_measures(args, voice, is_first_part, has_two_staves, index + 1, sidecar)
     for measure in measures:
         part.add_child(measure)
     return part
@@ -142,9 +153,12 @@ def build_measures(
     voice: list[EncodedSymbol],
     is_first_part: bool,
     has_two_staves: bool = False,
+    part_number: int = 1,
+    sidecar: "SidecarCollector | None" = None,
 ) -> list[mxl.XMLMeasure]:
     def close_current_measure() -> None:
         rebalance_measure_voices(current_measure)
+        record_sidecar_note_ids(current_measure, part_number, measure_number, sidecar)
         measures.append(current_measure)
 
     measure_number = 1
@@ -178,7 +192,7 @@ def build_measures(
                     chord_duration = (
                         group.get_duration() if pos_no == len(staff_positions) - 1 else Fraction(0)
                     )
-                    for note_xml in build_note_chord(staff_pos, state, chord_duration):
+                    for note_xml in build_note_chord(staff_pos, state, chord_duration, sidecar):
                         current_measure.add_child(note_xml)
             continue
         if rhythm == "newline":
@@ -431,6 +445,28 @@ def rebalance_measure_voices(measure: mxl.XMLMeasure) -> None:
                     voice_nodes[0].value_ = xml_voice
 
 
+def record_sidecar_note_ids(
+    measure: mxl.XMLMeasure,
+    part_number: int,
+    measure_number: int,
+    sidecar: "SidecarCollector | None",
+) -> None:
+    if sidecar is None:
+        return
+    for child in measure.get_children():
+        if not isinstance(child, mxl.XMLNote):
+            continue
+        symbol = getattr(child, "_homr_symbol", None)
+        musicxml_id = getattr(child, "_homr_musicxml_id", None)
+        if symbol is None or musicxml_id is None:
+            continue
+        staff_nodes = child.get_children_of_type(mxl.XMLStaff)
+        voice_nodes = child.get_children_of_type(mxl.XMLVoice)
+        staff = int(staff_nodes[0].value_) if staff_nodes else 1
+        voice = int(voice_nodes[0].value_) if voice_nodes else 1
+        sidecar.record_musicxml_note(musicxml_id, part_number, measure_number, staff, voice, symbol)
+
+
 def build_clef(model_clef: EncodedSymbol, attributes: mxl.XMLAttributes) -> None:
     sign_and_line = model_clef.rhythm.split("_")[1]
     sign = sign_and_line[0]
@@ -605,6 +641,7 @@ def build_note_or_rest(
     is_chord: bool,
     state: ConversionState,
     tuplet_mark: str,
+    sidecar: "SidecarCollector | None" = None,
 ) -> mxl.XMLNote:
     note = mxl.XMLNote()
     if is_chord:
@@ -620,6 +657,11 @@ def build_note_or_rest(
         eprint("WARNING note without pitch", model_note)
         note.add_child(mxl.XMLRest())
     else:
+        if sidecar is not None:
+            musicxml_id = sidecar.create_musicxml_id()
+            note._set_attributes({"id": musicxml_id})
+            setattr(note, "_homr_musicxml_id", musicxml_id)
+            setattr(note, "_homr_symbol", model_note)
         pitch = mxl.XMLPitch()
         pitch.add_child(mxl.XMLStep(value_=model_pitch[0]))
         pitch.add_child(mxl.XMLOctave(value_=int(model_pitch[1])))
@@ -679,7 +721,10 @@ def build_multi_measure_rest(
 
 
 def build_note_chord(
-    note_chord: SymbolChord, state: ConversionState, chord_duration: Fraction
+    note_chord: SymbolChord,
+    state: ConversionState,
+    chord_duration: Fraction,
+    sidecar: "SidecarCollector | None" = None,
 ) -> list[mxl.XMLElement]:
     by_duration = _group_notes(note_chord.symbols)
     result: list[mxl.XMLElement] = []
@@ -689,7 +734,9 @@ def build_note_chord(
         is_first = True
         for note_loop in by_duration[group_duration]:
             note = note_loop
-            result.append(build_note_or_rest(note, i, not is_first, state, note_chord.tuplet_mark))
+            result.append(
+                build_note_or_rest(note, i, not is_first, state, note_chord.tuplet_mark, sidecar)
+            )
             is_first = False
         if i != len(sorted_durations) - 1 and group_duration > Fraction(0):
             backup = mxl.XMLBackup()

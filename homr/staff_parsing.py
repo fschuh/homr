@@ -6,7 +6,8 @@ import numpy as np
 from homr import constants
 from homr.debug import Debug
 from homr.image_utils import crop_image_and_return_new_top
-from homr.model import MultiStaff, Staff
+from homr.model import MultiStaff, Note, Staff
+from homr.sidecar import SidecarCollector
 from homr.simple_logging import eprint
 from homr.staff_dewarping import StaffDewarping, dewarp_staff_image
 from homr.staff_parsing_tromr import parse_staff_tromr
@@ -156,7 +157,7 @@ def _calculate_region(staff: Staff, regions: StaffRegions) -> NDArray:
 
 def prepare_staff_image(
     debug: Debug, index: int, staff: Staff, staff_image: NDArray, regions: StaffRegions
-) -> tuple[NDArray, Staff]:
+) -> tuple[NDArray, Staff, Staff]:
     region = _calculate_region(staff, regions)
     image_dimensions = get_tr_omr_canvas_size(
         (int(region[3] - region[1]), int(region[2] - region[0]))
@@ -181,10 +182,16 @@ def prepare_staff_image(
     eprint("Dewarping staff", index, "done")
 
     staff_image = remove_black_contours_at_edges_of_image(staff_image, staff.average_unit_size)
+    canvas_scaling_x = image_dimensions[0] / staff_image.shape[1]
+    canvas_scaling_y = image_dimensions[1] / staff_image.shape[0]
+    canvas_y_offset = (tr_omr_max_height - image_dimensions[1]) // 2
+    transformed_staff = _dewarp_staff(staff, dewarp, top_left, scaling_factor)
+    transformed_staff = _transform_staff_for_canvas(
+        transformed_staff, canvas_scaling_x, canvas_scaling_y, canvas_y_offset
+    )
     staff_image = center_image_on_canvas(staff_image, image_dimensions)
     debug.write_image_with_fixed_suffix(f"_staff-{index}_input.jpg", staff_image)
     if debug.debug:
-        transformed_staff = _dewarp_staff(staff, dewarp, top_left, scaling_factor)
         transformed_staff_image = staff_image.copy()
         for symbol in transformed_staff.symbols:
             center = symbol.center
@@ -201,7 +208,17 @@ def prepare_staff_image(
         debug.write_image_with_fixed_suffix(
             f"_staff-{index}_debug_annotated.jpg", transformed_staff_image
         )
-    return staff_image, staff
+    return staff_image, staff, transformed_staff
+
+
+def _transform_staff_for_canvas(
+    staff: Staff, scaling_x: float, scaling_y: float, y_offset: int
+) -> Staff:
+    def transform_coordinates(point: tuple[float, float]) -> tuple[float, float]:
+        x, y = point
+        return x * scaling_x, y * scaling_y + y_offset
+
+    return staff.transform_coordinates(transform_coordinates)
 
 
 def _dewarp_staff(
@@ -225,13 +242,24 @@ def _dewarp_staff(
 
 
 def parse_staff_image(
-    debug: Debug, index: int, staff: Staff, image: NDArray, regions: StaffRegions, config: Config
+    debug: Debug,
+    index: int,
+    staff: Staff,
+    image: NDArray,
+    regions: StaffRegions,
+    config: Config,
+    sidecar: SidecarCollector | None = None,
 ) -> list[EncodedSymbol]:
-    staff_image, transformed_staff = prepare_staff_image(
+    original_notes = [symbol for symbol in staff.symbols if isinstance(symbol, Note)]
+    staff_image, transformed_staff, final_transformed_staff = prepare_staff_image(
         debug, index, staff, image, regions=regions
     )
+    if sidecar is not None:
+        sidecar.add_staff_visual_notes(index, original_notes, final_transformed_staff.get_notes())
     eprint("Running TrOmr inference on staff image", index)
     result = parse_staff_tromr(staff_image=staff_image, staff=transformed_staff, config=config)
+    if sidecar is not None:
+        sidecar.add_staff_matches(result, index)
     if debug.debug:
         result_image = staff_image.copy()
         for i, symbol in enumerate(result):
@@ -257,7 +285,12 @@ def parse_staff_image(
 
 
 def parse_staffs(
-    debug: Debug, staffs: list[MultiStaff], image: NDArray, config: Config, selected_staff: int = -1
+    debug: Debug,
+    staffs: list[MultiStaff],
+    image: NDArray,
+    config: Config,
+    selected_staff: int = -1,
+    sidecar: SidecarCollector | None = None,
 ) -> list[list[EncodedSymbol]]:
     """
     Dewarps each staff and then runs it through an algorithm which extracts
@@ -278,7 +311,7 @@ def parse_staffs(
                 eprint("Ignoring staff due to selected_staff argument", i)
                 i += 1
                 continue
-            result_staff = parse_staff_image(debug, i, staff, image, regions, config)
+            result_staff = parse_staff_image(debug, i, staff, image, regions, config, sidecar)
             if len(result_staff) == 0:
                 eprint("Skipping empty staff", i)
                 i += 1

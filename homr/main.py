@@ -11,7 +11,7 @@ import numpy as np
 import onnxruntime as ort
 
 from homr import color_adjust, download_utils
-from homr.autocrop import autocrop
+from homr.autocrop import autocrop_with_metadata
 from homr.bar_line_detection import (
     detect_bar_lines,
     prepare_bar_line_image,
@@ -32,9 +32,10 @@ from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
 from homr.noise_filtering import filter_predictions
 from homr.note_detection import add_notes_to_staffs, combine_noteheads_with_stems
 from homr.onnx_providers import coreml_available, cuda_available
-from homr.resize import resize_image
+from homr.resize import resize_image_with_metadata
 from homr.segmentation.config import segnet_path_onnx, segnet_path_onnx_fp16
 from homr.segmentation.inference_segnet import extract
+from homr.sidecar import PreprocessingMetadata, SidecarCollector, write_sidecar
 from homr.simple_logging import eprint
 from homr.staff_detection import break_wide_fragments, detect_staff, make_lines_stronger
 from homr.staff_parsing import parse_staffs
@@ -105,16 +106,26 @@ def replace_extension(path: str, new_extension: str) -> str:
 
 def load_and_preprocess_predictions(
     image_path: str, enable_debug: bool, enable_cache: bool, segnet_use_gpu: bool
-) -> tuple[InputPredictions, Debug]:
+) -> tuple[InputPredictions, Debug, PreprocessingMetadata]:
     image = cv2.imread(image_path)
     if image is None:
         raise InvalidProgramArgumentException(
             "The file format is not supported, please provide a JPG or PNG image file:" + image_path
         )
-    image = autocrop(image)
-    image = resize_image(image)
+    autocrop_result = autocrop_with_metadata(image)
+    image = autocrop_result.image
+    resize_result = resize_image_with_metadata(image)
+    image = resize_result.image
     preprocessed = color_adjust.apply_clahe(image)
     predictions = get_predictions(image, preprocessed, image_path, enable_cache, segnet_use_gpu)
+    preprocessing = PreprocessingMetadata(
+        source_image_size=autocrop_result.original_size,
+        autocrop_box=autocrop_result.crop_box,
+        cropped_size=resize_result.original_size,
+        resized_size=resize_result.resized_size,
+        resize_scale=(resize_result.scale_x, resize_result.scale_y),
+        prediction_size=(predictions.preprocessed.shape[1], predictions.preprocessed.shape[0]),
+    )
     debug = Debug(predictions.original, image_path, enable_debug)
     debug.write_image("color_adjust", preprocessed)
 
@@ -126,7 +137,7 @@ def load_and_preprocess_predictions(
     debug.write_threshold_image("stems_rest", predictions.stems_rest)
     debug.write_threshold_image("notehead", predictions.notehead)
     debug.write_threshold_image("clefs_keys", predictions.clefs_keys)
-    return predictions, debug
+    return predictions, debug, preprocessing
 
 
 def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSymbols:
@@ -166,6 +177,7 @@ class ProcessingConfig:
     # Opt-in (--coreml-encoder): run the encoder on the Apple GPU via CoreML.
     # Only helps across many images (slow one-time MLProgram compile).
     coreml_encoder: bool
+    write_sidecar: bool
 
 
 def process_image(
@@ -181,35 +193,53 @@ def process_image(
             image = cv2.imread(image_path)
             if image is None:
                 raise ValueError("Failed to read " + image_path)
-            image = resize_image(image)
+            source_size = (image.shape[1], image.shape[0])
+            resize_result = resize_image_with_metadata(image)
+            image = resize_result.image
+            preprocessing = PreprocessingMetadata(
+                source_image_size=source_size,
+                autocrop_box=(0, 0, source_size[0], source_size[1]),
+                cropped_size=resize_result.original_size,
+                resized_size=resize_result.resized_size,
+                resize_scale=(resize_result.scale_x, resize_result.scale_y),
+                prediction_size=resize_result.resized_size,
+            )
             debug = Debug(image, image_path, config.enable_debug)
             staff_position_files = replace_extension(image_path, ".txt")
             multi_staffs = load_staff_positions(
                 debug, image, staff_position_files, config.selected_staff
             )
-            title = ""
+            title_future = Future()
+            title_future.set_result("")
         else:
-            multi_staffs, image, debug, title_future = detect_staffs_in_image(image_path, config)
+            multi_staffs, image, debug, title_future, preprocessing = detect_staffs_in_image(
+                image_path, config
+            )
         debug_cleanup = debug
 
         transformer_config = Config()
         transformer_config.use_gpu_inference = config.transformer_use_gpu
         transformer_config.use_coreml_encoder = config.coreml_encoder
 
+        sidecar = SidecarCollector(preprocessing) if config.write_sidecar else None
         result_staffs = parse_staffs(
             debug,
             multi_staffs,
             image,
             selected_staff=config.selected_staff,
             config=transformer_config,
+            sidecar=sidecar,
         )
 
         title = title_future.result(60)
         eprint("Found title:", title)
 
         eprint("Writing XML", result_staffs)
-        xml = generate_xml(xml_generator_args, result_staffs, title)
+        xml = generate_xml(xml_generator_args, result_staffs, title, sidecar=sidecar)
         xml.write(xml_file)
+        if sidecar is not None:
+            sidecar_file = replace_extension(image_path, ".homr.json")
+            write_sidecar(sidecar_file, sidecar)
 
         eprint("Finished parsing " + str(len(result_staffs)) + " staves")
         teaser_file = replace_extension(image_path, "_teaser.png")
@@ -231,8 +261,8 @@ def process_image(
 
 def detect_staffs_in_image(
     image_path: str, config: ProcessingConfig
-) -> tuple[list[MultiStaff], NDArray, Debug, Future[str]]:
-    predictions, debug = load_and_preprocess_predictions(
+) -> tuple[list[MultiStaff], NDArray, Debug, Future[str], PreprocessingMetadata]:
+    predictions, debug, preprocessing = load_and_preprocess_predictions(
         image_path, config.enable_debug, config.enable_cache, config.segnet_use_gpu
     )
     symbols = predict_symbols(debug, predictions)
@@ -293,7 +323,7 @@ def detect_staffs_in_image(
 
     debug.write_all_bounding_boxes_alternating_colors("notes", multi_staffs, notes)
 
-    return multi_staffs, predictions.preprocessed, debug, title_future
+    return multi_staffs, predictions.preprocessed, debug, title_future, preprocessing
 
 
 def get_all_image_files_in_folder(folder: str) -> list[str]:
@@ -378,6 +408,11 @@ def main() -> None:
         "--output-tempo", type=int, help="Adds a tempo to the musicxml with the given bpm"
     )
     parser.add_argument(
+        "--output-sidecar",
+        action="store_true",
+        help="Writes input.homr.json beside the MusicXML with visual note geometry.",
+    )
+    parser.add_argument(
         "--write-staff-positions",
         action="store_true",
         help="Writes the position of all detected staffs to a txt file.",
@@ -432,6 +467,7 @@ def main() -> None:
         transformer_use_gpu,
         segnet_use_gpu,
         coreml_encoder,
+        args.output_sidecar,
     )
 
     xml_generator_args = XmlGeneratorArguments(
