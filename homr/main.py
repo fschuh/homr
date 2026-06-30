@@ -209,11 +209,13 @@ def process_image(
             multi_staffs = load_staff_positions(
                 debug, image, staff_position_files, config.selected_staff
             )
+            stem_fragments: list[RotatedBoundingBox] = []
+            notehead_mask = None
             title_future = Future()
             title_future.set_result("")
         else:
-            multi_staffs, image, debug, title_future, preprocessing = detect_staffs_in_image(
-                image_path, config
+            multi_staffs, image, debug, title_future, preprocessing, stem_fragments, notehead_mask = (
+                detect_staffs_in_image(image_path, config)
             )
         debug_cleanup = debug
 
@@ -221,7 +223,11 @@ def process_image(
         transformer_config.use_gpu_inference = config.transformer_use_gpu
         transformer_config.use_coreml_encoder = config.coreml_encoder
 
-        sidecar = SidecarCollector(preprocessing) if config.write_sidecar else None
+        sidecar = (
+            SidecarCollector(preprocessing, stem_fragments, notehead_mask)
+            if config.write_sidecar
+            else None
+        )
         result_staffs = parse_staffs(
             debug,
             multi_staffs,
@@ -261,7 +267,15 @@ def process_image(
 
 def detect_staffs_in_image(
     image_path: str, config: ProcessingConfig
-) -> tuple[list[MultiStaff], NDArray, Debug, Future[str], PreprocessingMetadata]:
+) -> tuple[
+    list[MultiStaff],
+    NDArray,
+    Debug,
+    Future[str],
+    PreprocessingMetadata,
+    list[RotatedBoundingBox],
+    NDArray,
+]:
     predictions, debug, preprocessing = load_and_preprocess_predictions(
         image_path, config.enable_debug, config.enable_cache, config.segnet_use_gpu
     )
@@ -323,7 +337,15 @@ def detect_staffs_in_image(
 
     debug.write_all_bounding_boxes_alternating_colors("notes", multi_staffs, notes)
 
-    return multi_staffs, predictions.preprocessed, debug, title_future, preprocessing
+    return (
+        multi_staffs,
+        predictions.preprocessed,
+        debug,
+        title_future,
+        preprocessing,
+        symbols.stems_rest,
+        predictions.notehead,
+    )
 
 
 def get_all_image_files_in_folder(folder: str) -> list[str]:

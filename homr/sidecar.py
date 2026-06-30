@@ -3,8 +3,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import cv2
 import numpy as np
 
+from homr.bounding_boxes import RotatedBoundingBox
 from homr.model import Note
 from homr.transformer.vocabulary import EncodedSymbol, sort_token_chords
 
@@ -35,6 +37,47 @@ class PreprocessingMetadata:
             )
         ]
 
+    def _ellipse_to_json(self, ellipse: Any) -> dict[str, Any]:
+        center, size, angle = ellipse
+        width = float(size[0])
+        height = float(size[1])
+        if width >= height:
+            rx = width / 2
+            ry = height / 2
+            svg_angle = float(angle)
+        else:
+            rx = height / 2
+            ry = width / 2
+            svg_angle = float(angle) + 90
+        while svg_angle > 90:
+            svg_angle -= 180
+        while svg_angle <= -90:
+            svg_angle += 180
+        return {
+            "center": [round(float(center[0]), 3), round(float(center[1]), 3)],
+            "rx": round(rx, 3),
+            "ry": round(ry, 3),
+            "angle": round(svg_angle, 3),
+        }
+
+    def prediction_ellipse_to_source(self, ellipse: Any) -> dict[str, Any]:
+        center, size, angle = ellipse
+        pred_w, pred_h = self.prediction_size
+        resized_w, resized_h = self.resized_size
+        source_center = self.prediction_point_to_source((float(center[0]), float(center[1])))
+        source_width = float(size[0]) * resized_w / pred_w / self.resize_scale[0]
+        source_height = float(size[1]) * resized_h / pred_h / self.resize_scale[1]
+        return self._ellipse_to_json((source_center, (source_width, source_height), angle))
+
+    def prediction_contour_ellipse_to_source(
+        self, contour: Any, fallback_ellipse: Any
+    ) -> dict[str, Any]:
+        source_points = np.asarray(self.prediction_contour_to_source(contour), dtype=np.float32)
+        if len(source_points) >= 5:
+            source_contour = source_points.reshape(-1, 1, 2)
+            return self._ellipse_to_json(cv2.fitEllipse(source_contour))
+        return self.prediction_ellipse_to_source(fallback_ellipse)
+
 
 @dataclass
 class VisualGroup:
@@ -43,6 +86,7 @@ class VisualGroup:
     staff_position: int
     prediction_center: tuple[float, float]
     transformer_center: tuple[float, float] | None
+    notehead_ellipses: list[dict[str, Any]]
     notehead_contours: list[list[list[float]]]
     stem_contours: list[list[list[float]]]
     linked_musicxml_ids: list[str] = field(default_factory=list)
@@ -80,8 +124,15 @@ class VisualMatch:
 
 
 class SidecarCollector:
-    def __init__(self, metadata: PreprocessingMetadata) -> None:
+    def __init__(
+        self,
+        metadata: PreprocessingMetadata,
+        stem_fragments: list[RotatedBoundingBox] | None = None,
+        notehead_mask: Any | None = None,
+    ) -> None:
         self.metadata = metadata
+        self.stem_fragments = stem_fragments or []
+        self.notehead_mask = notehead_mask
         self.visual_groups: dict[str, VisualGroup] = {}
         self.matches_by_symbol_id: dict[int, VisualMatch] = {}
         self.musicxml_notes: list[MusicXmlNoteRecord] = []
@@ -97,8 +148,9 @@ class SidecarCollector:
             notehead_contour = self.metadata.prediction_contour_to_source(original.box.polygon)
             stem_contours = []
             if original.stem is not None:
+                stem = self._merge_sidecar_stem_fragments(original)
                 stem_contours.append(
-                    self.metadata.prediction_contour_to_source(original.stem.polygon)
+                    self.metadata.prediction_contour_to_source(stem.polygon)
                 )
             self.visual_groups[original.visual_id] = VisualGroup(
                 visual_id=original.visual_id,
@@ -106,6 +158,9 @@ class SidecarCollector:
                 staff_position=original.position,
                 prediction_center=original.center,
                 transformer_center=transformed.center,
+                notehead_ellipses=[
+                    self._notehead_ellipse_for_sidecar(original)
+                ],
                 notehead_contours=[notehead_contour],
                 stem_contours=stem_contours,
             )
@@ -182,7 +237,133 @@ class SidecarCollector:
     def unmatched_musicxml_notes(self) -> list[str]:
         return [note.musicxml_id for note in self.musicxml_notes if note.visual_group_id is None]
 
+    def _notehead_ellipse_for_sidecar(self, note: Note) -> dict[str, Any]:
+        points = np.asarray(note.box.contours).reshape(-1, 2)
+        if len(points) < 5:
+            ellipse = self.metadata.prediction_ellipse_to_source(note.box.box)
+            ellipse["_fit_source"] = "fallback"
+            return ellipse
+
+        contour = self._notehead_mask_contour(note)
+        if contour is not None:
+            ellipse = self.metadata.prediction_contour_ellipse_to_source(contour, note.box.box)
+            ellipse["_fit_source"] = "mask"
+            return ellipse
+        ellipse = self.metadata.prediction_contour_ellipse_to_source(
+            note.box.contours, note.box.box
+        )
+        ellipse["_fit_source"] = "contour"
+        return ellipse
+
+    def _notehead_mask_contour(self, note: Note) -> Any | None:
+        if self.notehead_mask is None:
+            return None
+
+        height, width = self.notehead_mask.shape[:2]
+        left = max(0, int(np.floor(note.box.top_left[0])) - 1)
+        top = max(0, int(np.floor(note.box.top_left[1])) - 1)
+        right = min(width, int(np.ceil(note.box.bottom_right[0])) + 1)
+        bottom = min(height, int(np.ceil(note.box.bottom_right[1])) + 1)
+        if right <= left or bottom <= top:
+            return None
+
+        region = self.notehead_mask[top:bottom, left:right]
+        contours, _ = cv2.findContours(region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        contour = max(contours, key=cv2.contourArea)
+        if len(contour) < 5:
+            return None
+        return contour + np.array([[[left, top]]])
+
+    def _merge_sidecar_stem_fragments(self, note: Note) -> RotatedBoundingBox:
+        if note.stem is None or len(self.stem_fragments) == 0:
+            if note.stem is None:
+                raise ValueError("Cannot merge stem fragments for a note without a stem")
+            return note.stem
+
+        notehead_height = max(float(note.box.size[1]), 1.0)
+        x_tolerance = max(4.0, float(note.box.size[0]) * 0.6)
+        max_vertical_gap = notehead_height * 3
+        fragments = [note.stem]
+        changed = True
+        while changed:
+            changed = False
+            for candidate in self.stem_fragments:
+                if candidate in fragments:
+                    continue
+                if not self._is_collinear_stem_fragment(
+                    candidate, fragments, x_tolerance, max_vertical_gap
+                ):
+                    continue
+                fragments.append(candidate)
+                changed = True
+
+        if len(fragments) == 1:
+            return note.stem
+
+        contour = np.concatenate([fragment.polygon.reshape(-1, 1, 2) for fragment in fragments])
+        return RotatedBoundingBox(cv2.minAreaRect(contour), contour, note.stem.debug_id)
+
+    def _is_collinear_stem_fragment(
+        self,
+        candidate: RotatedBoundingBox,
+        fragments: list[RotatedBoundingBox],
+        x_tolerance: float,
+        max_vertical_gap: float,
+    ) -> bool:
+        for fragment in fragments:
+            if abs(candidate.center[0] - fragment.center[0]) > x_tolerance:
+                continue
+            candidate_top = min(candidate.top_left[1], candidate.top_right[1])
+            candidate_bottom = max(candidate.bottom_left[1], candidate.bottom_right[1])
+            fragment_top = min(fragment.top_left[1], fragment.top_right[1])
+            fragment_bottom = max(fragment.bottom_left[1], fragment.bottom_right[1])
+            vertical_gap = max(candidate_top - fragment_bottom, fragment_top - candidate_bottom, 0)
+            if vertical_gap <= max_vertical_gap:
+                return True
+        return False
+
+    def _typical_notehead_angles_by_staff(self) -> dict[int, float]:
+        angles_by_staff: dict[int, list[float]] = {}
+        for group in self.visual_groups.values():
+            for ellipse in group.notehead_ellipses:
+                if ellipse.get("_fit_source") == "fallback":
+                    continue
+                if abs(float(ellipse["angle"])) < 6:
+                    continue
+                if float(ellipse["rx"]) <= float(ellipse["ry"]):
+                    continue
+                angles_by_staff.setdefault(group.staff_index, []).append(float(ellipse["angle"]))
+
+        all_angles = [angle for angles in angles_by_staff.values() for angle in angles]
+        global_angle = float(np.median(all_angles)) if all_angles else None
+        result = {}
+        for staff_index, angles in angles_by_staff.items():
+            result[staff_index] = float(np.median(angles))
+        if global_angle is not None:
+            for group in self.visual_groups.values():
+                result.setdefault(group.staff_index, global_angle)
+        return result
+
+    def _notehead_ellipses_for_output(
+        self, group: VisualGroup, typical_angle: float | None
+    ) -> list[dict[str, Any]]:
+        ellipses = []
+        for ellipse in group.notehead_ellipses:
+            output = {key: value for key, value in ellipse.items() if not key.startswith("_")}
+            fit_source = ellipse.get("_fit_source")
+            if typical_angle is not None and (
+                fit_source == "fallback"
+                or (fit_source == "mask" and abs(float(output["angle"])) < 6)
+            ):
+                output["angle"] = round(typical_angle, 3)
+            ellipses.append(output)
+        return ellipses
+
     def to_json_dict(self) -> dict[str, Any]:
+        typical_angles_by_staff = self._typical_notehead_angles_by_staff()
         return {
             "version": 1,
             "source_image_size": list(self.metadata.source_image_size),
@@ -211,6 +392,9 @@ class SidecarCollector:
                         ),
                     ],
                     "bbox": group.bbox,
+                    "notehead_ellipses": self._notehead_ellipses_for_output(
+                        group, typical_angles_by_staff.get(group.staff_index)
+                    ),
                     "notehead_contours": group.notehead_contours,
                     "stem_contours": group.stem_contours,
                     "musicxml_ids": group.linked_musicxml_ids,
