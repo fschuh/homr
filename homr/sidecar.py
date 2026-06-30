@@ -293,6 +293,8 @@ class SidecarCollector:
             for candidate in self.stem_fragments:
                 if candidate in fragments:
                     continue
+                if not self._is_stem_like_fragment(candidate, note):
+                    continue
                 if not self._is_collinear_stem_fragment(
                     candidate, fragments, x_tolerance, max_vertical_gap
                 ):
@@ -304,7 +306,22 @@ class SidecarCollector:
             return note.stem
 
         contour = np.concatenate([fragment.polygon.reshape(-1, 1, 2) for fragment in fragments])
-        return RotatedBoundingBox(cv2.minAreaRect(contour), contour, note.stem.debug_id)
+        merged = RotatedBoundingBox(cv2.minAreaRect(contour), contour, note.stem.debug_id)
+        if not self._is_stem_like_fragment(merged, note):
+            return note.stem
+        return merged
+
+    def _is_stem_like_fragment(self, stem: RotatedBoundingBox, note: Note) -> bool:
+        points = np.asarray(stem.polygon, dtype=np.float32).reshape(-1, 2)
+        width = float(np.max(points[:, 0]) - np.min(points[:, 0]))
+        height = float(np.max(points[:, 1]) - np.min(points[:, 1]))
+        notehead_width = max(float(note.box.size[0]), 1.0)
+        notehead_height = max(float(note.box.size[1]), 1.0)
+        max_width = max(8.0, notehead_width * 0.75)
+        return (
+            width <= max_width
+            and height >= max(2.0 * max(width, 1.0), notehead_height * 0.75)
+        )
 
     def _is_collinear_stem_fragment(
         self,
@@ -313,6 +330,8 @@ class SidecarCollector:
         x_tolerance: float,
         max_vertical_gap: float,
     ) -> bool:
+        if abs(candidate.center[0] - fragments[0].center[0]) > x_tolerance:
+            return False
         for fragment in fragments:
             if abs(candidate.center[0] - fragment.center[0]) > x_tolerance:
                 continue

@@ -217,6 +217,63 @@ class TestSidecar(unittest.TestCase):
         self.assertGreater(height, lower_fragment.size[1] + 15)
         self.assertEqual(original.stem, lower_fragment)
 
+    def test_sidecar_stem_merge_rejects_wide_beam_fragment(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        notehead = BoundingEllipse(((50, 50), (12, 10), 0), np.array([[44, 45], [56, 55]]))
+        stem = RotatedBoundingBox(((56, 40), (2, 20), 0), np.array([[55, 30], [57, 50]]))
+        beam = RotatedBoundingBox(((56, 65), (42, 8), 0), np.array([[35, 61], [77, 69]]))
+        collector = SidecarCollector(metadata, [beam])
+        original = Note(
+            notehead,
+            position=4,
+            stem=stem,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        contour = collector.to_json_dict()["visual_groups"][0]["stem_contours"][0]
+        xs = [point[0] for point in contour]
+
+        self.assertLess(max(xs) - min(xs), 10)
+        self.assertEqual(original.stem, stem)
+
+    def test_sidecar_stem_merge_does_not_chain_sideways(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        notehead = BoundingEllipse(((50, 50), (12, 10), 0), np.array([[44, 45], [56, 55]]))
+        stem = RotatedBoundingBox(((56, 42), (2, 16), 0), np.array([[55, 34], [57, 50]]))
+        near = RotatedBoundingBox(((61, 25), (2, 18), 0), np.array([[60, 16], [62, 34]]))
+        drift = RotatedBoundingBox(((68, 10), (2, 18), 0), np.array([[67, 1], [69, 19]]))
+        collector = SidecarCollector(metadata, [near, drift])
+        original = Note(
+            notehead,
+            position=4,
+            stem=stem,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        contour = collector.to_json_dict()["visual_groups"][0]["stem_contours"][0]
+        xs = [point[0] for point in contour]
+
+        self.assertLess(max(xs) - min(xs), 10)
+        self.assertEqual(original.stem, stem)
+
     def _musicxml_note_ids(self, xml: object) -> list[str]:
         ids = []
 
