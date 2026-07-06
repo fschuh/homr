@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,11 @@ import numpy as np
 from homr.bounding_boxes import RotatedBoundingBox
 from homr.model import Note
 from homr.transformer.vocabulary import EncodedSymbol, sort_token_chords
+
+
+class StemRepairDirection(Enum):
+    UP = "up"
+    DOWN = "down"
 
 
 @dataclass(frozen=True)
@@ -361,94 +367,22 @@ class SidecarCollector:
     def _repair_downward_sidecar_stem(
         self, note: Note, stem: RotatedBoundingBox | None
     ) -> RotatedBoundingBox | None:
-        if len(self.stem_fragments) == 0:
-            return stem
-        if not self._needs_downward_stem_repair(note, stem):
-            return stem
-
-        note_left = min(note.box.top_left[0], note.box.bottom_left[0])
-        note_right = max(note.box.top_right[0], note.box.bottom_right[0])
-        notehead_height = max(float(note.box.size[1]), 1.0)
-        x_tolerance = max(4.0, float(note.box.size[0]) * 0.6)
-        max_vertical_gap = notehead_height * 5
-
-        candidates = [
-            candidate
-            for candidate in self.stem_fragments
-            if self._is_stem_seed_candidate(candidate, note)
-            and self._is_downward_repair_seed(candidate, note, x_tolerance, max_vertical_gap)
-        ]
-        if not candidates:
-            return stem
-
-        def chain_from(seed: RotatedBoundingBox) -> list[RotatedBoundingBox]:
-            fragments = [seed]
-            changed = True
-            while changed:
-                changed = False
-                for candidate in self.stem_fragments:
-                    if candidate in fragments:
-                        continue
-                    if not self._is_stem_seed_candidate(candidate, note):
-                        continue
-                    if not self._is_collinear_stem_fragment(
-                        candidate, fragments, x_tolerance, max_vertical_gap
-                    ):
-                        continue
-                    fragments.append(candidate)
-                    changed = True
-            return fragments
-
-        def score(seed: RotatedBoundingBox) -> float:
-            fragments = chain_from(seed)
-            points = np.concatenate([fragment.polygon.reshape(-1, 2) for fragment in fragments])
-            x_center = float(np.mean(points[:, 0]))
-            y_min = float(np.min(points[:, 1]))
-            y_max = float(np.max(points[:, 1]))
-            attachment_x = note_left if x_center < note.center[0] else note_right
-            attachment_error = abs(x_center - attachment_x)
-            starts_near_note = max(y_min - note.center[1], 0.0)
-            return (y_max - note.center[1]) - attachment_error * 2.0 - starts_near_note
-
-        best_seed = max(candidates, key=score)
-        if score(best_seed) <= max(notehead_height, 10.0):
-            return stem
-
-        fragments = chain_from(best_seed)
-        points = np.concatenate([fragment.polygon.reshape(-1, 2) for fragment in fragments])
-        x_min = float(np.min(points[:, 0]))
-        x_max = float(np.max(points[:, 0]))
-        width = max(x_max - x_min, 1.0)
-        x_center = float(np.mean(points[:, 0]))
-        half_width = min(max(width / 2, 1.0), max(float(note.box.size[0]) * 0.25, 3.0))
-        y_min = min(float(np.min(points[:, 1])), float(note.center[1]))
-        y_max = float(np.max(points[:, 1]))
-        contour = np.array(
-            [
-                [[x_center - half_width, y_min]],
-                [[x_center + half_width, y_min]],
-                [[x_center + half_width, y_max]],
-                [[x_center - half_width, y_max]],
-            ],
-            dtype=np.float32,
-        )
-        repaired = RotatedBoundingBox(
-            cv2.minAreaRect(contour),
-            contour,
-            stem.debug_id if stem is not None else best_seed.debug_id,
-        )
-        if not self._is_stem_like_fragment(repaired, note):
-            return stem
-        if stem is not None and not self._is_repaired_stem_better(note, stem, repaired):
-            return stem
-        return repaired
+        return self._repair_sidecar_stem(note, stem, StemRepairDirection.DOWN)
 
     def _repair_upward_sidecar_stem(
         self, note: Note, stem: RotatedBoundingBox | None
     ) -> RotatedBoundingBox | None:
+        return self._repair_sidecar_stem(note, stem, StemRepairDirection.UP)
+
+    def _repair_sidecar_stem(
+        self,
+        note: Note,
+        stem: RotatedBoundingBox | None,
+        direction: StemRepairDirection,
+    ) -> RotatedBoundingBox | None:
         if len(self.stem_fragments) == 0:
             return stem
-        if not self._needs_upward_stem_repair(note, stem):
+        if not self._needs_stem_repair(note, stem, direction):
             return stem
 
         note_left = min(note.box.top_left[0], note.box.bottom_left[0])
@@ -461,7 +395,9 @@ class SidecarCollector:
             candidate
             for candidate in self.stem_fragments
             if self._is_stem_seed_candidate(candidate, note)
-            and self._is_upward_repair_seed(candidate, note, x_tolerance, max_vertical_gap)
+            and self._is_stem_repair_seed(
+                candidate, note, x_tolerance, max_vertical_gap, direction
+            )
         ]
         if not candidates:
             return stem
@@ -492,8 +428,13 @@ class SidecarCollector:
             y_max = float(np.max(points[:, 1]))
             attachment_x = note_left if x_center < note.center[0] else note_right
             attachment_error = abs(x_center - attachment_x)
-            ends_near_note = max(note.center[1] - y_max, 0.0)
-            return (note.center[1] - y_min) - attachment_error * 2.0 - ends_near_note
+            if direction == StemRepairDirection.UP:
+                gap_from_note = max(note.center[1] - y_max, 0.0)
+                extension = note.center[1] - y_min
+            else:
+                gap_from_note = max(y_min - note.center[1], 0.0)
+                extension = y_max - note.center[1]
+            return extension - attachment_error * 2.0 - gap_from_note
 
         best_seed = max(candidates, key=score)
         if score(best_seed) <= max(notehead_height, 10.0):
@@ -506,8 +447,12 @@ class SidecarCollector:
         width = max(x_max - x_min, 1.0)
         x_center = float(np.mean(points[:, 0]))
         half_width = min(max(width / 2, 1.0), max(float(note.box.size[0]) * 0.25, 3.0))
-        y_min = float(np.min(points[:, 1]))
-        y_max = max(float(np.max(points[:, 1])), float(note.center[1]))
+        if direction == StemRepairDirection.UP:
+            y_min = float(np.min(points[:, 1]))
+            y_max = max(float(np.max(points[:, 1])), float(note.center[1]))
+        else:
+            y_min = min(float(np.min(points[:, 1])), float(note.center[1]))
+            y_max = float(np.max(points[:, 1]))
         contour = np.array(
             [
                 [[x_center - half_width, y_min]],
@@ -531,6 +476,19 @@ class SidecarCollector:
     def _needs_downward_stem_repair(
         self, note: Note, stem: RotatedBoundingBox | None
     ) -> bool:
+        return self._needs_stem_repair(note, stem, StemRepairDirection.DOWN)
+
+    def _needs_upward_stem_repair(
+        self, note: Note, stem: RotatedBoundingBox | None
+    ) -> bool:
+        return self._needs_stem_repair(note, stem, StemRepairDirection.UP)
+
+    def _needs_stem_repair(
+        self,
+        note: Note,
+        stem: RotatedBoundingBox | None,
+        direction: StemRepairDirection,
+    ) -> bool:
         if stem is None:
             return True
         points = np.asarray(stem.polygon, dtype=np.float32).reshape(-1, 2)
@@ -538,10 +496,14 @@ class SidecarCollector:
         top = float(np.min(points[:, 1]))
         bottom = float(np.max(points[:, 1]))
         notehead_height = max(float(note.box.size[1]), 1.0)
-        stem_looks_downward = stem.center[0] < note.center[0] or bottom > note.center[1]
-        return stem_looks_downward and (
-            height < max(1.5 * notehead_height, 18.0)
-            or top > note.center[1] + notehead_height * 0.35
+        if direction == StemRepairDirection.UP:
+            stem_looks_right_way = stem.center[0] >= note.center[0] or top < note.center[1]
+            has_bad_attachment = bottom < note.center[1] - notehead_height * 0.35
+        else:
+            stem_looks_right_way = stem.center[0] < note.center[0] or bottom > note.center[1]
+            has_bad_attachment = top > note.center[1] + notehead_height * 0.35
+        return stem_looks_right_way and (
+            height < max(1.5 * notehead_height, 18.0) or has_bad_attachment
         )
 
     def _is_downward_repair_seed(
@@ -551,31 +513,8 @@ class SidecarCollector:
         x_tolerance: float,
         max_vertical_gap: float,
     ) -> bool:
-        stem_top = min(stem.top_left[1], stem.top_right[1])
-        stem_bottom = max(stem.bottom_left[1], stem.bottom_right[1])
-        if stem_bottom <= note.center[1]:
-            return False
-        if stem_top > note.center[1] + max_vertical_gap:
-            return False
-        note_left = min(note.box.top_left[0], note.box.bottom_left[0])
-        note_right = max(note.box.top_right[0], note.box.bottom_right[0])
-        attachment_x = note_left if stem.center[0] < note.center[0] else note_right
-        return abs(stem.center[0] - attachment_x) <= x_tolerance
-
-    def _needs_upward_stem_repair(
-        self, note: Note, stem: RotatedBoundingBox | None
-    ) -> bool:
-        if stem is None:
-            return True
-        points = np.asarray(stem.polygon, dtype=np.float32).reshape(-1, 2)
-        height = float(np.max(points[:, 1]) - np.min(points[:, 1]))
-        top = float(np.min(points[:, 1]))
-        bottom = float(np.max(points[:, 1]))
-        notehead_height = max(float(note.box.size[1]), 1.0)
-        stem_looks_upward = stem.center[0] >= note.center[0] or top < note.center[1]
-        return stem_looks_upward and (
-            height < max(1.5 * notehead_height, 18.0)
-            or bottom < note.center[1] - notehead_height * 0.35
+        return self._is_stem_repair_seed(
+            stem, note, x_tolerance, max_vertical_gap, StemRepairDirection.DOWN
         )
 
     def _is_upward_repair_seed(
@@ -585,12 +524,30 @@ class SidecarCollector:
         x_tolerance: float,
         max_vertical_gap: float,
     ) -> bool:
+        return self._is_stem_repair_seed(
+            stem, note, x_tolerance, max_vertical_gap, StemRepairDirection.UP
+        )
+
+    def _is_stem_repair_seed(
+        self,
+        stem: RotatedBoundingBox,
+        note: Note,
+        x_tolerance: float,
+        max_vertical_gap: float,
+        direction: StemRepairDirection,
+    ) -> bool:
         stem_top = min(stem.top_left[1], stem.top_right[1])
         stem_bottom = max(stem.bottom_left[1], stem.bottom_right[1])
-        if stem_top >= note.center[1]:
-            return False
-        if stem_bottom < note.center[1] - max_vertical_gap:
-            return False
+        if direction == StemRepairDirection.UP:
+            if stem_top >= note.center[1]:
+                return False
+            if stem_bottom < note.center[1] - max_vertical_gap:
+                return False
+        else:
+            if stem_bottom <= note.center[1]:
+                return False
+            if stem_top > note.center[1] + max_vertical_gap:
+                return False
         note_left = min(note.box.top_left[0], note.box.bottom_left[0])
         note_right = max(note.box.top_right[0], note.box.bottom_right[0])
         attachment_x = note_left if stem.center[0] < note.center[0] else note_right
