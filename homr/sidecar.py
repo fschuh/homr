@@ -279,9 +279,8 @@ class SidecarCollector:
 
     def _sidecar_stem_for_note(self, note: Note) -> RotatedBoundingBox | None:
         seed = self._best_sidecar_stem_seed(note)
-        if seed is None:
-            return None
-        return self._merge_sidecar_stem_fragments(note, seed)
+        stem = self._merge_sidecar_stem_fragments(note, seed) if seed is not None else None
+        return self._repair_downward_sidecar_stem(note, stem)
 
     def _best_sidecar_stem_seed(self, note: Note) -> RotatedBoundingBox | None:
         if len(self.stem_fragments) == 0:
@@ -354,6 +353,134 @@ class SidecarCollector:
         if not self._is_stem_like_fragment(merged, note):
             return seed
         return merged
+
+    def _repair_downward_sidecar_stem(
+        self, note: Note, stem: RotatedBoundingBox | None
+    ) -> RotatedBoundingBox | None:
+        if len(self.stem_fragments) == 0:
+            return stem
+        if not self._needs_downward_stem_repair(note, stem):
+            return stem
+
+        note_left = min(note.box.top_left[0], note.box.bottom_left[0])
+        note_right = max(note.box.top_right[0], note.box.bottom_right[0])
+        notehead_height = max(float(note.box.size[1]), 1.0)
+        x_tolerance = max(4.0, float(note.box.size[0]) * 0.6)
+        max_vertical_gap = notehead_height * 5
+
+        candidates = [
+            candidate
+            for candidate in self.stem_fragments
+            if self._is_stem_seed_candidate(candidate, note)
+            and self._is_downward_repair_seed(candidate, note, x_tolerance, max_vertical_gap)
+        ]
+        if not candidates:
+            return stem
+
+        def chain_from(seed: RotatedBoundingBox) -> list[RotatedBoundingBox]:
+            fragments = [seed]
+            changed = True
+            while changed:
+                changed = False
+                for candidate in self.stem_fragments:
+                    if candidate in fragments:
+                        continue
+                    if not self._is_stem_seed_candidate(candidate, note):
+                        continue
+                    if not self._is_collinear_stem_fragment(
+                        candidate, fragments, x_tolerance, max_vertical_gap
+                    ):
+                        continue
+                    fragments.append(candidate)
+                    changed = True
+            return fragments
+
+        def score(seed: RotatedBoundingBox) -> float:
+            fragments = chain_from(seed)
+            points = np.concatenate([fragment.polygon.reshape(-1, 2) for fragment in fragments])
+            x_center = float(np.mean(points[:, 0]))
+            y_min = float(np.min(points[:, 1]))
+            y_max = float(np.max(points[:, 1]))
+            attachment_x = note_left if x_center < note.center[0] else note_right
+            attachment_error = abs(x_center - attachment_x)
+            starts_near_note = max(y_min - note.center[1], 0.0)
+            return (y_max - note.center[1]) - attachment_error * 2.0 - starts_near_note
+
+        best_seed = max(candidates, key=score)
+        if score(best_seed) <= max(notehead_height, 10.0):
+            return stem
+
+        fragments = chain_from(best_seed)
+        points = np.concatenate([fragment.polygon.reshape(-1, 2) for fragment in fragments])
+        x_min = float(np.min(points[:, 0]))
+        x_max = float(np.max(points[:, 0]))
+        width = max(x_max - x_min, 1.0)
+        x_center = float(np.mean(points[:, 0]))
+        half_width = min(max(width / 2, 1.0), max(float(note.box.size[0]) * 0.25, 3.0))
+        y_min = min(float(np.min(points[:, 1])), float(note.center[1]))
+        y_max = float(np.max(points[:, 1]))
+        contour = np.array(
+            [
+                [[x_center - half_width, y_min]],
+                [[x_center + half_width, y_min]],
+                [[x_center + half_width, y_max]],
+                [[x_center - half_width, y_max]],
+            ],
+            dtype=np.float32,
+        )
+        repaired = RotatedBoundingBox(
+            cv2.minAreaRect(contour),
+            contour,
+            stem.debug_id if stem is not None else best_seed.debug_id,
+        )
+        if not self._is_stem_like_fragment(repaired, note):
+            return stem
+        if stem is not None and not self._is_repaired_stem_better(note, stem, repaired):
+            return stem
+        return repaired
+
+    def _needs_downward_stem_repair(
+        self, note: Note, stem: RotatedBoundingBox | None
+    ) -> bool:
+        if stem is None:
+            return True
+        points = np.asarray(stem.polygon, dtype=np.float32).reshape(-1, 2)
+        height = float(np.max(points[:, 1]) - np.min(points[:, 1]))
+        top = float(np.min(points[:, 1]))
+        bottom = float(np.max(points[:, 1]))
+        notehead_height = max(float(note.box.size[1]), 1.0)
+        stem_looks_downward = stem.center[0] < note.center[0] or bottom > note.center[1]
+        return stem_looks_downward and (
+            height < max(1.5 * notehead_height, 18.0)
+            or top > note.center[1] + notehead_height * 0.35
+        )
+
+    def _is_downward_repair_seed(
+        self,
+        stem: RotatedBoundingBox,
+        note: Note,
+        x_tolerance: float,
+        max_vertical_gap: float,
+    ) -> bool:
+        stem_top = min(stem.top_left[1], stem.top_right[1])
+        stem_bottom = max(stem.bottom_left[1], stem.bottom_right[1])
+        if stem_bottom <= note.center[1]:
+            return False
+        if stem_top > note.center[1] + max_vertical_gap:
+            return False
+        note_left = min(note.box.top_left[0], note.box.bottom_left[0])
+        note_right = max(note.box.top_right[0], note.box.bottom_right[0])
+        attachment_x = note_left if stem.center[0] < note.center[0] else note_right
+        return abs(stem.center[0] - attachment_x) <= x_tolerance
+
+    def _is_repaired_stem_better(
+        self, note: Note, current: RotatedBoundingBox, repaired: RotatedBoundingBox
+    ) -> bool:
+        current_points = np.asarray(current.polygon, dtype=np.float32).reshape(-1, 2)
+        repaired_points = np.asarray(repaired.polygon, dtype=np.float32).reshape(-1, 2)
+        current_height = float(np.max(current_points[:, 1]) - np.min(current_points[:, 1]))
+        repaired_height = float(np.max(repaired_points[:, 1]) - np.min(repaired_points[:, 1]))
+        return repaired_height >= current_height + max(float(note.box.size[1]) * 0.5, 4.0)
 
     def _is_stem_seed_candidate(self, stem: RotatedBoundingBox, note: Note) -> bool:
         points = np.asarray(stem.polygon, dtype=np.float32).reshape(-1, 2)
