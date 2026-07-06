@@ -443,6 +443,106 @@ class TestSidecar(unittest.TestCase):
         self.assertGreater(max(ys), 100)
         self.assertEqual(original.stem, short_piece)
 
+    def test_sidecar_repairs_missing_upward_stem_from_nearby_chain(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        notehead = BoundingEllipse(((50, 50), (14, 12), 0), np.array([[43, 44], [57, 56]]))
+        seed = RotatedBoundingBox(((57, 34), (1, 16), 0), np.array([[57, 26], [58, 42]]))
+        continuation = RotatedBoundingBox(
+            ((57, 12), (2, 28), 0), np.array([[56, -2], [58, 26]])
+        )
+        collector = SidecarCollector(metadata, [seed, continuation])
+        original = Note(
+            notehead,
+            position=4,
+            stem=None,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        contour = collector.to_json_dict()["visual_groups"][0]["stem_contours"][0]
+        xs = [point[0] for point in contour]
+        ys = [point[1] for point in contour]
+
+        self.assertGreater(min(xs), notehead.center[0])
+        self.assertGreaterEqual(max(ys), notehead.center[1])
+        self.assertGreater(max(ys) - min(ys), 45)
+        self.assertIsNone(original.stem)
+
+    def test_sidecar_bridges_disconnected_upward_stem_to_notehead(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        notehead = BoundingEllipse(((50, 50), (14, 12), 0), np.array([[43, 44], [57, 56]]))
+        disconnected = RotatedBoundingBox(
+            ((57, 28), (1, 28), 0), np.array([[57, 14], [58, 42]])
+        )
+        continuation = RotatedBoundingBox(
+            ((57, 4), (2, 20), 0), np.array([[56, -6], [58, 14]])
+        )
+        collector = SidecarCollector(metadata, [disconnected, continuation])
+        original = Note(
+            notehead,
+            position=4,
+            stem=disconnected,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        contour = collector.to_json_dict()["visual_groups"][0]["stem_contours"][0]
+        ys = [point[1] for point in contour]
+
+        self.assertLess(min(ys), 0)
+        self.assertGreaterEqual(max(ys), notehead.center[1])
+        self.assertEqual(original.stem, disconnected)
+
+    def test_sidecar_extends_short_bottom_piece_to_upward_chain(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(140, 140),
+            autocrop_box=(0, 0, 140, 140),
+            cropped_size=(140, 140),
+            resized_size=(140, 140),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 140),
+        )
+        notehead = BoundingEllipse(((50, 50), (14, 12), 0), np.array([[43, 44], [57, 56]]))
+        short_piece = RotatedBoundingBox(
+            ((57, 40), (1, 8), 0), np.array([[57, 36], [58, 44]])
+        )
+        continuation = RotatedBoundingBox(
+            ((57, 6), (2, 16), 0), np.array([[56, -2], [58, 14]])
+        )
+        collector = SidecarCollector(metadata, [short_piece, continuation])
+        original = Note(
+            notehead,
+            position=4,
+            stem=short_piece,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        contour = collector.to_json_dict()["visual_groups"][0]["stem_contours"][0]
+        ys = [point[1] for point in contour]
+
+        self.assertLess(min(ys), 0)
+        self.assertGreaterEqual(max(ys), notehead.center[1])
+        self.assertGreater(max(ys) - min(ys), 50)
+        self.assertEqual(original.stem, short_piece)
+
     def _musicxml_note_ids(self, xml: object) -> list[str]:
         ids = []
 
