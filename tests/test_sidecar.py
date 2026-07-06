@@ -274,6 +274,43 @@ class TestSidecar(unittest.TestCase):
         self.assertLess(max(xs) - min(xs), 10)
         self.assertEqual(original.stem, stem)
 
+    def test_sidecar_replaces_tiny_bad_seed_with_nearby_vertical_seed(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        notehead = BoundingEllipse(((50, 50), (14, 12), 0), np.array([[43, 44], [57, 56]]))
+        tiny_bad_seed = RotatedBoundingBox(
+            ((56, 57), (2, 1), 0), np.array([[55, 57], [57, 58]])
+        )
+        better_seed = RotatedBoundingBox(
+            ((43, 59), (1, 10), 0), np.array([[43, 54], [44, 64]])
+        )
+        continuation = RotatedBoundingBox(
+            ((43, 82), (2, 36), 0), np.array([[42, 64], [44, 100]])
+        )
+        collector = SidecarCollector(metadata, [tiny_bad_seed, better_seed, continuation])
+        original = Note(
+            notehead,
+            position=4,
+            stem=tiny_bad_seed,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        contour = collector.to_json_dict()["visual_groups"][0]["stem_contours"][0]
+        xs = [point[0] for point in contour]
+        ys = [point[1] for point in contour]
+
+        self.assertLess(max(xs), notehead.center[0])
+        self.assertGreater(max(ys) - min(ys), 40)
+        self.assertEqual(original.stem, tiny_bad_seed)
+
     def _musicxml_note_ids(self, xml: object) -> list[str]:
         ids = []
 

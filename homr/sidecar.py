@@ -147,8 +147,8 @@ class SidecarCollector:
                 continue
             notehead_contour = self.metadata.prediction_contour_to_source(original.box.polygon)
             stem_contours = []
-            if original.stem is not None:
-                stem = self._merge_sidecar_stem_fragments(original)
+            stem = self._sidecar_stem_for_note(original)
+            if stem is not None:
                 stem_contours.append(
                     self.metadata.prediction_contour_to_source(stem.polygon)
                 )
@@ -277,16 +277,60 @@ class SidecarCollector:
             return None
         return contour + np.array([[[left, top]]])
 
-    def _merge_sidecar_stem_fragments(self, note: Note) -> RotatedBoundingBox:
-        if note.stem is None or len(self.stem_fragments) == 0:
-            if note.stem is None:
-                raise ValueError("Cannot merge stem fragments for a note without a stem")
+    def _sidecar_stem_for_note(self, note: Note) -> RotatedBoundingBox | None:
+        seed = self._best_sidecar_stem_seed(note)
+        if seed is None:
+            return None
+        return self._merge_sidecar_stem_fragments(note, seed)
+
+    def _best_sidecar_stem_seed(self, note: Note) -> RotatedBoundingBox | None:
+        if len(self.stem_fragments) == 0:
             return note.stem
+
+        candidates = [
+            stem
+            for stem in self.stem_fragments
+            if self._is_stem_seed_candidate(stem, note)
+            and stem.is_overlapping(note.box.make_box_thicker(20))
+        ]
+        if note.stem is not None and self._is_stem_seed_candidate(note.stem, note):
+            candidates.append(note.stem)
+        if not candidates:
+            return note.stem
+
+        def score(stem: RotatedBoundingBox) -> float:
+            note_left = min(note.box.top_left[0], note.box.bottom_left[0])
+            note_right = max(note.box.top_right[0], note.box.bottom_right[0])
+            note_center_x, note_center_y = note.center
+            stem_top = min(stem.top_left[1], stem.top_right[1])
+            stem_bottom = max(stem.bottom_left[1], stem.bottom_right[1])
+            stem_x = stem.center[0]
+            if stem_x >= note_center_x:
+                attachment_error = abs(stem_x - note_right)
+                extension = note_center_y - stem_top
+            else:
+                attachment_error = abs(stem_x - note_left)
+                extension = stem_bottom - note_center_y
+            height_bonus = max(stem_bottom - stem_top, 0) * 0.15
+            return float(extension + height_bonus - 2.0 * attachment_error)
+
+        current_score = score(note.stem) if note.stem is not None else float("-inf")
+        best = max(candidates, key=score)
+        improvement_needed = max(float(note.box.size[1]) * 0.5, 4.0)
+        if best is not note.stem and score(best) < current_score + improvement_needed:
+            return note.stem
+        return best if score(best) > 0 else note.stem
+
+    def _merge_sidecar_stem_fragments(
+        self, note: Note, seed: RotatedBoundingBox
+    ) -> RotatedBoundingBox:
+        if len(self.stem_fragments) == 0:
+            return seed
 
         notehead_height = max(float(note.box.size[1]), 1.0)
         x_tolerance = max(4.0, float(note.box.size[0]) * 0.6)
         max_vertical_gap = notehead_height * 3
-        fragments = [note.stem]
+        fragments = [seed]
         changed = True
         while changed:
             changed = False
@@ -303,13 +347,25 @@ class SidecarCollector:
                 changed = True
 
         if len(fragments) == 1:
-            return note.stem
+            return seed
 
         contour = np.concatenate([fragment.polygon.reshape(-1, 1, 2) for fragment in fragments])
-        merged = RotatedBoundingBox(cv2.minAreaRect(contour), contour, note.stem.debug_id)
+        merged = RotatedBoundingBox(cv2.minAreaRect(contour), contour, seed.debug_id)
         if not self._is_stem_like_fragment(merged, note):
-            return note.stem
+            return seed
         return merged
+
+    def _is_stem_seed_candidate(self, stem: RotatedBoundingBox, note: Note) -> bool:
+        points = np.asarray(stem.polygon, dtype=np.float32).reshape(-1, 2)
+        width = float(np.max(points[:, 0]) - np.min(points[:, 0]))
+        height = float(np.max(points[:, 1]) - np.min(points[:, 1]))
+        notehead_width = max(float(note.box.size[0]), 1.0)
+        notehead_height = max(float(note.box.size[1]), 1.0)
+        max_width = max(8.0, notehead_width * 0.75)
+        return (
+            width <= max_width
+            and height >= max(2.0 * max(width, 1.0), notehead_height * 0.45)
+        )
 
     def _is_stem_like_fragment(self, stem: RotatedBoundingBox, note: Note) -> bool:
         points = np.asarray(stem.polygon, dtype=np.float32).reshape(-1, 2)
