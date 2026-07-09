@@ -94,6 +94,7 @@ class VisualGroup:
     transformer_center: tuple[float, float] | None
     notehead_ellipses: list[dict[str, Any]]
     notehead_contours: list[list[list[float]]]
+    detected_stem_contours: list[list[list[float]]]
     stem_contours: list[list[list[float]]]
     linked_musicxml_ids: list[str] = field(default_factory=list)
 
@@ -152,6 +153,11 @@ class SidecarCollector:
             if original.visual_id is None:
                 continue
             notehead_contour = self.metadata.prediction_contour_to_source(original.box.polygon)
+            detected_stem_contours = []
+            if original.stem is not None:
+                detected_stem_contours.append(
+                    self.metadata.prediction_contour_to_source(original.stem.contours)
+                )
             stem_contours = []
             stem = self._sidecar_stem_for_note(original)
             if stem is not None:
@@ -168,9 +174,20 @@ class SidecarCollector:
                     self._notehead_ellipse_for_sidecar(original)
                 ],
                 notehead_contours=[notehead_contour],
+                detected_stem_contours=detected_stem_contours,
                 stem_contours=stem_contours,
             )
             self.unmatched_visual_notes.add(original.visual_id)
+
+    def _raw_stem_contours_for_output(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "debug_id": stem.debug_id,
+                "contour": self.metadata.prediction_contour_to_source(stem.contours),
+                "bbox": self.metadata.prediction_contour_to_source(stem.polygon),
+            }
+            for stem in self.stem_fragments
+        ]
 
     def add_staff_matches(self, symbols: list[EncodedSymbol], staff_index: int) -> None:
         visual_groups = [
@@ -660,6 +677,7 @@ class SidecarCollector:
                 "prediction_size": list(self.metadata.prediction_size),
             },
             "notes": [record.__dict__ for record in self.musicxml_notes],
+            "raw_stem_contours": self._raw_stem_contours_for_output(),
             "visual_groups": [
                 {
                     "visual_group_id": group.visual_id,
@@ -678,6 +696,7 @@ class SidecarCollector:
                         group, typical_angles_by_staff.get(group.staff_index)
                     ),
                     "notehead_contours": group.notehead_contours,
+                    "detected_stem_contours": group.detected_stem_contours,
                     "stem_contours": group.stem_contours,
                     "musicxml_ids": group.linked_musicxml_ids,
                 }

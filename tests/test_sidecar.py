@@ -211,10 +211,20 @@ class TestSidecar(unittest.TestCase):
         transformed = original.copy()
 
         collector.add_staff_visual_notes(0, [original], [transformed])
-        contour = collector.to_json_dict()["visual_groups"][0]["stem_contours"][0]
+        sidecar = collector.to_json_dict()
+        group = sidecar["visual_groups"][0]
+        contour = group["stem_contours"][0]
         height = max(point[1] for point in contour) - min(point[1] for point in contour)
 
         self.assertGreater(height, lower_fragment.size[1] + 15)
+        self.assertEqual(group["detected_stem_contours"], [[[55, 37], [57, 51]]])
+        self.assertEqual(
+            [stem["contour"] for stem in sidecar["raw_stem_contours"]],
+            [
+                [[55, 37], [57, 51]],
+                [[55, 6], [57, 30]],
+            ],
+        )
         self.assertEqual(original.stem, lower_fragment)
 
     def test_sidecar_stem_merge_rejects_wide_beam_fragment(self) -> None:
