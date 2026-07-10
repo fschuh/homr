@@ -1,4 +1,5 @@
 import json
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -132,6 +133,12 @@ class VisualMatch:
     confidence: float
 
 
+@dataclass
+class StemOwnershipCache:
+    component_by_fragment_id: dict[int, int]
+    owner_note_ids_by_component: dict[int, set[int]]
+
+
 class VisualSidecar:
     def __init__(
         self,
@@ -145,6 +152,7 @@ class VisualSidecar:
         self.notehead_mask = notehead_mask
         self.notehead_candidates = notehead_candidates or []
         self._recovery_notes_by_staff_id: dict[int, list[Note]] = {}
+        self._stem_ownership_cache: StemOwnershipCache | None = None
         self.visual_groups: dict[str, VisualGroup] = {}
         self.matches_by_symbol_id: dict[int, VisualMatch] = {}
         self.musicxml_notes: list[MusicXmlNoteRecord] = []
@@ -227,6 +235,13 @@ class VisualSidecar:
                         visual_id,
                     )
                 )
+        all_visual_notes = [note for staff in staffs for note in staff.get_notes()]
+        all_visual_notes.extend(
+            note
+            for recovered in self._recovery_notes_by_staff_id.values()
+            for note in recovered
+        )
+        self._stem_ownership_cache = self._build_stem_ownership_cache(all_visual_notes)
 
     def recovery_notes_for_staff(self, staff: Staff) -> list[Note]:
         return self._recovery_notes_by_staff_id.get(id(staff), [])
@@ -234,6 +249,9 @@ class VisualSidecar:
     def add_staff_visual_notes(
         self, staff_index: int, original_notes: list[Note], transformed_notes: list[Note]
     ) -> None:
+        stem_ownership = self._stem_ownership_cache or self._build_stem_ownership_cache(
+            original_notes
+        )
         for original, transformed in zip(original_notes, transformed_notes, strict=False):
             if original.visual_id is None:
                 continue
@@ -244,7 +262,7 @@ class VisualSidecar:
                     self.metadata.prediction_contour_to_source(original.stem.contours)
                 )
             stem_contours = []
-            stem = self._visual_sidecar_stem_for_note(original)
+            stem = self._visual_sidecar_stem_for_note(original, stem_ownership)
             if stem is not None:
                 stem_contours.append(
                     self.metadata.prediction_contour_to_source(stem.polygon)
@@ -385,22 +403,153 @@ class VisualSidecar:
             return None
         return contour + np.array([[[left, top]]])
 
-    def _visual_sidecar_stem_for_note(self, note: Note) -> RotatedBoundingBox | None:
-        seed = self._best_visual_sidecar_stem_seed(note)
-        stem = self._merge_visual_sidecar_stem_fragments(note, seed) if seed is not None else None
+    def _visual_sidecar_stem_for_note(
+        self, note: Note, stem_ownership: StemOwnershipCache
+    ) -> RotatedBoundingBox | None:
+        stem_fragments = self._available_stem_fragments_for_note(note, stem_ownership)
+        seed = self._best_visual_sidecar_stem_seed(note, stem_fragments)
+        stem = (
+            self._merge_visual_sidecar_stem_fragments(note, seed, stem_fragments)
+            if seed is not None
+            else None
+        )
         if stem is not None and stem.center[0] >= note.center[0]:
-            stem = self._repair_upward_visual_sidecar_stem(note, stem)
-            return self._repair_downward_visual_sidecar_stem(note, stem)
-        stem = self._repair_downward_visual_sidecar_stem(note, stem)
-        return self._repair_upward_visual_sidecar_stem(note, stem)
+            stem = self._repair_upward_visual_sidecar_stem(note, stem, stem_fragments)
+            return self._repair_downward_visual_sidecar_stem(note, stem, stem_fragments)
+        stem = self._repair_downward_visual_sidecar_stem(note, stem, stem_fragments)
+        return self._repair_upward_visual_sidecar_stem(note, stem, stem_fragments)
 
-    def _best_visual_sidecar_stem_seed(self, note: Note) -> RotatedBoundingBox | None:
-        if len(self.stem_fragments) == 0:
+    def _available_stem_fragments_for_note(
+        self, note: Note, stem_ownership: StemOwnershipCache
+    ) -> list[RotatedBoundingBox]:
+        note_id = id(note)
+        x_radius = max(20.0, float(note.box.size[0]) * 1.25)
+        return [
+            stem
+            for stem in self.stem_fragments
+            if abs(stem.center[0] - note.center[0]) <= x_radius
+            if not (
+                owners := stem_ownership.owner_note_ids_by_component.get(
+                    stem_ownership.component_by_fragment_id[id(stem)], set()
+                )
+            )
+            or note_id in owners
+        ]
+
+    def _build_stem_ownership_cache(
+        self, notes: list[Note]
+    ) -> StemOwnershipCache:
+        if not self.stem_fragments:
+            return StemOwnershipCache({}, {})
+
+        widths = [float(note.box.size[0]) for note in notes]
+        heights = [float(note.box.size[1]) for note in notes]
+        x_tolerance = max(4.0, float(np.median(widths)) * 0.6) if widths else 4.0
+        max_vertical_gap = max(4.0, float(np.median(heights))) if heights else 4.0
+
+        parent = list(range(len(self.stem_fragments)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(first: int, second: int) -> None:
+            first_root = find(first)
+            second_root = find(second)
+            if first_root != second_root:
+                parent[second_root] = first_root
+
+        sorted_indices = sorted(
+            range(len(self.stem_fragments)),
+            key=lambda index: self.stem_fragments[index].center[0],
+        )
+        for position, first_index in enumerate(sorted_indices):
+            first = self.stem_fragments[first_index]
+            next_position = position + 1
+            while next_position < len(sorted_indices):
+                second_index = sorted_indices[next_position]
+                second = self.stem_fragments[second_index]
+                if second.center[0] - first.center[0] > x_tolerance:
+                    break
+                if self._is_collinear_stem_fragment(
+                    second, [first], x_tolerance, max_vertical_gap
+                ):
+                    union(first_index, second_index)
+                next_position += 1
+
+        component_by_fragment_id = {
+            id(stem): find(index) for index, stem in enumerate(self.stem_fragments)
+        }
+        owner_note_ids_by_component: dict[int, set[int]] = {}
+        notes_by_x = sorted(notes, key=lambda note: note.center[0])
+        note_xs = [note.center[0] for note in notes_by_x]
+        max_note_half_width = max(
+            (float(note.box.size[0]) / 2 for note in notes_by_x), default=0.0
+        )
+        for index, stem in enumerate(self.stem_fragments):
+            component = find(index)
+            owners = owner_note_ids_by_component.setdefault(component, set())
+            stem_bounds = self._stem_bounds(stem)
+            x_padding = max_note_half_width + 2.0
+            first_note = bisect_left(note_xs, stem_bounds[0] - x_padding)
+            last_note = bisect_right(note_xs, stem_bounds[1] + x_padding)
+            for note in notes_by_x[first_note:last_note]:
+                if self._stem_bounds_touch_notehead(stem_bounds, note) or (
+                    note.stem is not None and self._same_stem_fragment(stem, note.stem)
+                ):
+                    owners.add(id(note))
+
+        return StemOwnershipCache(component_by_fragment_id, owner_note_ids_by_component)
+
+    def _same_stem_fragment(
+        self, first: RotatedBoundingBox, second: RotatedBoundingBox
+    ) -> bool:
+        return first is second or (
+            np.allclose(first.center, second.center, atol=1.0)
+            and np.allclose(first.size, second.size, atol=1.0)
+        )
+
+    def _stem_touches_notehead(self, stem: RotatedBoundingBox, note: Note) -> bool:
+        return self._stem_bounds_touch_notehead(self._stem_bounds(stem), note)
+
+    def _stem_bounds(
+        self, stem: RotatedBoundingBox
+    ) -> tuple[float, float, float, float]:
+        points = np.asarray(stem.polygon, dtype=np.float32).reshape(-1, 2)
+        return (
+            float(np.min(points[:, 0])),
+            float(np.max(points[:, 0])),
+            float(np.min(points[:, 1])),
+            float(np.max(points[:, 1])),
+        )
+
+    def _stem_bounds_touch_notehead(
+        self, stem_bounds: tuple[float, float, float, float], note: Note
+    ) -> bool:
+        stem_left, stem_right, stem_top, stem_bottom = stem_bounds
+        padding = 2.0
+        note_left = min(note.box.top_left[0], note.box.bottom_left[0])
+        note_right = max(note.box.top_right[0], note.box.bottom_right[0])
+        note_top = min(note.box.top_left[1], note.box.top_right[1])
+        note_bottom = max(note.box.bottom_left[1], note.box.bottom_right[1])
+        return (
+            stem_left <= note_right + padding
+            and stem_right >= note_left - padding
+            and stem_top <= note_bottom + padding
+            and stem_bottom >= note_top - padding
+        )
+
+    def _best_visual_sidecar_stem_seed(
+        self, note: Note, stem_fragments: list[RotatedBoundingBox]
+    ) -> RotatedBoundingBox | None:
+        if len(stem_fragments) == 0:
             return note.stem
 
         candidates = [
             stem
-            for stem in self.stem_fragments
+            for stem in stem_fragments
             if self._is_stem_seed_candidate(stem, note)
             and stem.is_overlapping(note.box.make_box_thicker(20))
         ]
@@ -433,9 +582,12 @@ class VisualSidecar:
         return best if score(best) > 0 else note.stem
 
     def _merge_visual_sidecar_stem_fragments(
-        self, note: Note, seed: RotatedBoundingBox
+        self,
+        note: Note,
+        seed: RotatedBoundingBox,
+        stem_fragments: list[RotatedBoundingBox],
     ) -> RotatedBoundingBox:
-        if len(self.stem_fragments) == 0:
+        if len(stem_fragments) == 0:
             return seed
 
         notehead_height = max(float(note.box.size[1]), 1.0)
@@ -445,7 +597,7 @@ class VisualSidecar:
         changed = True
         while changed:
             changed = False
-            for candidate in self.stem_fragments:
+            for candidate in stem_fragments:
                 if candidate in fragments:
                     continue
                 if not self._is_stem_like_fragment(candidate, note):
@@ -467,22 +619,33 @@ class VisualSidecar:
         return merged
 
     def _repair_downward_visual_sidecar_stem(
-        self, note: Note, stem: RotatedBoundingBox | None
+        self,
+        note: Note,
+        stem: RotatedBoundingBox | None,
+        stem_fragments: list[RotatedBoundingBox],
     ) -> RotatedBoundingBox | None:
-        return self._repair_visual_sidecar_stem(note, stem, StemRepairDirection.DOWN)
+        return self._repair_visual_sidecar_stem(
+            note, stem, StemRepairDirection.DOWN, stem_fragments
+        )
 
     def _repair_upward_visual_sidecar_stem(
-        self, note: Note, stem: RotatedBoundingBox | None
+        self,
+        note: Note,
+        stem: RotatedBoundingBox | None,
+        stem_fragments: list[RotatedBoundingBox],
     ) -> RotatedBoundingBox | None:
-        return self._repair_visual_sidecar_stem(note, stem, StemRepairDirection.UP)
+        return self._repair_visual_sidecar_stem(
+            note, stem, StemRepairDirection.UP, stem_fragments
+        )
 
     def _repair_visual_sidecar_stem(
         self,
         note: Note,
         stem: RotatedBoundingBox | None,
         direction: StemRepairDirection,
+        stem_fragments: list[RotatedBoundingBox],
     ) -> RotatedBoundingBox | None:
-        if len(self.stem_fragments) == 0:
+        if len(stem_fragments) == 0:
             return stem
         if not self._needs_stem_repair(note, stem, direction):
             return stem
@@ -495,7 +658,7 @@ class VisualSidecar:
 
         candidates = [
             candidate
-            for candidate in self.stem_fragments
+            for candidate in stem_fragments
             if self._is_stem_seed_candidate(candidate, note)
             and self._is_stem_repair_seed(
                 candidate, note, x_tolerance, max_vertical_gap, direction
@@ -509,7 +672,7 @@ class VisualSidecar:
             changed = True
             while changed:
                 changed = False
-                for candidate in self.stem_fragments:
+                for candidate in stem_fragments:
                     if candidate in fragments:
                         continue
                     if not self._is_stem_seed_candidate(candidate, note):

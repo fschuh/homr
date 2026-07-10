@@ -388,6 +388,46 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertGreater(max(ys) - min(ys), 45)
         self.assertIsNone(original.stem)
 
+    def test_visual_sidecar_does_not_borrow_disconnected_peer_stem(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        top_notehead = BoundingEllipse(
+            ((50, 50), (14, 12), 0), np.array([[43, 44], [57, 56]])
+        )
+        bottom_notehead = BoundingEllipse(
+            ((50, 72), (14, 12), 0), np.array([[43, 66], [57, 78]])
+        )
+        detected_bottom_stem = RotatedBoundingBox(
+            ((43, 72), (2, 12), 0), np.array([[42, 66], [44, 78]])
+        )
+        bottom_continuation = RotatedBoundingBox(
+            ((43, 92), (2, 28), 0), np.array([[42, 78], [44, 106]])
+        )
+        collector = VisualSidecar(metadata, [detected_bottom_stem, bottom_continuation])
+        top_note = Note(top_notehead, 8, None, None, "vnote-top")
+        bottom_note = Note(
+            bottom_notehead, 4, detected_bottom_stem, None, "vnote-bottom"
+        )
+
+        collector.add_staff_visual_notes(
+            0,
+            [top_note, bottom_note],
+            [top_note.copy(), bottom_note.copy()],
+        )
+        groups = {
+            group["visual_group_id"]: group
+            for group in collector.to_json_dict()["visual_groups"]
+        }
+
+        self.assertEqual(groups["vnote-top"]["stem_contours"], [])
+        self.assertNotEqual(groups["vnote-bottom"]["stem_contours"], [])
+
     def test_visual_sidecar_bridges_disconnected_downward_stem_to_notehead(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
