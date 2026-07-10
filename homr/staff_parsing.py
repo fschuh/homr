@@ -156,8 +156,14 @@ def _calculate_region(staff: Staff, regions: StaffRegions) -> NDArray:
 
 
 def prepare_staff_image(
-    debug: Debug, index: int, staff: Staff, staff_image: NDArray, regions: StaffRegions
-) -> tuple[NDArray, Staff, Staff]:
+    debug: Debug,
+    index: int,
+    staff: Staff,
+    staff_image: NDArray,
+    regions: StaffRegions,
+    sidecar_notes: list[Note] | None = None,
+) -> tuple[NDArray, Staff, Staff, list[Note]]:
+    transformed_sidecar_notes = sidecar_notes or []
     region = _calculate_region(staff, regions)
     image_dimensions = get_tr_omr_canvas_size(
         (int(region[3] - region[1]), int(region[2] - region[0]))
@@ -174,6 +180,9 @@ def prepare_staff_image(
     region_step2 = np.array(region) - np.array([*top_left, *top_left])
     top_left = top_left / scaling_factor
     staff = _dewarp_staff(staff, None, top_left, scaling_factor)
+    transformed_sidecar_notes = _dewarp_notes(
+        transformed_sidecar_notes, None, top_left, scaling_factor
+    )
     dewarp = dewarp_staff_image(staff_image, staff, index, debug)
     staff_image = dewarp.dewarp(staff_image)
     staff_image, top_left = crop_image_and_return_new_top(staff_image, *region_step2)
@@ -186,8 +195,14 @@ def prepare_staff_image(
     canvas_scaling_y = image_dimensions[1] / staff_image.shape[0]
     canvas_y_offset = (tr_omr_max_height - image_dimensions[1]) // 2
     transformed_staff = _dewarp_staff(staff, dewarp, top_left, scaling_factor)
+    transformed_sidecar_notes = _dewarp_notes(
+        transformed_sidecar_notes, dewarp, top_left, scaling_factor
+    )
     transformed_staff = _transform_staff_for_canvas(
         transformed_staff, canvas_scaling_x, canvas_scaling_y, canvas_y_offset
+    )
+    transformed_sidecar_notes = _transform_notes_for_canvas(
+        transformed_sidecar_notes, canvas_scaling_x, canvas_scaling_y, canvas_y_offset
     )
     staff_image = center_image_on_canvas(staff_image, image_dimensions)
     debug.write_image_with_fixed_suffix(f"_staff-{index}_input.jpg", staff_image)
@@ -208,7 +223,7 @@ def prepare_staff_image(
         debug.write_image_with_fixed_suffix(
             f"_staff-{index}_debug_annotated.jpg", transformed_staff_image
         )
-    return staff_image, staff, transformed_staff
+    return staff_image, staff, transformed_staff, transformed_sidecar_notes
 
 
 def _transform_staff_for_canvas(
@@ -219,6 +234,16 @@ def _transform_staff_for_canvas(
         return x * scaling_x, y * scaling_y + y_offset
 
     return staff.transform_coordinates(transform_coordinates)
+
+
+def _transform_notes_for_canvas(
+    notes: list[Note], scaling_x: float, scaling_y: float, y_offset: int
+) -> list[Note]:
+    def transform_coordinates(point: tuple[float, float]) -> tuple[float, float]:
+        x, y = point
+        return x * scaling_x, y * scaling_y + y_offset
+
+    return [note.transform_coordinates(transform_coordinates) for note in notes]
 
 
 def _dewarp_staff(
@@ -241,6 +266,23 @@ def _dewarp_staff(
     return staff.transform_coordinates(transform_coordinates)
 
 
+def _dewarp_notes(
+    notes: list[Note],
+    dewarp: StaffDewarping | None,
+    region: NDArray,
+    scaling: float,
+) -> list[Note]:
+    def transform_coordinates(point: tuple[float, float]) -> tuple[float, float]:
+        x, y = point
+        x -= region[0]
+        y -= region[1]
+        if dewarp is not None:
+            x, y = dewarp.dewarp_point((x, y))
+        return x * scaling, y * scaling
+
+    return [note.transform_coordinates(transform_coordinates) for note in notes]
+
+
 def parse_staff_image(
     debug: Debug,
     index: int,
@@ -251,12 +293,24 @@ def parse_staff_image(
     visual_sidecar: VisualSidecar | None = None,
 ) -> list[EncodedSymbol]:
     original_notes = [symbol for symbol in staff.symbols if isinstance(symbol, Note)]
-    staff_image, transformed_staff, final_transformed_staff = prepare_staff_image(
-        debug, index, staff, image, regions=regions
+    sidecar_notes = (
+        visual_sidecar.recovery_notes_for_staff(staff)
+        if visual_sidecar is not None
+        else []
+    )
+    (
+        staff_image,
+        transformed_staff,
+        final_transformed_staff,
+        transformed_sidecar_notes,
+    ) = prepare_staff_image(
+        debug, index, staff, image, regions=regions, sidecar_notes=sidecar_notes
     )
     if visual_sidecar is not None:
         visual_sidecar.add_staff_visual_notes(
-            index, original_notes, final_transformed_staff.get_notes()
+            index,
+            original_notes + sidecar_notes,
+            final_transformed_staff.get_notes() + transformed_sidecar_notes,
         )
     eprint("Running TrOmr inference on staff image", index)
     result = parse_staff_tromr(staff_image=staff_image, staff=transformed_staff, config=config)
@@ -299,6 +353,10 @@ def parse_staffs(
     the rhythm and pitch information.
     """
     staffs = _ensure_same_number_of_staffs(staffs, image)
+    if visual_sidecar is not None:
+        visual_sidecar.prepare_recovery_notes(
+            [single_staff for multi_staff in staffs for single_staff in multi_staff.staffs]
+        )
     # For simplicity we call every staff in a multi staff a voice,
     # even if it's part of a grand staff.
     number_of_voices = _get_number_of_voices(staffs)

@@ -4,13 +4,47 @@ import cv2
 import numpy as np
 
 from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
-from homr.model import Note
+from homr.model import Note, Staff, StaffPoint
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
+from homr.note_detection import NoteheadWithStem
 from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar
 from homr.transformer.vocabulary import EncodedSymbol
 
 
 class TestVisualSidecar(unittest.TestCase):
+    def test_recovers_real_fifth_ledger_line_candidate_for_sidecar_only(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(200, 200),
+            autocrop_box=(0, 0, 200, 200),
+            cropped_size=(200, 200),
+            resized_size=(200, 200),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(200, 200),
+        )
+        staff = Staff(
+            [
+                StaffPoint(0, [100, 110, 120, 130, 140], 0),
+                StaffPoint(100, [100, 110, 120, 130, 140], 0),
+            ]
+        )
+        contour = cv2.ellipse2Poly((50, 50), (4, 3), 0, 0, 360, 10).reshape(-1, 1, 2)
+        notehead = BoundingEllipse(((50, 50), (8, 6), 0), contour, 1)
+        candidate = NoteheadWithStem(notehead, None)
+        existing_notehead = BoundingEllipse(
+            ((50, 100), (8, 6), 0), np.array([[46, 97], [54, 103]]), 2
+        )
+        existing_note = Note(existing_notehead, 9, None, None, "vnote-existing")
+        staff.add_symbol(existing_note)
+        collector = VisualSidecar(metadata, notehead_candidates=[candidate])
+
+        collector.prepare_recovery_notes([staff])
+        recovered = collector.recovery_notes_for_staff(staff)
+
+        self.assertEqual(len(recovered), 1)
+        self.assertIs(recovered[0].box, notehead)
+        self.assertEqual(recovered[0].center, (50, 50))
+        self.assertEqual(staff.symbols, [existing_note])
+
     def test_prediction_to_source_mapping_accounts_for_crop_and_resize(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(1000, 800),

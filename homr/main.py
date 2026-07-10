@@ -30,7 +30,7 @@ from homr.debug import Debug
 from homr.model import InputPredictions, MultiStaff
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
 from homr.noise_filtering import filter_predictions
-from homr.note_detection import add_notes_to_staffs, combine_noteheads_with_stems
+from homr.note_detection import NoteheadWithStem, add_notes_to_staffs, combine_noteheads_with_stems
 from homr.onnx_providers import coreml_available, cuda_available
 from homr.resize import resize_image_with_metadata
 from homr.segmentation.config import segnet_path_onnx, segnet_path_onnx_fp16
@@ -211,12 +211,20 @@ def process_image(
             )
             stem_fragments: list[RotatedBoundingBox] = []
             notehead_mask = None
+            notehead_candidates: list[NoteheadWithStem] = []
             title_future = Future()
             title_future.set_result("")
         else:
-            multi_staffs, image, debug, title_future, preprocessing, stem_fragments, notehead_mask = (
-                detect_staffs_in_image(image_path, config)
-            )
+            (
+                multi_staffs,
+                image,
+                debug,
+                title_future,
+                preprocessing,
+                stem_fragments,
+                notehead_mask,
+                notehead_candidates,
+            ) = detect_staffs_in_image(image_path, config)
         debug_cleanup = debug
 
         transformer_config = Config()
@@ -224,7 +232,12 @@ def process_image(
         transformer_config.use_coreml_encoder = config.coreml_encoder
 
         visual_sidecar = (
-            VisualSidecar(preprocessing, stem_fragments, notehead_mask)
+            VisualSidecar(
+                preprocessing,
+                stem_fragments,
+                notehead_mask,
+                notehead_candidates,
+            )
             if config.write_visual_sidecar
             else None
         )
@@ -275,6 +288,7 @@ def detect_staffs_in_image(
     PreprocessingMetadata,
     list[RotatedBoundingBox],
     NDArray,
+    list[NoteheadWithStem],
 ]:
     predictions, debug, preprocessing = load_and_preprocess_predictions(
         image_path, config.enable_debug, config.enable_cache, config.segnet_use_gpu
@@ -345,6 +359,7 @@ def detect_staffs_in_image(
         preprocessing,
         symbols.stems_rest,
         predictions.notehead,
+        noteheads_with_stems,
     )
 
 

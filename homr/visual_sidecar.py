@@ -8,7 +8,9 @@ import cv2
 import numpy as np
 
 from homr.bounding_boxes import RotatedBoundingBox
-from homr.model import Note
+from homr import constants
+from homr.model import Note, Staff
+from homr.note_detection import split_clumps_of_noteheads
 from homr.transformer.vocabulary import EncodedSymbol, sort_token_chords
 
 
@@ -136,15 +138,98 @@ class VisualSidecar:
         metadata: PreprocessingMetadata,
         stem_fragments: list[RotatedBoundingBox] | None = None,
         notehead_mask: Any | None = None,
+        notehead_candidates: list[Any] | None = None,
     ) -> None:
         self.metadata = metadata
         self.stem_fragments = stem_fragments or []
         self.notehead_mask = notehead_mask
+        self.notehead_candidates = notehead_candidates or []
+        self._recovery_notes_by_staff_id: dict[int, list[Note]] = {}
         self.visual_groups: dict[str, VisualGroup] = {}
         self.matches_by_symbol_id: dict[int, VisualMatch] = {}
         self.musicxml_notes: list[MusicXmlNoteRecord] = []
         self.unmatched_visual_notes: set[str] = set()
         self._next_musicxml_note_id = 1
+        self._next_recovered_visual_id = 1
+
+    def prepare_recovery_notes(self, staffs: list[Staff]) -> None:
+        """Assign real, inference-excluded candidates to their nearest staff.
+
+        These notes are used exclusively for sidecar geometry. They are never added to
+        ``staff.symbols`` and therefore cannot affect TrOMR inference or MusicXML output.
+        """
+        self._recovery_notes_by_staff_id = {id(staff): [] for staff in staffs}
+        existing_notes = [note for staff in staffs for note in staff.get_notes()]
+        for candidate in self.notehead_candidates:
+            notehead = candidate.notehead
+            eligible: list[Staff] = []
+            for staff in staffs:
+                if not staff.get_notes():
+                    continue
+                if not (
+                    staff.min_x - constants.staff_position_tolerance
+                    <= notehead.center[0]
+                    <= staff.max_x + constants.staff_position_tolerance
+                ):
+                    continue
+                sidecar_tolerance = (
+                    constants.max_number_of_ledger_lines + 1
+                ) * staff.average_unit_size
+                if (
+                    notehead.center[1] >= staff.min_y - sidecar_tolerance
+                    and notehead.center[1] <= staff.max_y + sidecar_tolerance
+                ):
+                    eligible.append(staff)
+            if not eligible:
+                continue
+            staff = min(
+                eligible,
+                key=lambda item: min(
+                    np.linalg.norm(np.subtract(note.center, notehead.center))
+                    for note in item.get_notes()
+                ),
+            )
+            split_candidates = (
+                split_clumps_of_noteheads(candidate, self.notehead_mask, staff)
+                if self.notehead_mask is not None
+                else [candidate]
+            )
+            for split_candidate in split_candidates:
+                split_notehead = split_candidate.notehead
+                if any(split_notehead.is_overlapping(note.box) for note in existing_notes):
+                    continue
+                point = staff.get_at(split_notehead.center[0])
+                unit_size = point.average_unit_size if point is not None else staff.average_unit_size
+                if (
+                    split_notehead.size[0] < 0.45 * unit_size
+                    # Keep the inference filter untouched. Sidecar recovery gets a
+                    # small allowance for mask contours that include ledger-line ink.
+                    or split_notehead.size[0] > 3.25 * unit_size
+                    or split_notehead.size[1] < 0.45 * unit_size
+                    or split_notehead.size[1] > 2 * unit_size
+                ):
+                    continue
+                if point is not None:
+                    position = point.find_position_in_unit_sizes(split_notehead)
+                else:
+                    nearest_point = min(
+                        staff.grid, key=lambda item: abs(item.x - split_notehead.center[0])
+                    )
+                    position = nearest_point.find_position_in_unit_sizes(split_notehead)
+                visual_id = f"vnote-recovered-{self._next_recovered_visual_id}"
+                self._next_recovered_visual_id += 1
+                self._recovery_notes_by_staff_id[id(staff)].append(
+                    Note(
+                        split_notehead,
+                        position,
+                        split_candidate.stem,
+                        split_candidate.stem_direction,
+                        visual_id,
+                    )
+                )
+
+    def recovery_notes_for_staff(self, staff: Staff) -> list[Note]:
+        return self._recovery_notes_by_staff_id.get(id(staff), [])
 
     def add_staff_visual_notes(
         self, staff_index: int, original_notes: list[Note], transformed_notes: list[Note]
