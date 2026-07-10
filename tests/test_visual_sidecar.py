@@ -146,6 +146,38 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertAlmostEqual(ellipse["ry"], 20, delta=0.5)
         self.assertAlmostEqual(ellipse["angle"], -30, delta=0.5)
 
+    def test_detected_notehead_contour_is_exported_alongside_legacy_polygon(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        detected_contour = np.array(
+            [[[46, 49]], [[48, 46]], [[53, 47]], [[55, 50]], [[52, 53]], [[47, 52]]],
+            dtype=np.int32,
+        )
+        mask = np.zeros((100, 100), dtype=np.uint8)
+        cv2.fillPoly(mask, [detected_contour], 1)
+        collector = VisualSidecar(metadata, notehead_mask=mask)
+        original = Note(
+            BoundingEllipse(((50, 50), (12, 8), 0), detected_contour, 1),
+            position=4,
+            stem=None,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        group = collector.to_json_dict()["visual_groups"][0]
+
+        self.assertIn("notehead_contours", group)
+        self.assertIn("detected_notehead_contours", group)
+        self.assertNotEqual(group["notehead_contours"], group["detected_notehead_contours"])
+        self.assertGreaterEqual(len(group["detected_notehead_contours"][0]), 5)
+
     def test_split_chord_notehead_keeps_split_geometry_when_mask_is_ambiguous(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(300, 300),

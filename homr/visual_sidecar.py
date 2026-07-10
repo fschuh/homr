@@ -97,6 +97,7 @@ class VisualGroup:
     transformer_center: tuple[float, float] | None
     notehead_ellipses: list[dict[str, Any]]
     notehead_contours: list[list[list[float]]]
+    detected_notehead_contours: list[list[list[float]]]
     detected_stem_contours: list[list[list[float]]]
     stem_contours: list[list[list[float]]]
     linked_musicxml_ids: list[str] = field(default_factory=list)
@@ -256,6 +257,7 @@ class VisualSidecar:
             if original.visual_id is None:
                 continue
             notehead_contour = self.metadata.prediction_contour_to_source(original.box.polygon)
+            detected_notehead_contour = self._detected_notehead_contour(original)
             detected_stem_contours = []
             if original.stem is not None:
                 detected_stem_contours.append(
@@ -277,10 +279,17 @@ class VisualSidecar:
                     self._notehead_ellipse_for_visual_sidecar(original)
                 ],
                 notehead_contours=[notehead_contour],
+                detected_notehead_contours=[detected_notehead_contour],
                 detected_stem_contours=detected_stem_contours,
                 stem_contours=stem_contours,
             )
             self.unmatched_visual_notes.add(original.visual_id)
+
+    def _detected_notehead_contour(self, note: Note) -> list[list[float]]:
+        """Return the segmentation contour while preserving the legacy polygon separately."""
+        mask_contour = self._notehead_mask_contour(note)
+        contour = mask_contour if mask_contour is not None else note.box.contours
+        return self.metadata.prediction_contour_to_source(contour)
 
     def _raw_stem_contours_for_output(self) -> list[dict[str, Any]]:
         return [
@@ -944,6 +953,7 @@ class VisualSidecar:
                         group, typical_angles_by_staff.get(group.staff_index)
                     ),
                     "notehead_contours": group.notehead_contours,
+                    "detected_notehead_contours": group.detected_notehead_contours,
                     "detected_stem_contours": group.detected_stem_contours,
                     "stem_contours": group.stem_contours,
                     "musicxml_ids": group.linked_musicxml_ids,
