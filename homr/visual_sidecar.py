@@ -130,7 +130,7 @@ class VisualMatch:
     confidence: float
 
 
-class SidecarCollector:
+class VisualSidecar:
     def __init__(
         self,
         metadata: PreprocessingMetadata,
@@ -159,7 +159,7 @@ class SidecarCollector:
                     self.metadata.prediction_contour_to_source(original.stem.contours)
                 )
             stem_contours = []
-            stem = self._sidecar_stem_for_note(original)
+            stem = self._visual_sidecar_stem_for_note(original)
             if stem is not None:
                 stem_contours.append(
                     self.metadata.prediction_contour_to_source(stem.polygon)
@@ -171,7 +171,7 @@ class SidecarCollector:
                 prediction_center=original.center,
                 transformer_center=transformed.center,
                 notehead_ellipses=[
-                    self._notehead_ellipse_for_sidecar(original)
+                    self._notehead_ellipse_for_visual_sidecar(original)
                 ],
                 notehead_contours=[notehead_contour],
                 detected_stem_contours=detected_stem_contours,
@@ -260,7 +260,7 @@ class SidecarCollector:
     def unmatched_musicxml_notes(self) -> list[str]:
         return [note.musicxml_id for note in self.musicxml_notes if note.visual_group_id is None]
 
-    def _notehead_ellipse_for_sidecar(self, note: Note) -> dict[str, Any]:
+    def _notehead_ellipse_for_visual_sidecar(self, note: Note) -> dict[str, Any]:
         points = np.asarray(note.box.contours).reshape(-1, 2)
         if len(points) < 5:
             ellipse = self.metadata.prediction_ellipse_to_source(note.box.box)
@@ -300,16 +300,16 @@ class SidecarCollector:
             return None
         return contour + np.array([[[left, top]]])
 
-    def _sidecar_stem_for_note(self, note: Note) -> RotatedBoundingBox | None:
-        seed = self._best_sidecar_stem_seed(note)
-        stem = self._merge_sidecar_stem_fragments(note, seed) if seed is not None else None
+    def _visual_sidecar_stem_for_note(self, note: Note) -> RotatedBoundingBox | None:
+        seed = self._best_visual_sidecar_stem_seed(note)
+        stem = self._merge_visual_sidecar_stem_fragments(note, seed) if seed is not None else None
         if stem is not None and stem.center[0] >= note.center[0]:
-            stem = self._repair_upward_sidecar_stem(note, stem)
-            return self._repair_downward_sidecar_stem(note, stem)
-        stem = self._repair_downward_sidecar_stem(note, stem)
-        return self._repair_upward_sidecar_stem(note, stem)
+            stem = self._repair_upward_visual_sidecar_stem(note, stem)
+            return self._repair_downward_visual_sidecar_stem(note, stem)
+        stem = self._repair_downward_visual_sidecar_stem(note, stem)
+        return self._repair_upward_visual_sidecar_stem(note, stem)
 
-    def _best_sidecar_stem_seed(self, note: Note) -> RotatedBoundingBox | None:
+    def _best_visual_sidecar_stem_seed(self, note: Note) -> RotatedBoundingBox | None:
         if len(self.stem_fragments) == 0:
             return note.stem
 
@@ -347,7 +347,7 @@ class SidecarCollector:
             return note.stem
         return best if score(best) > 0 else note.stem
 
-    def _merge_sidecar_stem_fragments(
+    def _merge_visual_sidecar_stem_fragments(
         self, note: Note, seed: RotatedBoundingBox
     ) -> RotatedBoundingBox:
         if len(self.stem_fragments) == 0:
@@ -381,17 +381,17 @@ class SidecarCollector:
             return seed
         return merged
 
-    def _repair_downward_sidecar_stem(
+    def _repair_downward_visual_sidecar_stem(
         self, note: Note, stem: RotatedBoundingBox | None
     ) -> RotatedBoundingBox | None:
-        return self._repair_sidecar_stem(note, stem, StemRepairDirection.DOWN)
+        return self._repair_visual_sidecar_stem(note, stem, StemRepairDirection.DOWN)
 
-    def _repair_upward_sidecar_stem(
+    def _repair_upward_visual_sidecar_stem(
         self, note: Note, stem: RotatedBoundingBox | None
     ) -> RotatedBoundingBox | None:
-        return self._repair_sidecar_stem(note, stem, StemRepairDirection.UP)
+        return self._repair_visual_sidecar_stem(note, stem, StemRepairDirection.UP)
 
-    def _repair_sidecar_stem(
+    def _repair_visual_sidecar_stem(
         self,
         note: Note,
         stem: RotatedBoundingBox | None,
@@ -720,6 +720,6 @@ class SidecarCollector:
         return min(round(score, 3), 1.0)
 
 
-def write_sidecar(path: str, collector: SidecarCollector) -> None:
-    sidecar_path = Path(path)
-    sidecar_path.write_text(json.dumps(collector.to_json_dict(), indent=2), encoding="utf-8")
+def write_visual_sidecar(path: str, collector: VisualSidecar) -> None:
+    visual_sidecar_path = Path(path)
+    visual_sidecar_path.write_text(json.dumps(collector.to_json_dict(), indent=2), encoding="utf-8")

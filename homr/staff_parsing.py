@@ -7,7 +7,7 @@ from homr import constants
 from homr.debug import Debug
 from homr.image_utils import crop_image_and_return_new_top
 from homr.model import MultiStaff, Note, Staff
-from homr.sidecar import SidecarCollector
+from homr.visual_sidecar import VisualSidecar
 from homr.simple_logging import eprint
 from homr.staff_dewarping import StaffDewarping, dewarp_staff_image
 from homr.staff_parsing_tromr import parse_staff_tromr
@@ -248,18 +248,20 @@ def parse_staff_image(
     image: NDArray,
     regions: StaffRegions,
     config: Config,
-    sidecar: SidecarCollector | None = None,
+    visual_sidecar: VisualSidecar | None = None,
 ) -> list[EncodedSymbol]:
     original_notes = [symbol for symbol in staff.symbols if isinstance(symbol, Note)]
     staff_image, transformed_staff, final_transformed_staff = prepare_staff_image(
         debug, index, staff, image, regions=regions
     )
-    if sidecar is not None:
-        sidecar.add_staff_visual_notes(index, original_notes, final_transformed_staff.get_notes())
+    if visual_sidecar is not None:
+        visual_sidecar.add_staff_visual_notes(
+            index, original_notes, final_transformed_staff.get_notes()
+        )
     eprint("Running TrOmr inference on staff image", index)
     result = parse_staff_tromr(staff_image=staff_image, staff=transformed_staff, config=config)
-    if sidecar is not None:
-        sidecar.add_staff_matches(result, index)
+    if visual_sidecar is not None:
+        visual_sidecar.add_staff_matches(result, index)
     if debug.debug:
         result_image = staff_image.copy()
         for i, symbol in enumerate(result):
@@ -290,7 +292,7 @@ def parse_staffs(
     image: NDArray,
     config: Config,
     selected_staff: int = -1,
-    sidecar: SidecarCollector | None = None,
+    visual_sidecar: VisualSidecar | None = None,
 ) -> list[list[EncodedSymbol]]:
     """
     Dewarps each staff and then runs it through an algorithm which extracts
@@ -311,7 +313,9 @@ def parse_staffs(
                 eprint("Ignoring staff due to selected_staff argument", i)
                 i += 1
                 continue
-            result_staff = parse_staff_image(debug, i, staff, image, regions, config, sidecar)
+            result_staff = parse_staff_image(
+                debug, i, staff, image, regions, config, visual_sidecar
+            )
             if len(result_staff) == 0:
                 eprint("Skipping empty staff", i)
                 i += 1

@@ -18,7 +18,7 @@ from homr.transformer.vocabulary import (
 )
 
 if TYPE_CHECKING:
-    from homr.sidecar import SidecarCollector
+    from homr.visual_sidecar import VisualSidecar
 
 
 class ConversionState:
@@ -115,7 +115,7 @@ def generate_xml(
     args: XmlGeneratorArguments,
     staffs: list[list[EncodedSymbol]],
     title: str,
-    sidecar: "SidecarCollector | None" = None,
+    visual_sidecar: "VisualSidecar | None" = None,
 ) -> mxl.XMLElement:
     root = mxl.XMLScorePartwise(version="4.0")
     root.add_child(build_work(title))
@@ -124,7 +124,9 @@ def generate_xml(
     has_two_staves_by_part = [_voice_has_two_staves(staff) for staff in staffs]
     root.add_child(build_part_list(has_two_staves_by_part))
     for index, staff in enumerate(staffs):
-        root.add_child(build_part(args, staff, index, has_two_staves_by_part[index], sidecar))
+        root.add_child(
+            build_part(args, staff, index, has_two_staves_by_part[index], visual_sidecar)
+        )
     return root
 
 
@@ -138,11 +140,11 @@ def build_part(
     voice: list[EncodedSymbol],
     index: int,
     has_two_staves: bool,
-    sidecar: "SidecarCollector | None" = None,
+    visual_sidecar: "VisualSidecar | None" = None,
 ) -> mxl.XMLPart:
     part = mxl.XMLPart(id=get_part_id(index))
     is_first_part = index == 0
-    measures = build_measures(args, voice, is_first_part, has_two_staves, index + 1, sidecar)
+    measures = build_measures(args, voice, is_first_part, has_two_staves, index + 1, visual_sidecar)
     for measure in measures:
         part.add_child(measure)
     return part
@@ -154,11 +156,11 @@ def build_measures(
     is_first_part: bool,
     has_two_staves: bool = False,
     part_number: int = 1,
-    sidecar: "SidecarCollector | None" = None,
+    visual_sidecar: "VisualSidecar | None" = None,
 ) -> list[mxl.XMLMeasure]:
     def close_current_measure() -> None:
         rebalance_measure_voices(current_measure)
-        record_sidecar_note_ids(current_measure, part_number, measure_number, sidecar)
+        record_visual_sidecar_note_ids(current_measure, part_number, measure_number, visual_sidecar)
         measures.append(current_measure)
 
     measure_number = 1
@@ -192,7 +194,9 @@ def build_measures(
                     chord_duration = (
                         group.get_duration() if pos_no == len(staff_positions) - 1 else Fraction(0)
                     )
-                    for note_xml in build_note_chord(staff_pos, state, chord_duration, sidecar):
+                    for note_xml in build_note_chord(
+                        staff_pos, state, chord_duration, visual_sidecar
+                    ):
                         current_measure.add_child(note_xml)
             continue
         if rhythm == "newline":
@@ -445,13 +449,13 @@ def rebalance_measure_voices(measure: mxl.XMLMeasure) -> None:
                     voice_nodes[0].value_ = xml_voice
 
 
-def record_sidecar_note_ids(
+def record_visual_sidecar_note_ids(
     measure: mxl.XMLMeasure,
     part_number: int,
     measure_number: int,
-    sidecar: "SidecarCollector | None",
+    visual_sidecar: "VisualSidecar | None",
 ) -> None:
-    if sidecar is None:
+    if visual_sidecar is None:
         return
     for child in measure.get_children():
         if not isinstance(child, mxl.XMLNote):
@@ -464,7 +468,9 @@ def record_sidecar_note_ids(
         voice_nodes = child.get_children_of_type(mxl.XMLVoice)
         staff = int(staff_nodes[0].value_) if staff_nodes else 1
         voice = int(voice_nodes[0].value_) if voice_nodes else 1
-        sidecar.record_musicxml_note(musicxml_id, part_number, measure_number, staff, voice, symbol)
+        visual_sidecar.record_musicxml_note(
+            musicxml_id, part_number, measure_number, staff, voice, symbol
+        )
 
 
 def build_clef(model_clef: EncodedSymbol, attributes: mxl.XMLAttributes) -> None:
@@ -641,7 +647,7 @@ def build_note_or_rest(
     is_chord: bool,
     state: ConversionState,
     tuplet_mark: str,
-    sidecar: "SidecarCollector | None" = None,
+    visual_sidecar: "VisualSidecar | None" = None,
 ) -> mxl.XMLNote:
     note = mxl.XMLNote()
     if is_chord:
@@ -657,8 +663,8 @@ def build_note_or_rest(
         eprint("WARNING note without pitch", model_note)
         note.add_child(mxl.XMLRest())
     else:
-        if sidecar is not None:
-            musicxml_id = sidecar.create_musicxml_id()
+        if visual_sidecar is not None:
+            musicxml_id = visual_sidecar.create_musicxml_id()
             note._set_attributes({"id": musicxml_id})
             setattr(note, "_homr_musicxml_id", musicxml_id)
             setattr(note, "_homr_symbol", model_note)
@@ -724,7 +730,7 @@ def build_note_chord(
     note_chord: SymbolChord,
     state: ConversionState,
     chord_duration: Fraction,
-    sidecar: "SidecarCollector | None" = None,
+    visual_sidecar: "VisualSidecar | None" = None,
 ) -> list[mxl.XMLElement]:
     by_duration = _group_notes(note_chord.symbols)
     result: list[mxl.XMLElement] = []
@@ -735,7 +741,9 @@ def build_note_chord(
         for note_loop in by_duration[group_duration]:
             note = note_loop
             result.append(
-                build_note_or_rest(note, i, not is_first, state, note_chord.tuplet_mark, sidecar)
+                build_note_or_rest(
+                    note, i, not is_first, state, note_chord.tuplet_mark, visual_sidecar
+                )
             )
             is_first = False
         if i != len(sorted_durations) - 1 and group_duration > Fraction(0):

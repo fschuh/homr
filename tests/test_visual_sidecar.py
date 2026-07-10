@@ -6,11 +6,11 @@ import numpy as np
 from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
-from homr.sidecar import PreprocessingMetadata, SidecarCollector
+from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar
 from homr.transformer.vocabulary import EncodedSymbol
 
 
-class TestSidecar(unittest.TestCase):
+class TestVisualSidecar(unittest.TestCase):
     def test_prediction_to_source_mapping_accounts_for_crop_and_resize(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(1000, 800),
@@ -23,7 +23,7 @@ class TestSidecar(unittest.TestCase):
 
         self.assertEqual(metadata.prediction_point_to_source((200, 150)), (300, 200))
 
-    def test_musicxml_ids_are_recorded_in_sidecar(self) -> None:
+    def test_musicxml_ids_are_recorded_in_visual_sidecar(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(100, 100),
             autocrop_box=(0, 0, 100, 100),
@@ -32,7 +32,7 @@ class TestSidecar(unittest.TestCase):
             resize_scale=(1.0, 1.0),
             prediction_size=(100, 100),
         )
-        collector = SidecarCollector(metadata)
+        collector = VisualSidecar(metadata)
         original = Note(
             BoundingEllipse(((10, 20), (8, 6), 0), np.array([[6, 17], [14, 23]]), 1),
             position=4,
@@ -46,17 +46,17 @@ class TestSidecar(unittest.TestCase):
 
         symbol = EncodedSymbol("note_4", "C4", "_", "_", "_", "upper")
         collector.add_staff_matches([symbol], 0)
-        xml = generate_xml(XmlGeneratorArguments(), [[symbol]], "", sidecar=collector)
+        xml = generate_xml(XmlGeneratorArguments(), [[symbol]], "", visual_sidecar=collector)
 
         xml_ids = self._musicxml_note_ids(xml)
-        sidecar = collector.to_json_dict()
-        sidecar_ids = [note["musicxml_id"] for note in sidecar["notes"]]
-        linked_ids = sidecar["visual_groups"][0]["musicxml_ids"]
+        visual_sidecar = collector.to_json_dict()
+        visual_sidecar_ids = [note["musicxml_id"] for note in visual_sidecar["notes"]]
+        linked_ids = visual_sidecar["visual_groups"][0]["musicxml_ids"]
 
-        self.assertEqual(xml_ids, sidecar_ids)
+        self.assertEqual(xml_ids, visual_sidecar_ids)
         self.assertEqual(xml_ids, linked_ids)
-        self.assertEqual(sidecar["unmatched_musicxml_notes"], [])
-        self.assertEqual(sidecar["unmatched_visual_notes"], [])
+        self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
+        self.assertEqual(visual_sidecar["unmatched_visual_notes"], [])
 
     def test_notehead_fitted_ellipse_is_recorded_in_source_coordinates(self) -> None:
         metadata = PreprocessingMetadata(
@@ -67,7 +67,7 @@ class TestSidecar(unittest.TestCase):
             resize_scale=(2.0, 2.0),
             prediction_size=(400, 300),
         )
-        collector = SidecarCollector(metadata)
+        collector = VisualSidecar(metadata)
         original = Note(
             BoundingEllipse(((200, 150), (40, 20), 15), np.array([[180, 140], [220, 160]]), 1),
             position=4,
@@ -95,7 +95,7 @@ class TestSidecar(unittest.TestCase):
             prediction_size=(300, 300),
         )
         contour = cv2.ellipse2Poly((100, 100), (40, 20), -30, 0, 360, 2).reshape(-1, 1, 2)
-        collector = SidecarCollector(metadata)
+        collector = VisualSidecar(metadata)
         original = Note(
             BoundingEllipse(((100, 100), (80, 40), 0), contour, 1),
             position=4,
@@ -124,7 +124,7 @@ class TestSidecar(unittest.TestCase):
         mask = np.zeros((300, 300), dtype=np.uint8)
         contour = cv2.ellipse2Poly((100, 100), (40, 20), -30, 0, 360, 2).reshape(-1, 1, 2)
         cv2.fillPoly(mask, [contour], 255)
-        collector = SidecarCollector(metadata, notehead_mask=mask)
+        collector = VisualSidecar(metadata, notehead_mask=mask)
         original = Note(
             BoundingEllipse(((100, 100), (80, 40), 0), np.array([[60, 80], [140, 120]]), 1),
             position=4,
@@ -152,7 +152,7 @@ class TestSidecar(unittest.TestCase):
             resize_scale=(1.0, 1.0),
             prediction_size=(300, 300),
         )
-        collector = SidecarCollector(metadata)
+        collector = VisualSidecar(metadata)
         reliable_contour = cv2.ellipse2Poly((100, 100), (40, 20), -30, 0, 360, 2).reshape(
             -1, 1, 2
         )
@@ -178,13 +178,13 @@ class TestSidecar(unittest.TestCase):
         self.assertAlmostEqual(fallback_group["notehead_ellipses"][0]["angle"], -30, delta=0.5)
         self.assertEqual(fallback.box.angle, 0)
 
-    def test_musicxml_without_sidecar_has_no_generated_ids(self) -> None:
+    def test_musicxml_without_visual_sidecar_has_no_generated_ids(self) -> None:
         symbol = EncodedSymbol("note_4", "C4", "_", "_", "_", "upper")
         xml = generate_xml(XmlGeneratorArguments(), [[symbol]], "")
 
         self.assertEqual(self._musicxml_note_ids(xml), [])
 
-    def test_split_stem_fragments_are_combined_for_sidecar_geometry_only(self) -> None:
+    def test_split_stem_fragments_are_combined_for_visual_sidecar_geometry_only(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(100, 100),
             autocrop_box=(0, 0, 100, 100),
@@ -200,7 +200,7 @@ class TestSidecar(unittest.TestCase):
         upper_fragment = RotatedBoundingBox(
             ((56, 18), (2, 24), 0), np.array([[55, 6], [57, 30]])
         )
-        collector = SidecarCollector(metadata, [lower_fragment, upper_fragment])
+        collector = VisualSidecar(metadata, [lower_fragment, upper_fragment])
         original = Note(
             notehead,
             position=4,
@@ -211,15 +211,15 @@ class TestSidecar(unittest.TestCase):
         transformed = original.copy()
 
         collector.add_staff_visual_notes(0, [original], [transformed])
-        sidecar = collector.to_json_dict()
-        group = sidecar["visual_groups"][0]
+        visual_sidecar = collector.to_json_dict()
+        group = visual_sidecar["visual_groups"][0]
         contour = group["stem_contours"][0]
         height = max(point[1] for point in contour) - min(point[1] for point in contour)
 
         self.assertGreater(height, lower_fragment.size[1] + 15)
         self.assertEqual(group["detected_stem_contours"], [[[55, 37], [57, 51]]])
         self.assertEqual(
-            [stem["contour"] for stem in sidecar["raw_stem_contours"]],
+            [stem["contour"] for stem in visual_sidecar["raw_stem_contours"]],
             [
                 [[55, 37], [57, 51]],
                 [[55, 6], [57, 30]],
@@ -227,7 +227,7 @@ class TestSidecar(unittest.TestCase):
         )
         self.assertEqual(original.stem, lower_fragment)
 
-    def test_sidecar_stem_merge_rejects_wide_beam_fragment(self) -> None:
+    def test_visual_sidecar_stem_merge_rejects_wide_beam_fragment(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(100, 100),
             autocrop_box=(0, 0, 100, 100),
@@ -239,7 +239,7 @@ class TestSidecar(unittest.TestCase):
         notehead = BoundingEllipse(((50, 50), (12, 10), 0), np.array([[44, 45], [56, 55]]))
         stem = RotatedBoundingBox(((56, 40), (2, 20), 0), np.array([[55, 30], [57, 50]]))
         beam = RotatedBoundingBox(((56, 65), (42, 8), 0), np.array([[35, 61], [77, 69]]))
-        collector = SidecarCollector(metadata, [beam])
+        collector = VisualSidecar(metadata, [beam])
         original = Note(
             notehead,
             position=4,
@@ -255,7 +255,7 @@ class TestSidecar(unittest.TestCase):
         self.assertLess(max(xs) - min(xs), 10)
         self.assertEqual(original.stem, stem)
 
-    def test_sidecar_stem_merge_does_not_chain_sideways(self) -> None:
+    def test_visual_sidecar_stem_merge_does_not_chain_sideways(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
             autocrop_box=(0, 0, 120, 120),
@@ -268,7 +268,7 @@ class TestSidecar(unittest.TestCase):
         stem = RotatedBoundingBox(((56, 42), (2, 16), 0), np.array([[55, 34], [57, 50]]))
         near = RotatedBoundingBox(((61, 25), (2, 18), 0), np.array([[60, 16], [62, 34]]))
         drift = RotatedBoundingBox(((68, 10), (2, 18), 0), np.array([[67, 1], [69, 19]]))
-        collector = SidecarCollector(metadata, [near, drift])
+        collector = VisualSidecar(metadata, [near, drift])
         original = Note(
             notehead,
             position=4,
@@ -284,7 +284,7 @@ class TestSidecar(unittest.TestCase):
         self.assertLess(max(xs) - min(xs), 10)
         self.assertEqual(original.stem, stem)
 
-    def test_sidecar_replaces_tiny_bad_seed_with_nearby_vertical_seed(self) -> None:
+    def test_visual_sidecar_replaces_tiny_bad_seed_with_nearby_vertical_seed(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
             autocrop_box=(0, 0, 120, 120),
@@ -303,7 +303,7 @@ class TestSidecar(unittest.TestCase):
         continuation = RotatedBoundingBox(
             ((43, 82), (2, 36), 0), np.array([[42, 64], [44, 100]])
         )
-        collector = SidecarCollector(metadata, [tiny_bad_seed, better_seed, continuation])
+        collector = VisualSidecar(metadata, [tiny_bad_seed, better_seed, continuation])
         original = Note(
             notehead,
             position=4,
@@ -321,7 +321,7 @@ class TestSidecar(unittest.TestCase):
         self.assertGreater(max(ys) - min(ys), 40)
         self.assertEqual(original.stem, tiny_bad_seed)
 
-    def test_sidecar_repairs_missing_downward_stem_from_nearby_chain(self) -> None:
+    def test_visual_sidecar_repairs_missing_downward_stem_from_nearby_chain(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
             autocrop_box=(0, 0, 120, 120),
@@ -335,7 +335,7 @@ class TestSidecar(unittest.TestCase):
         continuation = RotatedBoundingBox(
             ((43, 88), (2, 28), 0), np.array([[42, 74], [44, 102]])
         )
-        collector = SidecarCollector(metadata, [seed, continuation])
+        collector = VisualSidecar(metadata, [seed, continuation])
         original = Note(
             notehead,
             position=4,
@@ -354,7 +354,7 @@ class TestSidecar(unittest.TestCase):
         self.assertGreater(max(ys) - min(ys), 45)
         self.assertIsNone(original.stem)
 
-    def test_sidecar_bridges_disconnected_downward_stem_to_notehead(self) -> None:
+    def test_visual_sidecar_bridges_disconnected_downward_stem_to_notehead(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
             autocrop_box=(0, 0, 120, 120),
@@ -370,7 +370,7 @@ class TestSidecar(unittest.TestCase):
         continuation = RotatedBoundingBox(
             ((43, 96), (2, 20), 0), np.array([[42, 86], [44, 106]])
         )
-        collector = SidecarCollector(metadata, [disconnected, continuation])
+        collector = VisualSidecar(metadata, [disconnected, continuation])
         original = Note(
             notehead,
             position=4,
@@ -387,7 +387,7 @@ class TestSidecar(unittest.TestCase):
         self.assertGreater(max(ys), 100)
         self.assertEqual(original.stem, disconnected)
 
-    def test_sidecar_extends_short_top_piece_to_downward_chain(self) -> None:
+    def test_visual_sidecar_extends_short_top_piece_to_downward_chain(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
             autocrop_box=(0, 0, 120, 120),
@@ -403,7 +403,7 @@ class TestSidecar(unittest.TestCase):
         continuation = RotatedBoundingBox(
             ((43, 86), (2, 40), 0), np.array([[42, 66], [44, 106]])
         )
-        collector = SidecarCollector(metadata, [short_piece, continuation])
+        collector = VisualSidecar(metadata, [short_piece, continuation])
         original = Note(
             notehead,
             position=4,
@@ -420,7 +420,7 @@ class TestSidecar(unittest.TestCase):
         self.assertGreater(max(ys) - min(ys), 50)
         self.assertEqual(original.stem, short_piece)
 
-    def test_sidecar_extends_short_top_piece_across_larger_aligned_gap(self) -> None:
+    def test_visual_sidecar_extends_short_top_piece_across_larger_aligned_gap(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(140, 140),
             autocrop_box=(0, 0, 140, 140),
@@ -436,7 +436,7 @@ class TestSidecar(unittest.TestCase):
         continuation = RotatedBoundingBox(
             ((43, 94), (2, 16), 0), np.array([[42, 86], [44, 102]])
         )
-        collector = SidecarCollector(metadata, [short_piece, continuation])
+        collector = VisualSidecar(metadata, [short_piece, continuation])
         original = Note(
             notehead,
             position=4,
@@ -453,7 +453,7 @@ class TestSidecar(unittest.TestCase):
         self.assertGreater(max(ys), 100)
         self.assertEqual(original.stem, short_piece)
 
-    def test_sidecar_repairs_missing_upward_stem_from_nearby_chain(self) -> None:
+    def test_visual_sidecar_repairs_missing_upward_stem_from_nearby_chain(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
             autocrop_box=(0, 0, 120, 120),
@@ -467,7 +467,7 @@ class TestSidecar(unittest.TestCase):
         continuation = RotatedBoundingBox(
             ((57, 12), (2, 28), 0), np.array([[56, -2], [58, 26]])
         )
-        collector = SidecarCollector(metadata, [seed, continuation])
+        collector = VisualSidecar(metadata, [seed, continuation])
         original = Note(
             notehead,
             position=4,
@@ -486,7 +486,7 @@ class TestSidecar(unittest.TestCase):
         self.assertGreater(max(ys) - min(ys), 45)
         self.assertIsNone(original.stem)
 
-    def test_sidecar_bridges_disconnected_upward_stem_to_notehead(self) -> None:
+    def test_visual_sidecar_bridges_disconnected_upward_stem_to_notehead(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
             autocrop_box=(0, 0, 120, 120),
@@ -502,7 +502,7 @@ class TestSidecar(unittest.TestCase):
         continuation = RotatedBoundingBox(
             ((57, 4), (2, 20), 0), np.array([[56, -6], [58, 14]])
         )
-        collector = SidecarCollector(metadata, [disconnected, continuation])
+        collector = VisualSidecar(metadata, [disconnected, continuation])
         original = Note(
             notehead,
             position=4,
@@ -519,7 +519,7 @@ class TestSidecar(unittest.TestCase):
         self.assertGreaterEqual(max(ys), notehead.center[1])
         self.assertEqual(original.stem, disconnected)
 
-    def test_sidecar_extends_short_bottom_piece_to_upward_chain(self) -> None:
+    def test_visual_sidecar_extends_short_bottom_piece_to_upward_chain(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(140, 140),
             autocrop_box=(0, 0, 140, 140),
@@ -535,7 +535,7 @@ class TestSidecar(unittest.TestCase):
         continuation = RotatedBoundingBox(
             ((57, 6), (2, 16), 0), np.array([[56, -2], [58, 14]])
         )
-        collector = SidecarCollector(metadata, [short_piece, continuation])
+        collector = VisualSidecar(metadata, [short_piece, continuation])
         original = Note(
             notehead,
             position=4,

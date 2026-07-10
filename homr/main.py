@@ -35,7 +35,7 @@ from homr.onnx_providers import coreml_available, cuda_available
 from homr.resize import resize_image_with_metadata
 from homr.segmentation.config import segnet_path_onnx, segnet_path_onnx_fp16
 from homr.segmentation.inference_segnet import extract
-from homr.sidecar import PreprocessingMetadata, SidecarCollector, write_sidecar
+from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar, write_visual_sidecar
 from homr.simple_logging import eprint
 from homr.staff_detection import break_wide_fragments, detect_staff, make_lines_stronger
 from homr.staff_parsing import parse_staffs
@@ -177,7 +177,7 @@ class ProcessingConfig:
     # Opt-in (--coreml-encoder): run the encoder on the Apple GPU via CoreML.
     # Only helps across many images (slow one-time MLProgram compile).
     coreml_encoder: bool
-    write_sidecar: bool
+    write_visual_sidecar: bool
 
 
 def process_image(
@@ -223,9 +223,9 @@ def process_image(
         transformer_config.use_gpu_inference = config.transformer_use_gpu
         transformer_config.use_coreml_encoder = config.coreml_encoder
 
-        sidecar = (
-            SidecarCollector(preprocessing, stem_fragments, notehead_mask)
-            if config.write_sidecar
+        visual_sidecar = (
+            VisualSidecar(preprocessing, stem_fragments, notehead_mask)
+            if config.write_visual_sidecar
             else None
         )
         result_staffs = parse_staffs(
@@ -234,18 +234,18 @@ def process_image(
             image,
             selected_staff=config.selected_staff,
             config=transformer_config,
-            sidecar=sidecar,
+            visual_sidecar=visual_sidecar,
         )
 
         title = title_future.result(60)
         eprint("Found title:", title)
 
         eprint("Writing XML", result_staffs)
-        xml = generate_xml(xml_generator_args, result_staffs, title, sidecar=sidecar)
+        xml = generate_xml(xml_generator_args, result_staffs, title, visual_sidecar=visual_sidecar)
         xml.write(xml_file)
-        if sidecar is not None:
-            sidecar_file = replace_extension(image_path, ".homr.json")
-            write_sidecar(sidecar_file, sidecar)
+        if visual_sidecar is not None:
+            visual_sidecar_file = replace_extension(image_path, ".homr.visual.json")
+            write_visual_sidecar(visual_sidecar_file, visual_sidecar)
 
         eprint("Finished parsing " + str(len(result_staffs)) + " staves")
         teaser_file = replace_extension(image_path, "_teaser.png")
@@ -430,9 +430,9 @@ def main() -> None:
         "--output-tempo", type=int, help="Adds a tempo to the musicxml with the given bpm"
     )
     parser.add_argument(
-        "--output-sidecar",
+        "--output-visual-sidecar",
         action="store_true",
-        help="Writes input.homr.json beside the MusicXML with visual note geometry.",
+        help="Writes input.homr.visual.json beside the MusicXML with visual note geometry.",
     )
     parser.add_argument(
         "--write-staff-positions",
@@ -489,7 +489,7 @@ def main() -> None:
         transformer_use_gpu,
         segnet_use_gpu,
         coreml_encoder,
-        args.output_sidecar,
+        args.output_visual_sidecar,
     )
 
     xml_generator_args = XmlGeneratorArguments(
