@@ -178,6 +178,106 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertNotEqual(group["notehead_contours"], group["detected_notehead_contours"])
         self.assertGreaterEqual(len(group["detected_notehead_contours"][0]), 5)
 
+    def test_refined_notehead_contour_robustly_fits_hollow_head_across_staff_line(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        image = np.full((100, 100), 255, dtype=np.uint8)
+        cv2.ellipse(image, ((50, 50), (20, 12), -25), 0, 2)
+        cv2.line(image, (25, 52), (75, 52), 0, 1)
+        contour = cv2.ellipse2Poly((50, 50), (10, 6), -25, 0, 360, 10).reshape(-1, 1, 2)
+        collector = VisualSidecar(metadata, source_image=image)
+        original = Note(
+            BoundingEllipse(((50, 50), (20, 12), -25), contour, 3),
+            position=4,
+            stem=None,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        refined = collector.to_json_dict()["visual_groups"][0]["refined_notehead_contours"][0]
+        xs = [point[0] for point in refined]
+        ys = [point[1] for point in refined]
+
+        self.assertAlmostEqual((min(xs) + max(xs)) / 2, 50, delta=2)
+        self.assertAlmostEqual((min(ys) + max(ys)) / 2, 50, delta=2)
+        self.assertGreater(max(xs) - min(xs), max(ys) - min(ys))
+
+    def test_refined_notehead_contours_do_not_borrow_adjacent_chord_ink(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        image = np.full((100, 100), 255, dtype=np.uint8)
+        cv2.ellipse(image, ((50, 43), (18, 12), -25), 0, -1)
+        cv2.ellipse(image, ((50, 55), (18, 12), -25), 0, -1)
+        cv2.line(image, (20, 49), (80, 49), 0, 1)
+        collector = VisualSidecar(metadata, source_image=image)
+
+        def make_note(center_y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly(
+                (50, center_y), (9, 6), -25, 0, 360, 10
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((50, center_y), (18, 12), -25), contour, center_y),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        top_note = make_note(43, "vnote-top")
+        bottom_note = make_note(55, "vnote-bottom")
+        notes = [top_note, bottom_note]
+        collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        groups = {
+            group["visual_group_id"]: group for group in collector.to_json_dict()["visual_groups"]
+        }
+        top_ys = [point[1] for point in groups["vnote-top"]["refined_notehead_contours"][0]]
+        bottom_ys = [
+            point[1] for point in groups["vnote-bottom"]["refined_notehead_contours"][0]
+        ]
+
+        self.assertLessEqual(max(top_ys), 50)
+        self.assertGreaterEqual(min(bottom_ys), 48)
+        self.assertLess((min(top_ys) + max(top_ys)) / 2, 49)
+        self.assertGreater((min(bottom_ys) + max(bottom_ys)) / 2, 49)
+
+    def test_refined_notehead_recovers_center_before_fitting_corrupted_anchor(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 100), autocrop_box=(0, 0, 120, 100),
+            cropped_size=(120, 100), resized_size=(120, 100),
+            resize_scale=(1.0, 1.0), prediction_size=(120, 100),
+        )
+        image = np.full((100, 120), 255, dtype=np.uint8)
+        cv2.ellipse(image, ((60, 50), (18, 12), -25), 0, -1)
+        cv2.line(image, (25, 50), (85, 50), 0, 1)
+        corrupted = cv2.ellipse2Poly((52, 54), (16, 6), 0, 0, 360, 10).reshape(-1, 1, 2)
+        collector = VisualSidecar(metadata, source_image=image)
+        original = Note(
+            BoundingEllipse(((52, 54), (32, 12), 0), corrupted, 9),
+            position=4, stem=None, stem_direction=None, visual_id="vnote-shifted",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        refined = collector.to_json_dict()["visual_groups"][0]["refined_notehead_contours"][0]
+        xs = [point[0] for point in refined]
+        ys = [point[1] for point in refined]
+
+        self.assertAlmostEqual((min(xs) + max(xs)) / 2, 60, delta=1.5)
+        self.assertAlmostEqual((min(ys) + max(ys)) / 2, 50, delta=1.5)
+        self.assertLessEqual(max(xs) - min(xs), 20)
+
     def test_split_chord_notehead_keeps_split_geometry_when_mask_is_ambiguous(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(300, 300),

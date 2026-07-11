@@ -237,6 +237,7 @@ def process_image(
                 stem_fragments,
                 notehead_mask,
                 notehead_candidates,
+                source_image=image,
             )
             if config.write_visual_sidecar
             else None
