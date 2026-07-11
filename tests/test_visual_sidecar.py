@@ -278,6 +278,59 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertAlmostEqual((min(ys) + max(ys)) / 2, 50, delta=1.5)
         self.assertLessEqual(max(xs) - min(xs), 20)
 
+    def test_refined_notehead_does_not_collapse_onto_staff_line(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100), autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100), resized_size=(100, 100),
+            resize_scale=(1.0, 1.0), prediction_size=(100, 100),
+        )
+        image = np.full((100, 100), 255, dtype=np.uint8)
+        cv2.ellipse(image, ((50, 50), (18, 12), -25), 0, -1)
+        cv2.line(image, (15, 50), (85, 50), 0, 2)
+        contour = cv2.ellipse2Poly((50, 50), (9, 6), -25, 0, 360, 10).reshape(-1, 1, 2)
+        collector = VisualSidecar(metadata, source_image=image)
+        original = Note(
+            BoundingEllipse(((50, 50), (18, 12), -25), contour, 10),
+            position=4, stem=None, stem_direction=None, visual_id="vnote-on-line",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        refined = collector.to_json_dict()["visual_groups"][0]["refined_notehead_contours"][0]
+        xs = [point[0] for point in refined]
+        ys = [point[1] for point in refined]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
+
+        self.assertGreaterEqual(height, 10)
+        self.assertLessEqual(width / height, 1.9)
+
+    def test_refined_filled_notehead_does_not_expand_into_white_staff_gap(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100), autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100), resized_size=(100, 100),
+            resize_scale=(1.0, 1.0), prediction_size=(100, 100),
+        )
+        image = np.full((100, 100), 255, dtype=np.uint8)
+        cv2.line(image, (10, 50), (90, 50), 0, 2)
+        cv2.line(image, (10, 64), (90, 64), 0, 2)
+        cv2.ellipse(image, ((50, 48), (18, 12), -25), 0, -1)
+        cv2.line(image, (59, 48), (59, 78), 0, 2)
+        contour = cv2.ellipse2Poly((50, 48), (9, 6), -25, 0, 360, 10).reshape(-1, 1, 2)
+        collector = VisualSidecar(metadata, source_image=image)
+        original = Note(
+            BoundingEllipse(((50, 48), (18, 12), -25), contour, 11),
+            position=4, stem=None, stem_direction=None, visual_id="vnote-filled-gap",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        refined = collector.to_json_dict()["visual_groups"][0]["refined_notehead_contours"][0]
+        xs = [point[0] for point in refined]
+        ys = [point[1] for point in refined]
+
+        self.assertLessEqual(max(xs) - min(xs), 21)
+        self.assertLessEqual(max(ys) - min(ys), 16)
+        self.assertAlmostEqual((min(ys) + max(ys)) / 2, 48, delta=2)
+
     def test_split_chord_notehead_keeps_split_geometry_when_mask_is_ambiguous(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(300, 300),

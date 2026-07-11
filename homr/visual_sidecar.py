@@ -338,6 +338,20 @@ class VisualSidecar:
             iy = np.clip(np.rint(values_y - top).astype(np.int32), 0, darkness.shape[0] - 1)
             return darkness[iy, ix]
 
+        fill_angles = np.linspace(0, 2 * np.pi, 32, endpoint=False, dtype=np.float32)
+        fill_unit_x = np.cos(fill_angles)
+        fill_unit_y = np.sin(fill_angles)
+        center_evidence = np.concatenate(
+            [
+                sample(
+                    cx + expected_height * radius * fill_unit_x,
+                    cy + expected_height * radius * fill_unit_y,
+                )
+                for radius in (0.08, 0.18, 0.28)
+            ]
+        )
+        is_filled_notehead = float(np.mean(center_evidence)) >= 0.62
+
         def score(
             params: tuple[float, float, float, float, float],
             center_anchor: tuple[float, float] | None,
@@ -381,8 +395,21 @@ class VisualSidecar:
                 # travel materially beyond the midpoint toward the other center.
                 overflow = center_shift + extent - distance * 0.52
                 neighbor_penalty += 1.5 * max(0.0, overflow / expected_height)
+            interior_score = 0.0
+            if is_filled_notehead:
+                interior = np.concatenate(
+                    [
+                        ring(radius)
+                        for radius in (0.12, 0.3, 0.48, 0.66)
+                    ]
+                )
+                interior_score = 0.32 * float(np.mean(interior))
             return float(
-                np.mean(supported) + 0.22 * coverage - center_penalty - neighbor_penalty
+                np.mean(supported)
+                + 0.22 * coverage
+                + interior_score
+                - center_penalty
+                - neighbor_penalty
             )
 
         initial_angles = (-35.0, -20.0, -5.0, 10.0)
@@ -462,7 +489,7 @@ class VisualSidecar:
                 for offset in (-2, -1, 0, 1, 2):
                     option = list(params)
                     option[index] = min(max(option[index] + offset * amount, minimum), maximum)
-                    if option[2] >= option[3] * 1.05:
+                    if option[3] * 1.05 <= option[2] <= option[3] * 1.85:
                         options.append(tuple(option))
                 params = max(options, key=lambda item: score(item, recovered_center))
 
