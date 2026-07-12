@@ -404,6 +404,77 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertAlmostEqual(fallback_group["notehead_ellipses"][0]["angle"], -30, delta=0.5)
         self.assertEqual(fallback.box.angle, 0)
 
+    def test_elongated_horizontal_mask_ellipse_keeps_its_hollow_notehead_angle(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(300, 300), autocrop_box=(0, 0, 300, 300),
+            cropped_size=(300, 300), resized_size=(300, 300),
+            resize_scale=(1.0, 1.0), prediction_size=(300, 300),
+        )
+        mask = np.zeros((300, 300), dtype=np.uint8)
+        angled_contour = cv2.ellipse2Poly((100, 100), (20, 10), -30, 0, 360, 2).reshape(
+            -1, 1, 2
+        )
+        horizontal_contour = cv2.ellipse2Poly((180, 100), (24, 10), 0, 0, 360, 2).reshape(
+            -1, 1, 2
+        )
+        cv2.fillPoly(mask, [angled_contour, horizontal_contour], 1)
+        collector = VisualSidecar(metadata, notehead_mask=mask)
+        angled = Note(
+            BoundingEllipse(((100, 100), (40, 20), -30), angled_contour, 1),
+            position=4, stem=None, stem_direction=None, visual_id="vnote-angled",
+        )
+        horizontal = Note(
+            BoundingEllipse(((180, 100), (48, 20), 0), horizontal_contour, 2),
+            position=4, stem=None, stem_direction=None, visual_id="vnote-horizontal",
+        )
+
+        notes = [angled, horizontal]
+        collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        groups = {
+            group["visual_group_id"]: group for group in collector.to_json_dict()["visual_groups"]
+        }
+
+        self.assertAlmostEqual(
+            groups["vnote-horizontal"]["notehead_ellipses"][0]["angle"], 0, delta=1
+        )
+
+    def test_compact_hollow_image_notehead_keeps_its_horizontal_mask_angle(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(300, 300), autocrop_box=(0, 0, 300, 300),
+            cropped_size=(300, 300), resized_size=(300, 300),
+            resize_scale=(1.0, 1.0), prediction_size=(300, 300),
+        )
+        image = np.full((300, 300), 255, dtype=np.uint8)
+        mask = np.zeros((300, 300), dtype=np.uint8)
+        angled_contour = cv2.ellipse2Poly((100, 100), (20, 10), -30, 0, 360, 2).reshape(
+            -1, 1, 2
+        )
+        horizontal_contour = cv2.ellipse2Poly((180, 100), (18, 12), 0, 0, 360, 2).reshape(
+            -1, 1, 2
+        )
+        cv2.fillPoly(mask, [angled_contour, horizontal_contour], 1)
+        cv2.ellipse(image, ((100, 100), (40, 20), -30), 0, -1)
+        cv2.ellipse(image, ((180, 100), (36, 24), 0), 0, 2)
+        collector = VisualSidecar(metadata, notehead_mask=mask, source_image=image)
+        angled = Note(
+            BoundingEllipse(((100, 100), (40, 20), -30), angled_contour, 1),
+            position=4, stem=None, stem_direction=None, visual_id="vnote-angled",
+        )
+        horizontal = Note(
+            BoundingEllipse(((180, 100), (36, 24), 0), horizontal_contour, 2),
+            position=4, stem=None, stem_direction=None, visual_id="vnote-horizontal",
+        )
+
+        notes = [angled, horizontal]
+        collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        groups = {
+            group["visual_group_id"]: group for group in collector.to_json_dict()["visual_groups"]
+        }
+
+        self.assertAlmostEqual(
+            groups["vnote-horizontal"]["notehead_ellipses"][0]["angle"], 0, delta=1
+        )
+
     def test_musicxml_without_visual_sidecar_has_no_generated_ids(self) -> None:
         symbol = EncodedSymbol("note_4", "C4", "_", "_", "_", "upper")
         xml = generate_xml(XmlGeneratorArguments(), [[symbol]], "")

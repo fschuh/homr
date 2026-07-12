@@ -16,6 +16,7 @@ from homr.transformer.vocabulary import EncodedSymbol, sort_token_chords
 
 
 STRETCHED_NOTEHEAD_ASPECT_RATIO = 2.0
+HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 
 
 class StemRepairDirection(Enum):
@@ -273,6 +274,7 @@ class VisualSidecar:
                 notehead_ellipse = self._ellipse_from_source_contour(refined_notehead_contour)
             else:
                 notehead_ellipse = self._notehead_ellipse_for_visual_sidecar(original)
+            notehead_ellipse["_is_hollow"] = self._is_hollow_notehead(original)
             detected_stem_contours = []
             if original.stem is not None:
                 detected_stem_contours.append(
@@ -317,6 +319,27 @@ class VisualSidecar:
     def _is_stretched_notehead(note: Note) -> bool:
         height = max(float(note.box.size[1]), 1.0)
         return float(note.box.size[0]) / height > STRETCHED_NOTEHEAD_ASPECT_RATIO
+
+    def _is_hollow_notehead(self, note: Note) -> bool:
+        if self.source_image is None:
+            return False
+        image = self.source_image
+        if image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        polygon = np.asarray(note.box.polygon, dtype=np.int32).reshape(-1, 2)
+        left = max(0, int(np.min(polygon[:, 0])))
+        top = max(0, int(np.min(polygon[:, 1])))
+        right = min(image.shape[1], int(np.max(polygon[:, 0])) + 1)
+        bottom = min(image.shape[0], int(np.max(polygon[:, 1])) + 1)
+        if right <= left or bottom <= top:
+            return False
+        local_polygon = polygon - np.array([left, top])
+        mask = np.zeros((bottom - top, right - left), dtype=np.uint8)
+        cv2.fillPoly(mask, [local_polygon.reshape(-1, 1, 2)], 1)
+        pixels = image[top:bottom, left:right][mask > 0]
+        if len(pixels) == 0:
+            return False
+        return float(np.mean(pixels < 160)) < 0.78
 
     def _refined_notehead_contour(
         self, note: Note, neighboring_notes: list[Note]
@@ -1147,9 +1170,16 @@ class VisualSidecar:
         for ellipse in group.notehead_ellipses:
             output = {key: value for key, value in ellipse.items() if not key.startswith("_")}
             fit_source = ellipse.get("_fit_source")
+            aspect_ratio = float(output["rx"]) / max(float(output["ry"]), 1e-6)
+            mask_angle_needs_fallback = (
+                fit_source == "mask"
+                and abs(float(output["angle"])) < 6
+                and aspect_ratio < HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO
+                and not bool(ellipse.get("_is_hollow", False))
+            )
             if typical_angle is not None and (
                 fit_source == "fallback"
-                or (fit_source == "mask" and abs(float(output["angle"])) < 6)
+                or mask_angle_needs_fallback
             ):
                 output["angle"] = round(typical_angle, 3)
             ellipses.append(output)
