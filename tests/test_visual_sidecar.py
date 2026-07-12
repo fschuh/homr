@@ -92,6 +92,107 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
         self.assertEqual(visual_sidecar["unmatched_visual_notes"], [])
 
+    def test_shared_stem_components_are_exported_as_chord_identity(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        shared_stem_contour = np.array(
+            [[[19, 5]], [[21, 5]], [[21, 45]], [[19, 45]]], dtype=np.float32
+        )
+        separate_stem_contour = np.array(
+            [[[69, 5]], [[71, 5]], [[71, 25]], [[69, 25]]], dtype=np.float32
+        )
+        shared_stem = RotatedBoundingBox(
+            cv2.minAreaRect(shared_stem_contour), shared_stem_contour
+        )
+        separate_stem = RotatedBoundingBox(
+            cv2.minAreaRect(separate_stem_contour), separate_stem_contour
+        )
+
+        def make_note(x: int, y: int, visual_id: str, stem: RotatedBoundingBox) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (5, 4), 0, 0, 360, 10).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (10, 8), 0), contour),
+                position=4,
+                stem=stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(15, 15, "vnote-1", shared_stem),
+            make_note(15, 30, "vnote-2", shared_stem),
+            make_note(15, 42, "vnote-4", shared_stem),
+            make_note(65, 15, "vnote-3", separate_stem),
+        ]
+        collector = VisualSidecar(metadata, stem_fragments=[shared_stem, separate_stem])
+        collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        symbols = [
+            EncodedSymbol("note_4", "C4", coordinates=(15, 15)),
+            EncodedSymbol("note_4", "E4", coordinates=(15, 30)),
+            EncodedSymbol("note_8", "F4", coordinates=(15, 42)),
+            EncodedSymbol("note_4", "G4", coordinates=(65, 15)),
+        ]
+        collector.add_staff_matches(symbols, 0)
+
+        groups = {
+            group["visual_group_id"]: group for group in collector.to_json_dict()["visual_groups"]
+        }
+        self.assertTrue(groups["vnote-1"]["stem_component_ids"])
+        self.assertEqual(
+            groups["vnote-1"]["stem_component_ids"],
+            groups["vnote-2"]["stem_component_ids"],
+        )
+        self.assertEqual(groups["vnote-4"]["stem_component_ids"], [])
+        self.assertEqual(groups["vnote-3"]["stem_component_ids"], [])
+
+    def test_visual_notes_are_matched_by_attention_position_not_flat_cursor(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+
+        def make_note(x: int, y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (5, 4), 0, 0, 360, 10).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (10, 8), 0), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(20, 20, "upper-left"),
+            make_note(20, 80, "lower-left"),
+            make_note(60, 20, "upper-right"),
+            make_note(60, 80, "lower-right"),
+        ]
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        symbols = [
+            EncodedSymbol("note_4", "C5", coordinates=(20, 20)),
+            EncodedSymbol("note_8", "D5", coordinates=(60, 20)),
+            EncodedSymbol("note_16", "C3", coordinates=(20, 80)),
+            EncodedSymbol("note_2", "D3", coordinates=(60, 80)),
+        ]
+
+        collector.add_staff_matches(symbols, 0)
+
+        self.assertEqual(collector.matches_by_symbol_id[id(symbols[0])].visual_id, "upper-left")
+        self.assertEqual(collector.matches_by_symbol_id[id(symbols[1])].visual_id, "upper-right")
+        self.assertEqual(collector.matches_by_symbol_id[id(symbols[2])].visual_id, "lower-left")
+        self.assertEqual(collector.matches_by_symbol_id[id(symbols[3])].visual_id, "lower-right")
+
     def test_notehead_fitted_ellipse_is_recorded_in_source_coordinates(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(1000, 800),

@@ -12,7 +12,7 @@ from homr.bounding_boxes import RotatedBoundingBox
 from homr import constants
 from homr.model import Note, Staff
 from homr.note_detection import split_clumps_of_noteheads
-from homr.transformer.vocabulary import EncodedSymbol, sort_token_chords
+from homr.transformer.vocabulary import EncodedSymbol
 
 
 STRETCHED_NOTEHEAD_ASPECT_RATIO = 2.0
@@ -105,6 +105,9 @@ class VisualGroup:
     refined_notehead_contours: list[list[list[float]]]
     detected_stem_contours: list[list[list[float]]]
     stem_contours: list[list[list[float]]]
+    owned_stem_component_ids: list[str]
+    is_hollow_notehead: bool
+    duration: str | None = None
     linked_musicxml_ids: list[str] = field(default_factory=list)
 
     @property
@@ -269,12 +272,13 @@ class VisualSidecar:
             recovered_stretched_notehead = (
                 self._is_stretched_notehead(original) and refined_notehead_contour is not None
             )
+            is_hollow_notehead = self._is_hollow_notehead(original)
             if recovered_stretched_notehead:
                 notehead_contour = refined_notehead_contour
                 notehead_ellipse = self._ellipse_from_source_contour(refined_notehead_contour)
             else:
                 notehead_ellipse = self._notehead_ellipse_for_visual_sidecar(original)
-            notehead_ellipse["_is_hollow"] = self._is_hollow_notehead(original)
+            notehead_ellipse["_is_hollow"] = is_hollow_notehead
             detected_stem_contours = []
             if original.stem is not None:
                 detected_stem_contours.append(
@@ -286,6 +290,11 @@ class VisualSidecar:
                 stem_contours.append(
                     self.metadata.prediction_contour_to_source(stem.polygon)
                 )
+            owned_stem_component_ids = sorted(
+                f"staff-{staff_index}-stem-{component}"
+                for component, owner_note_ids in stem_ownership.owner_note_ids_by_component.items()
+                if id(original) in owner_note_ids and len(owner_note_ids) > 1
+            )
             self.visual_groups[original.visual_id] = VisualGroup(
                 visual_id=original.visual_id,
                 staff_index=staff_index,
@@ -300,6 +309,8 @@ class VisualSidecar:
                 ),
                 detected_stem_contours=detected_stem_contours,
                 stem_contours=stem_contours,
+                owned_stem_component_ids=owned_stem_component_ids,
+                is_hollow_notehead=is_hollow_notehead,
             )
             self.unmatched_visual_notes.add(original.visual_id)
 
@@ -339,7 +350,7 @@ class VisualSidecar:
         pixels = image[top:bottom, left:right][mask > 0]
         if len(pixels) == 0:
             return False
-        return float(np.mean(pixels < 160)) < 0.78
+        return float(np.mean(pixels < 160)) < 0.7
 
     def _refined_notehead_contour(
         self, note: Note, neighboring_notes: list[Note]
@@ -565,35 +576,84 @@ class VisualSidecar:
         visual_groups = [
             group for group in self.visual_groups.values() if group.staff_index == staff_index
         ]
-        visual_groups = sorted(
-            visual_groups,
-            key=lambda group: (
-                group.transformer_center[0] if group.transformer_center is not None else 0,
-                group.transformer_center[1] if group.transformer_center is not None else 0,
-            ),
-        )
-        visual_cursor = 0
-        for chord in sort_token_chords(symbols):
-            note_symbols = [symbol for symbol in chord if symbol.rhythm.startswith("note")]
-            if not note_symbols:
+        note_symbols = [symbol for symbol in symbols if symbol.rhythm.startswith("note")]
+
+        def valid_point(point: tuple[float, float] | None) -> bool:
+            return point is not None and bool(np.all(np.isfinite(point)))
+
+        candidates: list[tuple[float, int, int]] = []
+        for symbol_index, symbol in enumerate(note_symbols):
+            if not valid_point(symbol.coordinates):
                 continue
-            group_size = len(note_symbols)
-            candidate_group = visual_groups[visual_cursor : visual_cursor + group_size]
-            visual_cursor += group_size
-            for symbol, visual_group in zip(note_symbols, candidate_group, strict=False):
-                confidence = self._score_match(symbol, visual_group)
-                self.matches_by_symbol_id[id(symbol)] = VisualMatch(
-                    symbol=symbol,
-                    visual_id=visual_group.visual_id,
-                    confidence=confidence,
+            assert symbol.coordinates is not None
+            for group_index, group in enumerate(visual_groups):
+                if not valid_point(group.transformer_center):
+                    continue
+                assert group.transformer_center is not None
+                distance = float(
+                    np.linalg.norm(np.subtract(symbol.coordinates, group.transformer_center))
                 )
-                self.unmatched_visual_notes.discard(visual_group.visual_id)
-            for symbol in note_symbols[len(candidate_group) :]:
+                candidates.append((distance, symbol_index, group_index))
+
+        assigned_symbols: set[int] = set()
+        assigned_groups: set[int] = set()
+        assignments: list[tuple[int, int]] = []
+        for _, symbol_index, group_index in sorted(candidates):
+            if symbol_index in assigned_symbols or group_index in assigned_groups:
+                continue
+            assigned_symbols.add(symbol_index)
+            assigned_groups.add(group_index)
+            assignments.append((symbol_index, group_index))
+
+        unmatched_symbol_indices = [
+            index for index in range(len(note_symbols)) if index not in assigned_symbols
+        ]
+        unmatched_group_indices = [
+            index for index in range(len(visual_groups)) if index not in assigned_groups
+        ]
+        unmatched_group_indices.sort(
+            key=lambda index: visual_groups[index].transformer_center or (0.0, 0.0)
+        )
+        for symbol_index, group_index in zip(
+            unmatched_symbol_indices, unmatched_group_indices, strict=False
+        ):
+            assignments.append((symbol_index, group_index))
+            assigned_symbols.add(symbol_index)
+            assigned_groups.add(group_index)
+
+        for symbol_index, group_index in assignments:
+            symbol = note_symbols[symbol_index]
+            visual_group = visual_groups[group_index]
+            confidence = self._score_match(symbol, visual_group)
+            visual_group.duration = symbol.rhythm
+            self.matches_by_symbol_id[id(symbol)] = VisualMatch(
+                symbol=symbol,
+                visual_id=visual_group.visual_id,
+                confidence=confidence,
+            )
+            self.unmatched_visual_notes.discard(visual_group.visual_id)
+
+        for symbol_index, symbol in enumerate(note_symbols):
+            if symbol_index not in assigned_symbols:
                 self.matches_by_symbol_id[id(symbol)] = VisualMatch(
                     symbol=symbol,
                     visual_id=None,
                     confidence=0.0,
                 )
+
+    def _stem_component_ids_for_output(self, group: VisualGroup) -> list[str]:
+        if group.duration is None:
+            return []
+        result = []
+        for component_id in group.owned_stem_component_ids:
+            if any(
+                candidate.visual_id != group.visual_id
+                and candidate.duration == group.duration
+                and component_id in candidate.owned_stem_component_ids
+                for candidate in self.visual_groups.values()
+            ):
+                result.append(f"{component_id}-duration-{group.duration}")
+        return result
 
     def create_musicxml_id(self) -> str:
         musicxml_id = f"homr-note-{self._next_musicxml_note_id}"
@@ -1224,6 +1284,8 @@ class VisualSidecar:
                     "refined_notehead_contours": group.refined_notehead_contours,
                     "detected_stem_contours": group.detected_stem_contours,
                     "stem_contours": group.stem_contours,
+                    "stem_component_ids": self._stem_component_ids_for_output(group),
+                    "is_hollow_notehead": group.is_hollow_notehead,
                     "musicxml_ids": group.linked_musicxml_ids,
                 }
                 for group in sorted(self.visual_groups.values(), key=lambda g: g.visual_id)
