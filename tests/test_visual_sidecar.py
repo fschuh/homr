@@ -201,7 +201,8 @@ class TestVisualSidecar(unittest.TestCase):
         )
 
         collector.add_staff_visual_notes(0, [original], [original.copy()])
-        refined = collector.to_json_dict()["visual_groups"][0]["refined_notehead_contours"][0]
+        group = collector.to_json_dict()["visual_groups"][0]
+        refined = group["refined_notehead_contours"][0]
         xs = [point[0] for point in refined]
         ys = [point[1] for point in refined]
 
@@ -270,13 +271,19 @@ class TestVisualSidecar(unittest.TestCase):
         )
 
         collector.add_staff_visual_notes(0, [original], [original.copy()])
-        refined = collector.to_json_dict()["visual_groups"][0]["refined_notehead_contours"][0]
+        group = collector.to_json_dict()["visual_groups"][0]
+        refined = group["refined_notehead_contours"][0]
         xs = [point[0] for point in refined]
         ys = [point[1] for point in refined]
 
         self.assertAlmostEqual((min(xs) + max(xs)) / 2, 60, delta=1.5)
         self.assertAlmostEqual((min(ys) + max(ys)) / 2, 50, delta=1.5)
         self.assertLessEqual(max(xs) - min(xs), 20)
+        self.assertEqual(group["notehead_contours"][0], refined)
+        ellipse = group["notehead_ellipses"][0]
+        self.assertAlmostEqual(ellipse["center"][0], 60, delta=1.5)
+        self.assertAlmostEqual(ellipse["center"][1], 50, delta=1.5)
+        self.assertLessEqual(ellipse["rx"] * 2, 20)
 
     def test_refined_notehead_does_not_collapse_onto_staff_line(self) -> None:
         metadata = PreprocessingMetadata(

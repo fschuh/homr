@@ -15,6 +15,9 @@ from homr.note_detection import split_clumps_of_noteheads
 from homr.transformer.vocabulary import EncodedSymbol, sort_token_chords
 
 
+STRETCHED_NOTEHEAD_ASPECT_RATIO = 2.0
+
+
 class StemRepairDirection(Enum):
     UP = "up"
     DOWN = "down"
@@ -262,6 +265,14 @@ class VisualSidecar:
             notehead_contour = self.metadata.prediction_contour_to_source(original.box.polygon)
             detected_notehead_contour = self._detected_notehead_contour(original)
             refined_notehead_contour = self._refined_notehead_contour(original, original_notes)
+            recovered_stretched_notehead = (
+                self._is_stretched_notehead(original) and refined_notehead_contour is not None
+            )
+            if recovered_stretched_notehead:
+                notehead_contour = refined_notehead_contour
+                notehead_ellipse = self._ellipse_from_source_contour(refined_notehead_contour)
+            else:
+                notehead_ellipse = self._notehead_ellipse_for_visual_sidecar(original)
             detected_stem_contours = []
             if original.stem is not None:
                 detected_stem_contours.append(
@@ -279,9 +290,7 @@ class VisualSidecar:
                 staff_position=original.position,
                 prediction_center=original.center,
                 transformer_center=transformed.center,
-                notehead_ellipses=[
-                    self._notehead_ellipse_for_visual_sidecar(original)
-                ],
+                notehead_ellipses=[notehead_ellipse],
                 notehead_contours=[notehead_contour],
                 detected_notehead_contours=[detected_notehead_contour],
                 refined_notehead_contours=(
@@ -297,6 +306,17 @@ class VisualSidecar:
         mask_contour = self._notehead_mask_contour(note)
         contour = mask_contour if mask_contour is not None else note.box.contours
         return self.metadata.prediction_contour_to_source(contour)
+
+    def _ellipse_from_source_contour(self, contour: list[list[float]]) -> dict[str, Any]:
+        points = np.asarray(contour, dtype=np.float32).reshape(-1, 1, 2)
+        ellipse = self.metadata._ellipse_to_json(cv2.fitEllipse(points))
+        ellipse["_fit_source"] = "recovered"
+        return ellipse
+
+    @staticmethod
+    def _is_stretched_notehead(note: Note) -> bool:
+        height = max(float(note.box.size[1]), 1.0)
+        return float(note.box.size[0]) / height > STRETCHED_NOTEHEAD_ASPECT_RATIO
 
     def _refined_notehead_contour(
         self, note: Note, neighboring_notes: list[Note]
@@ -413,7 +433,7 @@ class VisualSidecar:
             )
 
         initial_angles = (-35.0, -20.0, -5.0, 10.0)
-        detection_is_stretched = float(note.box.size[0]) > float(note.box.size[1]) * 2.0
+        detection_is_stretched = self._is_stretched_notehead(note)
         initial_major_ratio = 0.62 if detection_is_stretched else 0.72
         initial_minor_ratio = 0.46 if detection_is_stretched else 0.50
         anchored = max(
