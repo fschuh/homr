@@ -17,6 +17,7 @@ from homr.transformer.vocabulary import EncodedSymbol
 
 STRETCHED_NOTEHEAD_ASPECT_RATIO = 2.0
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
+MAX_RECONSTRUCTED_STEM_DISTANCE_IN_NOTEHEADS = 8.0
 
 
 class StemRepairDirection(Enum):
@@ -1164,7 +1165,8 @@ class VisualSidecar:
         notehead_height = max(float(note.box.size[1]), 1.0)
         max_width = max(8.0, notehead_width * 0.75)
         return (
-            width <= max_width
+            self._is_stem_fragment_near_note(points, note, notehead_height)
+            and width <= max_width
             and height >= max(2.0 * max(width, 1.0), notehead_height * 0.45)
         )
 
@@ -1176,8 +1178,22 @@ class VisualSidecar:
         notehead_height = max(float(note.box.size[1]), 1.0)
         max_width = max(8.0, notehead_width * 0.75)
         return (
-            width <= max_width
+            self._is_stem_fragment_near_note(points, note, notehead_height)
+            and width <= max_width
             and height >= max(2.0 * max(width, 1.0), notehead_height * 0.75)
+        )
+
+    @staticmethod
+    def _is_stem_fragment_near_note(
+        points: Any, note: Note, notehead_height: float
+    ) -> bool:
+        """Keep stem recovery from crossing into unrelated vertically aligned notation."""
+        max_distance = notehead_height * MAX_RECONSTRUCTED_STEM_DISTANCE_IN_NOTEHEADS
+        top = float(np.min(points[:, 1]))
+        bottom = float(np.max(points[:, 1]))
+        return (
+            top >= note.center[1] - max_distance
+            and bottom <= note.center[1] + max_distance
         )
 
     def _is_collinear_stem_fragment(

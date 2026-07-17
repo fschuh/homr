@@ -682,6 +682,47 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertLess(max(xs) - min(xs), 10)
         self.assertEqual(original.stem, stem)
 
+    def test_visual_sidecar_stem_repair_does_not_reach_distant_tempo_mark(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        notehead = BoundingEllipse(
+            ((50, 100), (14, 12), 0), np.array([[43, 94], [57, 106]])
+        )
+        detected_stem = RotatedBoundingBox(
+            ((57, 95), (2, 10), 0), np.array([[56, 90], [58, 100]])
+        )
+        tempo_mark_stem = RotatedBoundingBox(
+            ((64, 15), (2, 30), 0), np.array([[63, 0], [65, 30]])
+        )
+        collector = VisualSidecar(metadata, [detected_stem, tempo_mark_stem])
+        original = Note(
+            notehead,
+            position=4,
+            stem=detected_stem,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+        group = collector.to_json_dict()["visual_groups"][0]
+        stem_ys = [point[1] for point in group["stem_contours"][0]]
+
+        self.assertGreater(min(stem_ys), 80)
+        self.assertEqual(
+            [stem["contour"] for stem in collector.to_json_dict()["raw_stem_contours"]],
+            [
+                [[56, 90], [58, 100]],
+                [[63, 0], [65, 30]],
+            ],
+        )
+        self.assertEqual(original.stem, detected_stem)
+
     def test_visual_sidecar_replaces_tiny_bad_seed_with_nearby_vertical_seed(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
