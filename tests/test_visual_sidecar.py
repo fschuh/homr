@@ -134,7 +134,9 @@ class TestVisualSidecar(unittest.TestCase):
         collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
         symbols = [
             EncodedSymbol("note_4", "C4", coordinates=(15, 15)),
-            EncodedSymbol("note_4", "E4", coordinates=(15, 30)),
+            # A stray augmentation-dot prediction must not split noteheads that
+            # share both a physical stem and the same base duration.
+            EncodedSymbol("note_4.", "E4", coordinates=(15, 30)),
             EncodedSymbol("note_8", "F4", coordinates=(15, 42)),
             EncodedSymbol("note_4", "G4", coordinates=(65, 15)),
         ]

@@ -646,15 +646,17 @@ class VisualSidecar:
     def _stem_component_ids_for_output(self, group: VisualGroup) -> list[str]:
         if group.duration is None:
             return []
+        duration_class = group.duration.rstrip(".")
         result = []
         for component_id in group.owned_stem_component_ids:
             if any(
                 candidate.visual_id != group.visual_id
-                and candidate.duration == group.duration
+                and candidate.duration is not None
+                and candidate.duration.rstrip(".") == duration_class
                 and component_id in candidate.owned_stem_component_ids
                 for candidate in self.visual_groups.values()
             ):
-                result.append(f"{component_id}-duration-{group.duration}")
+                result.append(f"{component_id}-duration-{duration_class}")
         return result
 
     def create_musicxml_id(self) -> str:
