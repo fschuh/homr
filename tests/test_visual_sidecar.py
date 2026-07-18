@@ -12,6 +12,52 @@ from homr.transformer.vocabulary import EncodedSymbol
 
 
 class TestVisualSidecar(unittest.TestCase):
+    def test_exports_distinct_stave_indices_for_a_grand_staff(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 160),
+            autocrop_box=(0, 0, 100, 160),
+            cropped_size=(100, 160),
+            resized_size=(100, 160),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 160),
+        )
+        collector = VisualSidecar(metadata)
+
+        def make_note(y: int, visual_id: str) -> Note:
+            return Note(
+                BoundingEllipse(
+                    ((20, y), (8, 6), 0),
+                    np.array([[16, y - 3], [24, y + 3]]),
+                    1,
+                ),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        upper_note = make_note(30, "vnote-upper")
+        lower_note = make_note(120, "vnote-lower")
+        upper_staff = Staff([StaffPoint(20, [10, 20, 30, 40, 50], 0)])
+        lower_staff = Staff([StaffPoint(20, [100, 110, 120, 130, 140], 0)])
+        upper_staff.add_symbol(upper_note)
+        lower_staff.add_symbol(lower_note)
+        grand_staff = upper_staff.merge(lower_staff)
+
+        collector.prepare_recovery_notes([grand_staff])
+        collector.add_staff_visual_notes(
+            0,
+            [upper_note, lower_note],
+            [upper_note.copy(), lower_note.copy()],
+        )
+        groups = {
+            group["visual_group_id"]: group
+            for group in collector.to_json_dict()["visual_groups"]
+        }
+
+        self.assertEqual(groups["vnote-upper"]["stave_index"], 0)
+        self.assertEqual(groups["vnote-lower"]["stave_index"], 1)
+
     def test_recovers_real_fifth_ledger_line_candidate_for_sidecar_only(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(200, 200),

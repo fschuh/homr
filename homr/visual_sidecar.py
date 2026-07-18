@@ -98,6 +98,7 @@ class PreprocessingMetadata:
 class VisualGroup:
     visual_id: str
     staff_index: int
+    stave_index: int
     staff_position: int
     prediction_center: tuple[float, float]
     transformer_center: tuple[float, float] | None
@@ -165,6 +166,7 @@ class VisualSidecar:
         self.notehead_candidates = notehead_candidates or []
         self.source_image = source_image
         self._recovery_notes_by_staff_id: dict[int, list[Note]] = {}
+        self._stave_index_by_visual_id: dict[str, int] = {}
         self._stem_ownership_cache: StemOwnershipCache | None = None
         self.visual_groups: dict[str, VisualGroup] = {}
         self.matches_by_symbol_id: dict[int, VisualMatch] = {}
@@ -180,6 +182,12 @@ class VisualSidecar:
         ``staff.symbols`` and therefore cannot affect TrOMR inference or MusicXML output.
         """
         self._recovery_notes_by_staff_id = {id(staff): [] for staff in staffs}
+        self._stave_index_by_visual_id = {
+            note.visual_id: self._stave_index_for_center(staff, note.center)
+            for staff in staffs
+            for note in staff.get_notes()
+            if note.visual_id is not None
+        }
         existing_notes = [note for staff in staffs for note in staff.get_notes()]
         for candidate in self.notehead_candidates:
             notehead = candidate.notehead
@@ -239,6 +247,9 @@ class VisualSidecar:
                     position = nearest_point.find_position_in_unit_sizes(split_notehead)
                 visual_id = f"vnote-recovered-{self._next_recovered_visual_id}"
                 self._next_recovered_visual_id += 1
+                self._stave_index_by_visual_id[visual_id] = self._stave_index_for_center(
+                    staff, split_notehead.center
+                )
                 self._recovery_notes_by_staff_id[id(staff)].append(
                     Note(
                         split_notehead,
@@ -258,6 +269,21 @@ class VisualSidecar:
 
     def recovery_notes_for_staff(self, staff: Staff) -> list[Note]:
         return self._recovery_notes_by_staff_id.get(id(staff), [])
+
+    @staticmethod
+    def _stave_index_for_center(staff: Staff, center: tuple[float, float]) -> int:
+        point = staff.get_at(center[0])
+        if point is None:
+            point = min(staff.grid, key=lambda candidate: abs(candidate.x - center[0]))
+        lines_per_stave = constants.number_of_lines_on_a_staff
+        line_groups = [
+            point.y[index : index + lines_per_stave]
+            for index in range(0, len(point.y), lines_per_stave)
+        ]
+        return min(
+            range(len(line_groups)),
+            key=lambda index: min(abs(line_y - center[1]) for line_y in line_groups[index]),
+        )
 
     def add_staff_visual_notes(
         self, staff_index: int, original_notes: list[Note], transformed_notes: list[Note]
@@ -300,6 +326,7 @@ class VisualSidecar:
             self.visual_groups[original.visual_id] = VisualGroup(
                 visual_id=original.visual_id,
                 staff_index=staff_index,
+                stave_index=self._stave_index_by_visual_id.get(original.visual_id, 0),
                 staff_position=original.position,
                 prediction_center=original.center,
                 transformer_center=transformed.center,
@@ -1296,6 +1323,7 @@ class VisualSidecar:
                 {
                     "visual_group_id": group.visual_id,
                     "staff_index": group.staff_index,
+                    "stave_index": group.stave_index,
                     "staff_position": group.staff_position,
                     "center": [
                         round(
