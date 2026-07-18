@@ -18,6 +18,7 @@ from homr.transformer.vocabulary import EncodedSymbol
 STRETCHED_NOTEHEAD_ASPECT_RATIO = 2.0
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 MAX_RECONSTRUCTED_STEM_DISTANCE_IN_NOTEHEADS = 8.0
+MAX_STEM_COMPONENT_GAP_IN_NOTEHEADS = 1.5
 
 
 class StemRepairDirection(Enum):
@@ -775,7 +776,14 @@ class VisualSidecar:
         widths = [float(note.box.size[0]) for note in notes]
         heights = [float(note.box.size[1]) for note in notes]
         x_tolerance = max(4.0, float(np.median(widths)) * 0.6) if widths else 4.0
-        max_vertical_gap = max(4.0, float(np.median(heights))) if heights else 4.0
+        max_vertical_gap = (
+            max(
+                4.0,
+                float(np.median(heights)) * MAX_STEM_COMPONENT_GAP_IN_NOTEHEADS,
+            )
+            if heights
+            else 4.0
+        )
 
         parent = list(range(len(self.stem_fragments)))
 

@@ -151,6 +151,73 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(groups["vnote-4"]["stem_component_ids"], [])
         self.assertEqual(groups["vnote-3"]["stem_component_ids"], [])
 
+    def test_split_stem_across_displaced_noteheads_is_exported_as_one_chord(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        upper_stem_contour = np.array(
+            [[[50, 20]], [[52, 20]], [[52, 50]], [[50, 50]]], dtype=np.float32
+        )
+        lower_stem_contour = np.array(
+            [[[50, 66]], [[52, 66]], [[52, 96]], [[50, 96]]], dtype=np.float32
+        )
+        upper_stem = RotatedBoundingBox(
+            cv2.minAreaRect(upper_stem_contour), upper_stem_contour
+        )
+        lower_stem = RotatedBoundingBox(
+            cv2.minAreaRect(lower_stem_contour), lower_stem_contour
+        )
+
+        def make_note(
+            x: int,
+            y: int,
+            visual_id: str,
+            stem: RotatedBoundingBox,
+        ) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (10, 7), 0, 0, 360, 10).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (20, 14), 0), contour),
+                position=4,
+                stem=stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(60, 30, "vnote-top", upper_stem),
+            make_note(60, 50, "vnote-middle", upper_stem),
+            make_note(40, 60, "vnote-displaced", lower_stem),
+        ]
+        collector = VisualSidecar(metadata, stem_fragments=[upper_stem, lower_stem])
+        collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        collector.add_staff_matches(
+            [
+                EncodedSymbol("note_8", "C6", coordinates=(60, 30)),
+                EncodedSymbol("note_8", "G5", coordinates=(60, 50)),
+                EncodedSymbol("note_8", "F5", coordinates=(40, 60)),
+            ],
+            0,
+        )
+
+        groups = {
+            group["visual_group_id"]: group
+            for group in collector.to_json_dict()["visual_groups"]
+        }
+        chord_component_ids = groups["vnote-top"]["stem_component_ids"]
+
+        self.assertTrue(chord_component_ids)
+        self.assertEqual(
+            groups["vnote-middle"]["stem_component_ids"], chord_component_ids
+        )
+        self.assertEqual(
+            groups["vnote-displaced"]["stem_component_ids"], chord_component_ids
+        )
+
     def test_visual_notes_are_matched_by_attention_position_not_flat_cursor(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(100, 100),
