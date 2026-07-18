@@ -92,6 +92,74 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
         self.assertEqual(visual_sidecar["unmatched_visual_notes"], [])
 
+    def test_musicxml_ids_survive_tuplet_cleanup_copy(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        collector = VisualSidecar(metadata)
+        original = Note(
+            BoundingEllipse(((10, 20), (8, 6), 0), np.array([[6, 17], [14, 23]]), 1),
+            position=4,
+            stem=RotatedBoundingBox(((14, 15), (2, 20), 0), np.array([[14, 5], [14, 25]])),
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+        transformed = original.copy()
+        collector.add_staff_visual_notes(0, [original], [transformed])
+
+        matched_symbol = EncodedSymbol("note_6", "C4", "_", "_", "_", "upper")
+        collector.add_staff_matches([matched_symbol], 0)
+        cleaned_symbol = matched_symbol.remove_tuplet()
+        self.assertIsNot(cleaned_symbol, matched_symbol)
+        self.assertEqual(cleaned_symbol.rhythm, "note_4")
+
+        xml = generate_xml(
+            XmlGeneratorArguments(), [[cleaned_symbol]], "", visual_sidecar=collector
+        )
+        xml_ids = self._musicxml_note_ids(xml)
+        visual_sidecar = collector.to_json_dict()
+
+        self.assertEqual(xml_ids, visual_sidecar["visual_groups"][0]["musicxml_ids"])
+        self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
+        self.assertEqual(visual_sidecar["unmatched_visual_notes"], [])
+
+    def test_pitched_rest_rhythm_is_linked_as_the_musicxml_note_it_generates(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        collector = VisualSidecar(metadata)
+        original = Note(
+            BoundingEllipse(((10, 20), (8, 6), 0), np.array([[6, 17], [14, 23]]), 1),
+            position=4,
+            stem=RotatedBoundingBox(((14, 15), (2, 20), 0), np.array([[14, 5], [14, 25]])),
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+        collector.add_staff_visual_notes(0, [original], [original.copy()])
+
+        pitched_rest = EncodedSymbol("rest_8", "C4", "_", "_", "_", "lower")
+        collector.add_staff_matches([pitched_rest], 0)
+        xml = generate_xml(
+            XmlGeneratorArguments(), [[pitched_rest]], "", visual_sidecar=collector
+        )
+        xml_ids = self._musicxml_note_ids(xml)
+        visual_sidecar = collector.to_json_dict()
+
+        self.assertEqual(xml_ids, visual_sidecar["visual_groups"][0]["musicxml_ids"])
+        self.assertEqual(visual_sidecar["notes"][0]["pitch"], "C4")
+        self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
+        self.assertEqual(visual_sidecar["unmatched_visual_notes"], [])
+
     def test_shared_stem_components_are_exported_as_chord_identity(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(100, 100),

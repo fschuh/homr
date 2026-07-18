@@ -578,7 +578,11 @@ class VisualSidecar:
         visual_groups = [
             group for group in self.visual_groups.values() if group.staff_index == staff_index
         ]
-        note_symbols = [symbol for symbol in symbols if symbol.rhythm.startswith("note")]
+        note_symbols = [
+            symbol
+            for symbol in symbols
+            if symbol.rhythm.startswith(("note", "rest")) and symbol.pitch not in ("_", ".")
+        ]
 
         def valid_point(point: tuple[float, float] | None) -> bool:
             return point is not None and bool(np.all(np.isfinite(point)))
@@ -628,7 +632,7 @@ class VisualSidecar:
             visual_group = visual_groups[group_index]
             confidence = self._score_match(symbol, visual_group)
             visual_group.duration = symbol.rhythm
-            self.matches_by_symbol_id[id(symbol)] = VisualMatch(
+            self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                 symbol=symbol,
                 visual_id=visual_group.visual_id,
                 confidence=confidence,
@@ -637,7 +641,7 @@ class VisualSidecar:
 
         for symbol_index, symbol in enumerate(note_symbols):
             if symbol_index not in assigned_symbols:
-                self.matches_by_symbol_id[id(symbol)] = VisualMatch(
+                self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                     symbol=symbol,
                     visual_id=None,
                     confidence=0.0,
@@ -673,7 +677,7 @@ class VisualSidecar:
         voice: int,
         symbol: EncodedSymbol,
     ) -> None:
-        match = self.matches_by_symbol_id.get(id(symbol))
+        match = self.matches_by_symbol_id.get(symbol.visual_match_id)
         visual_id = match.visual_id if match is not None else None
         confidence = match.confidence if match is not None else 0.0
         pitch = symbol.pitch if symbol.pitch not in ("_", ".") else None

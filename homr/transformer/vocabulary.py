@@ -286,6 +286,11 @@ class EncodedSymbol:
         self.articulation = articulation
         self.slur = slur
         self.position = position
+        # Shallow symbol copies are created by cleanup transformations (for
+        # example, when an over-eager tuplet is converted from note_6 to
+        # note_4). Keep a stable identity so visual-sidecar matches survive
+        # those value-only transformations.
+        self.visual_match_id = id(self)
 
         # These coordinates are derived from transformer attention and are inherently imprecise,
         # since the model is optimized for predictive accuracy rather than spatial localization.
