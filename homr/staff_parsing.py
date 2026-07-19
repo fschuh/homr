@@ -315,7 +315,11 @@ def parse_staff_image(
     eprint("Running TrOmr inference on staff image", index)
     result = parse_staff_tromr(staff_image=staff_image, staff=transformed_staff, config=config)
     if visual_sidecar is not None:
-        visual_sidecar.add_staff_matches(result, index)
+        visual_sidecar.add_staff_matches(
+            result,
+            index,
+            source_staff=staff,
+        )
     if debug.debug:
         result_image = staff_image.copy()
         for i, symbol in enumerate(result):

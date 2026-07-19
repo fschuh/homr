@@ -390,6 +390,218 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(collector.matches_by_symbol_id[id(symbols[2])].visual_id, "lower-left")
         self.assertEqual(collector.matches_by_symbol_id[id(symbols[3])].visual_id, "lower-right")
 
+    def test_shared_stem_repairs_chord_member_swapped_with_neighbor(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        shared_stem_contour = np.array(
+            [[[64, 25]], [[66, 25]], [[66, 70]], [[64, 70]]], dtype=np.float32
+        )
+        shared_stem = RotatedBoundingBox(
+            cv2.minAreaRect(shared_stem_contour), shared_stem_contour
+        )
+
+        def make_note(
+            x: int,
+            y: int,
+            visual_id: str,
+            stem: RotatedBoundingBox | None = None,
+        ) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(
+                -1, 1, 2
+            )
+            return Note(
+                BoundingEllipse(((x, y), (14, 10), -20), contour),
+                position=4,
+                stem=stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        single = make_note(40, 80, "single")
+        chord_top = make_note(60, 40, "chord-top", shared_stem)
+        chord_bottom = make_note(60, 60, "chord-bottom", shared_stem)
+        extra = make_note(110, 100, "extra")
+        collector = VisualSidecar(metadata, stem_fragments=[shared_stem])
+        collector.add_staff_visual_notes(
+            0,
+            [single, chord_top, chord_bottom, extra],
+            [single.copy(), chord_top.copy(), chord_bottom.copy(), extra.copy()],
+        )
+        single_symbol = EncodedSymbol("note_16", "G4", coordinates=(60, 60))
+        chord_top_symbol = EncodedSymbol("note_16", "D5", coordinates=(60, 40))
+        chord_bottom_symbol = EncodedSymbol("note_16", "Bb4", coordinates=(40, 80))
+
+        collector.add_staff_matches(
+            [
+                single_symbol,
+                chord_top_symbol,
+                EncodedSymbol("chord"),
+                chord_bottom_symbol,
+            ],
+            0,
+        )
+
+        self.assertEqual(
+            collector.matches_by_symbol_id[single_symbol.visual_match_id].visual_id,
+            "single",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[chord_top_symbol.visual_match_id].visual_id,
+            "chord-top",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[chord_bottom_symbol.visual_match_id].visual_id,
+            "chord-bottom",
+        )
+
+    def test_complete_moments_override_repeated_note_attention_across_staves(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+
+        def make_note(x: int, y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(
+                -1, 1, 2
+            )
+            return Note(
+                BoundingEllipse(((x, y), (14, 10), -20), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        upper_first = make_note(20, 35, "upper-first")
+        lower_first = make_note(20, 95, "lower-first")
+        upper_second = make_note(60, 35, "upper-second")
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(
+            0,
+            [upper_first, lower_first, upper_second],
+            [upper_first.copy(), lower_first.copy(), upper_second.copy()],
+        )
+        collector.visual_groups["lower-first"].stave_index = 1
+        first_upper_symbol = EncodedSymbol(
+            "note_16", "Gb4", position="upper", coordinates=(60, 35)
+        )
+        first_lower_symbol = EncodedSymbol(
+            "note_2", "Bb3", position="lower", coordinates=(20, 95)
+        )
+        second_upper_symbol = EncodedSymbol(
+            "note_16", "Gb4", position="upper", coordinates=(20, 35)
+        )
+
+        collector.add_staff_matches(
+            [
+                first_upper_symbol,
+                EncodedSymbol("chord"),
+                first_lower_symbol,
+                second_upper_symbol,
+            ],
+            0,
+        )
+
+        self.assertEqual(
+            collector.matches_by_symbol_id[first_upper_symbol.visual_match_id].visual_id,
+            "upper-first",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[first_lower_symbol.visual_match_id].visual_id,
+            "lower-first",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[second_upper_symbol.visual_match_id].visual_id,
+            "upper-second",
+        )
+
+    def test_recovers_hollow_notehead_positioned_by_transformer(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 150),
+            autocrop_box=(0, 0, 120, 150),
+            cropped_size=(120, 150),
+            resized_size=(120, 150),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 150),
+        )
+        image = np.full((150, 120), 255, dtype=np.uint8)
+        cv2.ellipse(image, (60, 25), (7, 5), -20, 0, 360, 0, 2)
+        cv2.ellipse(image, (60, 50), (7, 5), -20, 0, 360, 0, -1)
+        staff = Staff(
+            [
+                StaffPoint(0, [20, 30, 40, 50, 60, 80, 90, 100, 110, 120], 0),
+                StaffPoint(120, [20, 30, 40, 50, 60, 80, 90, 100, 110, 120], 0),
+            ]
+        )
+        lower_contour = cv2.ellipse2Poly(
+            (60, 50), (7, 5), -20, 0, 360, 5
+        ).reshape(-1, 1, 2)
+        lower = Note(
+            BoundingEllipse(((60, 50), (14, 10), -20), lower_contour),
+            position=3,
+            stem=None,
+            stem_direction=None,
+            visual_id="vnote-lower",
+        )
+        collector = VisualSidecar(metadata, source_image=image)
+        collector.add_staff_visual_notes(0, [lower], [lower.copy()])
+        lower_symbol = EncodedSymbol(
+            "note_2.", "G4", position="upper", coordinates=(60, 50)
+        )
+        # Attention is deliberately offset. Chord pitch and the matched lower head
+        # provide the exact same-stave position in the grand-staff source grid.
+        upper_symbol = EncodedSymbol(
+            "note_2.", "E5", position="upper", coordinates=(68, 10)
+        )
+
+        collector.add_staff_matches(
+            [upper_symbol, EncodedSymbol("chord"), lower_symbol],
+            0,
+            source_staff=staff,
+        )
+
+        upper_match = collector.matches_by_symbol_id[id(upper_symbol)]
+        self.assertIsNotNone(upper_match.visual_id)
+        self.assertTrue(str(upper_match.visual_id).startswith("vnote-transformer-recovered-"))
+        recovered = collector.visual_groups[str(upper_match.visual_id)]
+        self.assertAlmostEqual(recovered.notehead_ellipses[0]["center"][0], 60, delta=2)
+        self.assertAlmostEqual(recovered.notehead_ellipses[0]["center"][1], 25, delta=2)
+        self.assertEqual(recovered.staff_position, 8)
+
+    def test_does_not_recover_transformer_note_without_notehead_ink(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        image = np.full((120, 120), 255, dtype=np.uint8)
+        staff = Staff(
+            [
+                StaffPoint(0, [40, 50, 60, 70, 80], 0),
+                StaffPoint(120, [40, 50, 60, 70, 80], 0),
+            ]
+        )
+        collector = VisualSidecar(metadata, source_image=image)
+        symbol = EncodedSymbol("note_2.", "E5", coordinates=(60, 35))
+
+        collector.add_staff_matches([symbol], 0, source_staff=staff)
+
+        self.assertIsNone(collector.matches_by_symbol_id[id(symbol)].visual_id)
+        self.assertEqual(collector.visual_groups, {})
+
     def test_notehead_fitted_ellipse_is_recorded_in_source_coordinates(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(1000, 800),
