@@ -26,6 +26,14 @@ class StemRepairDirection(Enum):
     DOWN = "down"
 
 
+def sounding_pitch(symbol: EncodedSymbol) -> str | None:
+    if symbol.pitch in ("_", "."):
+        return None
+    if symbol.lift in ("#", "##", "b", "bb"):
+        return f"{symbol.pitch[0]}{symbol.lift}{symbol.pitch[1:]}"
+    return symbol.pitch
+
+
 @dataclass(frozen=True)
 class PreprocessingMetadata:
     source_image_size: tuple[int, int]
@@ -707,7 +715,7 @@ class VisualSidecar:
         match = self.matches_by_symbol_id.get(symbol.visual_match_id)
         visual_id = match.visual_id if match is not None else None
         confidence = match.confidence if match is not None else 0.0
-        pitch = symbol.pitch if symbol.pitch not in ("_", ".") else None
+        pitch = sounding_pitch(symbol)
         if visual_id is not None and visual_id in self.visual_groups:
             self.visual_groups[visual_id].linked_musicxml_ids.append(musicxml_id)
         self.musicxml_notes.append(

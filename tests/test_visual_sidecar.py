@@ -7,11 +7,25 @@ from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note, Staff, StaffPoint
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
 from homr.note_detection import NoteheadWithStem
-from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar
+from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar, sounding_pitch
 from homr.transformer.vocabulary import EncodedSymbol
 
 
 class TestVisualSidecar(unittest.TestCase):
+    def test_sidecar_pitch_includes_resolved_accidentals(self) -> None:
+        self.assertEqual(
+            sounding_pitch(EncodedSymbol("note_4", "A3", "b", "_", "_", "upper")),
+            "Ab3",
+        )
+        self.assertEqual(
+            sounding_pitch(EncodedSymbol("note_4", "G3", "#", "_", "_", "upper")),
+            "G#3",
+        )
+        self.assertEqual(
+            sounding_pitch(EncodedSymbol("note_4", "C4", "N", "_", "_", "upper")),
+            "C4",
+        )
+
     def test_exports_distinct_stave_indices_for_a_grand_staff(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(100, 160),
