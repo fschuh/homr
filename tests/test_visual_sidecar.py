@@ -7,8 +7,8 @@ from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note, Staff, StaffPoint
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
 from homr.note_detection import NoteheadWithStem
-from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar, sounding_pitch
 from homr.transformer.vocabulary import EncodedSymbol
+from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar, sounding_pitch
 
 
 class TestVisualSidecar(unittest.TestCase):
@@ -459,6 +459,101 @@ class TestVisualSidecar(unittest.TestCase):
             collector.matches_by_symbol_id[chord_bottom_symbol.visual_match_id].visual_id,
             "chord-bottom",
         )
+
+    def test_adjacent_opposing_stems_do_not_swap_neighbor_with_chord_member(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+
+        def stem(x: int, top: int, bottom: int) -> RotatedBoundingBox:
+            contour = np.array(
+                [[[x - 1, top]], [[x + 1, top]], [[x + 1, bottom]], [[x - 1, bottom]]],
+                dtype=np.float32,
+            )
+            return RotatedBoundingBox(cv2.minAreaRect(contour), contour)
+
+        preceding_up_stem = stem(58, 20, 50)
+        chord_top_up_stem = stem(86, 5, 35)
+        chord_bottom_down_stem = stem(66, 60, 95)
+
+        def note(
+            x: int,
+            y: int,
+            visual_id: str,
+            note_stem: RotatedBoundingBox,
+        ) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (10, 7), -20, 0, 360, 5).reshape(
+                -1, 1, 2
+            )
+            return Note(
+                BoundingEllipse(((x, y), (20, 14), -20), contour),
+                position=4,
+                stem=note_stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        preceding = note(48, 50, "preceding", preceding_up_stem)
+        chord_top = note(76, 35, "chord-top", chord_top_up_stem)
+        chord_bottom = note(76, 60, "chord-bottom", chord_bottom_down_stem)
+        notes = [preceding, chord_top, chord_bottom]
+        collector = VisualSidecar(
+            metadata,
+            stem_fragments=[
+                preceding_up_stem,
+                chord_top_up_stem,
+                chord_bottom_down_stem,
+            ],
+        )
+        collector.add_staff_visual_notes(
+            0,
+            notes,
+            [candidate.copy() for candidate in notes],
+        )
+        preceding_symbol = EncodedSymbol("note_32", "G4", coordinates=(48, 50))
+        chord_top_symbol = EncodedSymbol("note_8", "B4", coordinates=(76, 35))
+        chord_bottom_symbol = EncodedSymbol("note_4", "F#4", coordinates=(76, 60))
+
+        collector.add_staff_matches(
+            [
+                preceding_symbol,
+                chord_top_symbol,
+                EncodedSymbol("chord"),
+                chord_bottom_symbol,
+            ],
+            0,
+        )
+
+        self.assertEqual(
+            collector.matches_by_symbol_id[preceding_symbol.visual_match_id].visual_id,
+            "preceding",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[chord_top_symbol.visual_match_id].visual_id,
+            "chord-top",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[chord_bottom_symbol.visual_match_id].visual_id,
+            "chord-bottom",
+        )
+        self.assertTrue(
+            set(collector.visual_groups["preceding"].owned_stem_component_ids).isdisjoint(
+                collector.visual_groups["chord-bottom"].owned_stem_component_ids
+            )
+        )
+        for visual_id in ("preceding", "chord-bottom"):
+            points = collector.visual_groups[visual_id].stem_contours[0]
+            self.assertLess(
+                max(point[1] for point in points) - min(point[1] for point in points),
+                50,
+            )
 
     def test_complete_moments_override_repeated_note_attention_across_staves(self) -> None:
         metadata = PreprocessingMetadata(

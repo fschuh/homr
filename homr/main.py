@@ -35,7 +35,6 @@ from homr.onnx_providers import coreml_available, cuda_available
 from homr.resize import resize_image_with_metadata
 from homr.segmentation.config import segnet_path_onnx, segnet_path_onnx_fp16
 from homr.segmentation.inference_segnet import extract
-from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar, write_visual_sidecar
 from homr.simple_logging import eprint
 from homr.staff_detection import break_wide_fragments, detect_staff, make_lines_stronger
 from homr.staff_parsing import parse_staffs
@@ -43,6 +42,7 @@ from homr.staff_position_save_load import load_staff_positions, save_staff_posit
 from homr.title_detection import detect_title, download_ocr_weights
 from homr.transformer.configs import Config, default_config
 from homr.type_definitions import NDArray
+from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar, write_visual_sidecar
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 

@@ -9,12 +9,11 @@ from typing import Any
 import cv2
 import numpy as np
 
-from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr import constants
+from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note, Staff
 from homr.note_detection import split_clumps_of_noteheads
 from homr.transformer.vocabulary import EncodedSymbol, sort_token_chords
-
 
 STRETCHED_NOTEHEAD_ASPECT_RATIO = 2.0
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
@@ -1263,7 +1262,13 @@ class VisualSidecar:
 
         widths = [float(note.box.size[0]) for note in notes]
         heights = [float(note.box.size[1]) for note in notes]
-        x_tolerance = max(4.0, float(np.median(widths)) * 0.6) if widths else 4.0
+        x_tolerance = (
+            self._stem_fragment_x_tolerance(
+                float(np.median(widths)), float(np.median(heights))
+            )
+            if widths and heights
+            else 4.0
+        )
         max_vertical_gap = (
             max(
                 4.0,
@@ -1417,7 +1422,9 @@ class VisualSidecar:
             return seed
 
         notehead_height = max(float(note.box.size[1]), 1.0)
-        x_tolerance = max(4.0, float(note.box.size[0]) * 0.6)
+        x_tolerance = self._stem_fragment_x_tolerance(
+            float(note.box.size[0]), float(note.box.size[1])
+        )
         max_vertical_gap = notehead_height * 3
         fragments = [seed]
         changed = True
@@ -1479,7 +1486,9 @@ class VisualSidecar:
         note_left = min(note.box.top_left[0], note.box.bottom_left[0])
         note_right = max(note.box.top_right[0], note.box.bottom_right[0])
         notehead_height = max(float(note.box.size[1]), 1.0)
-        x_tolerance = max(4.0, float(note.box.size[0]) * 0.6)
+        x_tolerance = self._stem_fragment_x_tolerance(
+            float(note.box.size[0]), float(note.box.size[1])
+        )
         max_vertical_gap = notehead_height * 5
 
         candidates = [
@@ -1712,6 +1721,13 @@ class VisualSidecar:
             if vertical_gap <= max_vertical_gap:
                 return True
         return False
+
+    @staticmethod
+    def _stem_fragment_x_tolerance(
+        notehead_width: float, notehead_height: float
+    ) -> float:
+        """Allow segmentation drift without joining neighboring opposing stems."""
+        return max(4.0, min(notehead_width, notehead_height) * 0.4)
 
     def _typical_notehead_angles_by_staff(self) -> dict[int, float]:
         angles_by_staff: dict[int, list[float]] = {}

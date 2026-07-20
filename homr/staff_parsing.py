@@ -7,7 +7,6 @@ from homr import constants
 from homr.debug import Debug
 from homr.image_utils import crop_image_and_return_new_top
 from homr.model import MultiStaff, Note, Staff
-from homr.visual_sidecar import VisualSidecar
 from homr.simple_logging import eprint
 from homr.staff_dewarping import StaffDewarping, dewarp_staff_image
 from homr.staff_parsing_tromr import parse_staff_tromr
@@ -15,6 +14,7 @@ from homr.staff_regions import StaffRegions
 from homr.transformer.configs import Config, default_config
 from homr.transformer.vocabulary import EncodedSymbol, remove_duplicated_symbols
 from homr.type_definitions import NDArray
+from homr.visual_sidecar import VisualSidecar
 
 
 def _have_all_the_same_number_of_staffs(staffs: list[MultiStaff]) -> bool:
