@@ -525,6 +525,70 @@ class TestVisualSidecar(unittest.TestCase):
             "upper-second",
         )
 
+    def test_surplus_notehead_in_one_moment_does_not_disable_other_structural_matches(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(140, 120),
+            autocrop_box=(0, 0, 140, 120),
+            cropped_size=(140, 120),
+            resized_size=(140, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 120),
+        )
+
+        def make_note(x: int, y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(
+                -1, 1, 2
+            )
+            return Note(
+                BoundingEllipse(((x, y), (14, 10), -20), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        first = make_note(20, 35, "first")
+        second = make_note(60, 35, "second")
+        third = make_note(100, 35, "third")
+        surplus = make_note(100, 55, "surplus")
+        notes = [first, second, third, surplus]
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(
+            0,
+            notes,
+            [note.copy() for note in notes],
+        )
+        first_symbol = EncodedSymbol(
+            "note_16", "C5", position="upper", coordinates=(60, 35)
+        )
+        second_symbol = EncodedSymbol(
+            "note_16", "D5", position="upper", coordinates=(20, 35)
+        )
+        third_symbol = EncodedSymbol(
+            "note_16", "E5", position="upper", coordinates=(100, 35)
+        )
+
+        collector.add_staff_matches(
+            [first_symbol, second_symbol, third_symbol],
+            0,
+        )
+
+        self.assertEqual(
+            collector.matches_by_symbol_id[first_symbol.visual_match_id].visual_id,
+            "first",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[second_symbol.visual_match_id].visual_id,
+            "second",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[third_symbol.visual_match_id].visual_id,
+            "third",
+        )
+        self.assertEqual(collector.unmatched_visual_notes, {"surplus"})
+
     def test_recovers_hollow_notehead_positioned_by_transformer(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 150),

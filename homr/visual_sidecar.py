@@ -627,61 +627,21 @@ class VisualSidecar:
             if symbol.rhythm.startswith(("note", "rest")) and symbol.pitch not in ("_", ".")
         ]
 
-        def valid_point(point: tuple[float, float] | None) -> bool:
-            return point is not None and bool(np.all(np.isfinite(point)))
-
-        candidates: list[tuple[float, int, int]] = []
-        for symbol_index, symbol in enumerate(note_symbols):
-            if not valid_point(symbol.coordinates):
-                continue
-            assert symbol.coordinates is not None
-            for group_index, group in enumerate(visual_groups):
-                if not valid_point(group.transformer_center):
-                    continue
-                assert group.transformer_center is not None
-                distance = float(
-                    np.linalg.norm(np.subtract(symbol.coordinates, group.transformer_center))
-                )
-                candidates.append((distance, symbol_index, group_index))
-
-        assigned_symbols: set[int] = set()
-        assigned_groups: set[int] = set()
-        assignments: list[tuple[int, int]] = []
-        for _, symbol_index, group_index in sorted(candidates):
-            if symbol_index in assigned_symbols or group_index in assigned_groups:
-                continue
-            assigned_symbols.add(symbol_index)
-            assigned_groups.add(group_index)
-            assignments.append((symbol_index, group_index))
-
-        unmatched_symbol_indices = [
-            index for index in range(len(note_symbols)) if index not in assigned_symbols
-        ]
-        unmatched_group_indices = [
-            index for index in range(len(visual_groups)) if index not in assigned_groups
-        ]
-        unmatched_group_indices.sort(
-            key=lambda index: visual_groups[index].transformer_center or (0.0, 0.0)
+        assignments = self._assign_around_locked_matches(
+            note_symbols, visual_groups, []
         )
-        for symbol_index, group_index in zip(
-            unmatched_symbol_indices, unmatched_group_indices, strict=False
-        ):
-            assignments.append((symbol_index, group_index))
-            assigned_symbols.add(symbol_index)
-            assigned_groups.add(group_index)
 
         moment_assignments = self._structural_moment_assignments(
             symbols, note_symbols, visual_groups
         )
-        assignments = (
-            moment_assignments
-            if moment_assignments is not None
-            else self._repair_chord_assignments(
-                symbols, note_symbols, visual_groups, assignments
+        if moment_assignments:
+            assignments = self._assign_around_locked_matches(
+                note_symbols, visual_groups, moment_assignments
             )
+        assignments = self._repair_chord_assignments(
+            symbols, note_symbols, visual_groups, assignments
         )
         assigned_symbols = {symbol_index for symbol_index, _ in assignments}
-        assigned_groups = {group_index for _, group_index in assignments}
 
         assigned_group_by_symbol_id: dict[int, VisualGroup] = {}
         for symbol_index, group_index in assignments:
@@ -743,11 +703,10 @@ class VisualSidecar:
         Token chords preserve left-to-right musical moments, while visual x clusters
         preserve their page order. When every note is present and each moment has the
         same per-stave shape, this structural alignment is more reliable than
-        individual transformer attention for repeated pitches. Any discrepancy makes
-        the operation fall back atomically to the tolerant matcher and recovery path.
+        individual transformer attention for repeated pitches. Isolated moments with
+        surplus or missing visual noteheads are left to the tolerant matcher so they
+        do not disable reliable structural alignment everywhere else on the staff.
         """
-        if len(note_symbols) != len(visual_groups):
-            return None
         symbol_index_by_match_id = {
             symbol.visual_match_id: index for index, symbol in enumerate(note_symbols)
         }
@@ -784,6 +743,9 @@ class VisualSidecar:
                 visual_moments[-1].append(group_index)
             else:
                 visual_moments.append([group_index])
+        # Moment-by-moment comparison is only safe when the two sequences have the
+        # same horizontal structure. A wholly spurious or missing moment would shift
+        # every later index; a surplus notehead inside one existing moment does not.
         if len(symbol_moments) != len(visual_moments):
             return None
 
@@ -792,7 +754,7 @@ class VisualSidecar:
             symbol_moments, visual_moments, strict=True
         ):
             if len(symbol_moment) != len(visual_moment):
-                return None
+                continue
             symbols_by_stave: dict[int, list[int]] = {}
             for symbol_index in symbol_moment:
                 position = note_symbols[symbol_index].position
@@ -809,7 +771,7 @@ class VisualSidecar:
                 stave_index: len(indices)
                 for stave_index, indices in groups_by_stave.items()
             }:
-                return None
+                continue
             for stave_index, stave_symbol_indices in symbols_by_stave.items():
                 stave_group_indices = groups_by_stave[stave_index]
 
@@ -828,11 +790,60 @@ class VisualSidecar:
                 )
                 assignments.extend(zip(symbol_order, group_order, strict=True))
 
-        if (
-            len({symbol_index for symbol_index, _ in assignments}) != len(note_symbols)
-            or len({group_index for _, group_index in assignments}) != len(visual_groups)
-        ):
-            return None
+        return sorted(assignments) or None
+
+    @staticmethod
+    def _assign_around_locked_matches(
+        note_symbols: list[EncodedSymbol],
+        visual_groups: list[VisualGroup],
+        locked_assignments: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        """Complete a one-to-one match without disturbing structural assignments."""
+        assignments = list(locked_assignments)
+        assigned_symbols = {symbol_index for symbol_index, _ in assignments}
+        assigned_groups = {group_index for _, group_index in assignments}
+        candidates: list[tuple[float, int, int]] = []
+        for symbol_index, symbol in enumerate(note_symbols):
+            if symbol_index in assigned_symbols or symbol.coordinates is None:
+                continue
+            if not bool(np.all(np.isfinite(symbol.coordinates))):
+                continue
+            for group_index, group in enumerate(visual_groups):
+                if group_index in assigned_groups or group.transformer_center is None:
+                    continue
+                if not bool(np.all(np.isfinite(group.transformer_center))):
+                    continue
+                candidates.append(
+                    (
+                        float(
+                            np.linalg.norm(
+                                np.subtract(symbol.coordinates, group.transformer_center)
+                            )
+                        ),
+                        symbol_index,
+                        group_index,
+                    )
+                )
+
+        for _, symbol_index, group_index in sorted(candidates):
+            if symbol_index in assigned_symbols or group_index in assigned_groups:
+                continue
+            assignments.append((symbol_index, group_index))
+            assigned_symbols.add(symbol_index)
+            assigned_groups.add(group_index)
+
+        unmatched_symbol_indices = [
+            index for index in range(len(note_symbols)) if index not in assigned_symbols
+        ]
+        unmatched_group_indices = [
+            index for index in range(len(visual_groups)) if index not in assigned_groups
+        ]
+        unmatched_group_indices.sort(
+            key=lambda index: visual_groups[index].transformer_center or (0.0, 0.0)
+        )
+        assignments.extend(
+            zip(unmatched_symbol_indices, unmatched_group_indices, strict=False)
+        )
         return sorted(assignments)
 
     def _repair_chord_assignments(
