@@ -295,6 +295,8 @@ class TestVisualSidecar(unittest.TestCase):
         cv2.ellipse(image, ((50, 62), (26, 18), 0), 0, 2)
         cv2.line(image, (15, 38), (85, 38), 0, 1)
         cv2.line(image, (15, 62), (85, 62), 0, 1)
+        cv2.ellipse(image, ((75, 30), (12, 10), -20), 0, -1)
+        cv2.ellipse(image, ((90, 42), (12, 10), -20), 0, -1)
         collector = VisualSidecar(metadata, source_image=image)
 
         def fragment(
@@ -326,13 +328,21 @@ class TestVisualSidecar(unittest.TestCase):
             fragment("bottom-left", 44, 62, 7),
             fragment("top-right", 56, 38, 9),
             fragment("bottom-right", 56, 62, 7),
+            fragment("sequence-a", 75, 30, 11),
+            fragment("sequence-g", 90, 42, 10),
         ]
         collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        lower_whole = EncodedSymbol("note_1", "F3", coordinates=(44, 62))
+        upper_whole = EncodedSymbol("note_1", "A3", coordinates=(56, 38))
+        sequence_a = EncodedSymbol("note_16", "A5", coordinates=(90, 42))
+        sequence_g = EncodedSymbol("note_16", "G5", coordinates=(75, 30))
         collector.add_staff_matches(
             [
-                EncodedSymbol("note_1", "F3", position="lower", coordinates=(44, 62)),
+                lower_whole,
                 EncodedSymbol("chord"),
-                EncodedSymbol("note_1", "A3", position="lower", coordinates=(56, 38)),
+                upper_whole,
+                sequence_a,
+                sequence_g,
             ],
             0,
         )
@@ -342,12 +352,23 @@ class TestVisualSidecar(unittest.TestCase):
             group["visual_group_id"]: group for group in sidecar["visual_groups"]
         }
 
-        self.assertEqual(set(groups), {"bottom-left", "top-right"})
+        self.assertEqual(
+            set(groups),
+            {"bottom-left", "top-right", "sequence-a", "sequence-g"},
+        )
         self.assertEqual(sidecar["unmatched_visual_notes"], [])
         self.assertAlmostEqual(groups["bottom-left"]["center"][0], 50, delta=0.5)
         self.assertAlmostEqual(groups["top-right"]["center"][0], 50, delta=0.5)
         self.assertGreater(groups["bottom-left"]["notehead_ellipses"][0]["rx"], 10)
         self.assertGreater(groups["top-right"]["notehead_ellipses"][0]["rx"], 10)
+        self.assertEqual(
+            collector.matches_by_symbol_id[sequence_a.visual_match_id].visual_id,
+            "sequence-a",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[sequence_g.visual_match_id].visual_id,
+            "sequence-g",
+        )
 
     def test_split_stem_across_displaced_noteheads_is_exported_as_one_chord(self) -> None:
         metadata = PreprocessingMetadata(

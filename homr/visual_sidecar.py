@@ -640,6 +640,9 @@ class VisualSidecar:
         assignments = self._repair_chord_assignments(
             symbols, note_symbols, visual_groups, assignments
         )
+        assignments = self._repair_adjacent_sequence_inversions(
+            symbols, note_symbols, visual_groups, assignments
+        )
         assigned_symbols = {symbol_index for symbol_index, _ in assignments}
 
         assigned_group_by_symbol_id: dict[int, VisualGroup] = {}
@@ -1072,6 +1075,94 @@ class VisualSidecar:
                     group_by_symbol_index.update(
                         zip(displaced_symbol_indices, replacement_order, strict=True)
                     )
+
+        return sorted(group_by_symbol_index.items())
+
+    def _repair_adjacent_sequence_inversions(
+        self,
+        symbols: list[EncodedSymbol],
+        note_symbols: list[EncodedSymbol],
+        visual_groups: list[VisualGroup],
+        assignments: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        """Undo crossed attention matches between adjacent same-stave notes.
+
+        Attention occasionally exchanges two neighboring notes in a scalar run.
+        Musical order then points right-to-left while the assigned staff positions
+        also contradict the pitches. Requiring both inversions makes the swap safe
+        around chords, repeated pitches, and deliberately displaced noteheads.
+        """
+        group_by_symbol_index = dict(assignments)
+        symbol_index_by_match_id = {
+            symbol.visual_match_id: index for index, symbol in enumerate(note_symbols)
+        }
+        moments = [
+            [
+                symbol_index_by_match_id[symbol.visual_match_id]
+                for symbol in chord
+                if symbol.visual_match_id in symbol_index_by_match_id
+            ]
+            for chord in sort_token_chords(symbols)
+        ]
+        moments = [moment for moment in moments if moment]
+
+        for _ in range(len(moments)):
+            changed = False
+            for first_moment, second_moment in zip(moments, moments[1:], strict=False):
+                positions = {
+                    note_symbols[index].position
+                    for index in first_moment + second_moment
+                }
+                for position in positions:
+                    first_indices = [
+                        index
+                        for index in first_moment
+                        if note_symbols[index].position == position
+                    ]
+                    second_indices = [
+                        index
+                        for index in second_moment
+                        if note_symbols[index].position == position
+                    ]
+                    if len(first_indices) != 1 or len(second_indices) != 1:
+                        continue
+                    first_symbol_index = first_indices[0]
+                    second_symbol_index = second_indices[0]
+                    if (
+                        first_symbol_index not in group_by_symbol_index
+                        or second_symbol_index not in group_by_symbol_index
+                    ):
+                        continue
+                    first_symbol = note_symbols[first_symbol_index]
+                    second_symbol = note_symbols[second_symbol_index]
+                    if first_symbol.rhythm.rstrip(".") != second_symbol.rhythm.rstrip("."):
+                        continue
+                    first_pitch = self._diatonic_pitch_index(first_symbol.pitch)
+                    second_pitch = self._diatonic_pitch_index(second_symbol.pitch)
+                    if first_pitch is None or second_pitch is None or first_pitch == second_pitch:
+                        continue
+                    first_group_index = group_by_symbol_index[first_symbol_index]
+                    second_group_index = group_by_symbol_index[second_symbol_index]
+                    first_group = visual_groups[first_group_index]
+                    second_group = visual_groups[second_group_index]
+                    if first_group.stave_index != second_group.stave_index:
+                        continue
+                    if (
+                        first_group.prediction_center[0]
+                        <= second_group.prediction_center[0] + VISUAL_MOMENT_X_TOLERANCE
+                    ):
+                        continue
+                    pitch_difference = first_pitch - second_pitch
+                    position_difference = (
+                        first_group.staff_position - second_group.staff_position
+                    )
+                    if pitch_difference * position_difference >= 0:
+                        continue
+                    group_by_symbol_index[first_symbol_index] = second_group_index
+                    group_by_symbol_index[second_symbol_index] = first_group_index
+                    changed = True
+            if not changed:
+                break
 
         return sorted(group_by_symbol_index.items())
 
