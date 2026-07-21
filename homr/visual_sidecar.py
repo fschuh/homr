@@ -13,13 +13,17 @@ from homr import constants
 from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note, Staff
 from homr.note_detection import split_clumps_of_noteheads
-from homr.transformer.vocabulary import EncodedSymbol, sort_token_chords
+from homr.transformer.vocabulary import (
+    EncodedSymbol,
+    remove_duplicated_symbols,
+    sort_token_chords,
+)
 
 STRETCHED_NOTEHEAD_ASPECT_RATIO = 2.0
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 MAX_RECONSTRUCTED_STEM_DISTANCE_IN_NOTEHEADS = 8.0
 MAX_STEM_COMPONENT_GAP_IN_NOTEHEADS = 1.5
-VISUAL_MOMENT_X_TOLERANCE = 5.0
+VISUAL_MOMENT_X_TOLERANCE = 6.0
 DUPLICATE_NOTEHEAD_AREA_RATIO = 0.6
 DUPLICATE_NOTEHEAD_MAX_HORIZONTAL_DISTANCE = 1.5
 DUPLICATE_NOTEHEAD_MAX_VERTICAL_DISTANCE = 0.3
@@ -157,6 +161,12 @@ class VisualMatch:
     symbol: EncodedSymbol
     visual_id: str | None
     confidence: float
+
+
+@dataclass
+class StructuralMatchPlan:
+    assignments: list[tuple[int, int]]
+    reserved_group_indices: set[int]
 
 
 @dataclass
@@ -622,6 +632,10 @@ class VisualSidecar:
         staff_index: int,
         source_staff: Staff | None = None,
     ) -> None:
+        # Match the same cleaned symbol identities that MusicXML generation will
+        # retain. In particular, a duplicate pitch inside one predicted chord must
+        # not consume a second visual group and shift every following note.
+        symbols = remove_duplicated_symbols(symbols, cleanup_tuplets=False)
         self._discard_visual_groups_near_clefs(symbols, staff_index)
         self._discard_duplicate_notehead_fragments(staff_index)
         visual_groups = [
@@ -637,17 +651,21 @@ class VisualSidecar:
             note_symbols, visual_groups, []
         )
 
-        moment_assignments = self._structural_moment_assignments(
-            symbols, note_symbols, visual_groups
-        )
-        if moment_assignments:
+        moment_plan = self._structural_moment_assignments(symbols, note_symbols, visual_groups)
+        if moment_plan is not None:
             assignments = self._assign_around_locked_matches(
-                note_symbols, visual_groups, moment_assignments
+                note_symbols,
+                visual_groups,
+                moment_plan.assignments,
+                moment_plan.reserved_group_indices,
             )
         assignments = self._repair_chord_assignments(
             symbols, note_symbols, visual_groups, assignments
         )
         assignments = self._repair_adjacent_sequence_inversions(
+            symbols, note_symbols, visual_groups, assignments
+        )
+        assignments = self._release_split_moment_outliers(
             symbols, note_symbols, visual_groups, assignments
         )
         assigned_symbols = {symbol_index for symbol_index, _ in assignments}
@@ -911,25 +929,26 @@ class VisualSidecar:
         symbols: list[EncodedSymbol],
         note_symbols: list[EncodedSymbol],
         visual_groups: list[VisualGroup],
-    ) -> list[tuple[int, int]] | None:
-        """Align complete recognition and visual data by musical onset.
+    ) -> StructuralMatchPlan | None:
+        """Align compatible recognition and visual moments in page order.
 
         Token chords preserve left-to-right musical moments, while visual x clusters
-        preserve their page order. When every note is present and each moment has the
-        same per-stave shape, this structural alignment is more reliable than
-        individual transformer attention for repeated pitches. Isolated moments with
-        surplus or missing visual noteheads are left to the tolerant matcher so they
-        do not disable reliable structural alignment everywhere else on the staff.
+        preserve their page order. A weighted sequence alignment locks every complete
+        per-stave moment it can prove, while skipping isolated missing or surplus
+        moments. This is more reliable than individual transformer attention for
+        repeated pitches and prevents one detection defect from shifting the rest of
+        a system.
+
+        TrOMR can also emit a real note rhythm whose pitch branch is ``_`` or ``.``.
+        Such a symbol is deliberately absent from MusicXML, but it still occupies a
+        visual moment. Keep it in the structural sequence and reserve its notehead so
+        the following MusicXML note cannot claim that geometry.
         """
         symbol_index_by_match_id = {
             symbol.visual_match_id: index for index, symbol in enumerate(note_symbols)
         }
         symbol_moments = [
-            [
-                symbol_index_by_match_id[symbol.visual_match_id]
-                for symbol in chord
-                if symbol.visual_match_id in symbol_index_by_match_id
-            ]
+            [symbol for symbol in chord if self._symbol_occupies_visual_moment(symbol)]
             for chord in sort_token_chords(symbols)
         ]
         symbol_moments = [moment for moment in symbol_moments if moment]
@@ -957,65 +976,196 @@ class VisualSidecar:
                 visual_moments[-1].append(group_index)
             else:
                 visual_moments.append([group_index])
-        # Moment-by-moment comparison is only safe when the two sequences have the
-        # same horizontal structure. A wholly spurious or missing moment would shift
-        # every later index; a surplus notehead inside one existing moment does not.
-        if len(symbol_moments) != len(visual_moments):
-            return None
 
         assignments: list[tuple[int, int]] = []
-        for symbol_moment, visual_moment in zip(
-            symbol_moments, visual_moments, strict=True
+        reserved_group_indices: set[int] = set()
+        for symbol_moment_index, visual_moment_index in self._align_structural_moments(
+            symbol_moments, visual_moments, visual_groups
         ):
-            if len(symbol_moment) != len(visual_moment):
-                continue
-            symbols_by_stave: dict[int, list[int]] = {}
-            for symbol_index in symbol_moment:
-                position = note_symbols[symbol_index].position
+            symbol_moment = symbol_moments[symbol_moment_index]
+            visual_moment = visual_moments[visual_moment_index]
+            symbols_by_stave: dict[int, list[EncodedSymbol]] = {}
+            for symbol in symbol_moment:
+                position = symbol.position
                 stave_index = 1 if position == "lower" else 0
-                symbols_by_stave.setdefault(stave_index, []).append(symbol_index)
+                symbols_by_stave.setdefault(stave_index, []).append(symbol)
             groups_by_stave: dict[int, list[int]] = {}
             for group_index in visual_moment:
                 stave_index = visual_groups[group_index].stave_index
                 groups_by_stave.setdefault(stave_index, []).append(group_index)
-            if {
-                stave_index: len(indices)
-                for stave_index, indices in symbols_by_stave.items()
-            } != {
-                stave_index: len(indices)
-                for stave_index, indices in groups_by_stave.items()
-            }:
-                continue
-            for stave_index, stave_symbol_indices in symbols_by_stave.items():
+            for stave_index, stave_symbols in symbols_by_stave.items():
                 stave_group_indices = groups_by_stave[stave_index]
+                placeholder_symbols = [
+                    symbol
+                    for symbol in stave_symbols
+                    if symbol.visual_match_id not in symbol_index_by_match_id
+                ]
+                available_group_indices = set(stave_group_indices)
+                for placeholder in placeholder_symbols:
+                    reserved_group_index = min(
+                        available_group_indices,
+                        key=lambda group_index: self._symbol_group_distance(
+                            placeholder, visual_groups[group_index]
+                        ),
+                    )
+                    available_group_indices.remove(reserved_group_index)
+                    reserved_group_indices.add(reserved_group_index)
+
+                stave_symbol_indices = [
+                    symbol_index_by_match_id[symbol.visual_match_id]
+                    for symbol in stave_symbols
+                    if symbol.visual_match_id in symbol_index_by_match_id
+                ]
 
                 def pitch_height(symbol_index: int) -> int:
-                    pitch_index = self._diatonic_pitch_index(
-                        note_symbols[symbol_index].pitch
-                    )
+                    pitch_index = self._diatonic_pitch_index(note_symbols[symbol_index].pitch)
                     return pitch_index if pitch_index is not None else -1
 
-                symbol_order = sorted(
-                    stave_symbol_indices, key=pitch_height, reverse=True
-                )
+                symbol_order = sorted(stave_symbol_indices, key=pitch_height, reverse=True)
                 group_order = sorted(
-                    stave_group_indices,
+                    available_group_indices,
                     key=lambda index: visual_groups[index].prediction_center[1],
                 )
                 assignments.extend(zip(symbol_order, group_order, strict=True))
 
-        return sorted(assignments) or None
+        if not assignments and not reserved_group_indices:
+            return None
+        return StructuralMatchPlan(sorted(assignments), reserved_group_indices)
+
+    @staticmethod
+    def _symbol_occupies_visual_moment(symbol: EncodedSymbol) -> bool:
+        if symbol.rhythm.startswith("note"):
+            return True
+        return symbol.rhythm.startswith("rest") and symbol.pitch not in ("_", ".")
+
+    @classmethod
+    def _align_structural_moments(
+        cls,
+        symbol_moments: list[list[EncodedSymbol]],
+        visual_moments: list[list[int]],
+        visual_groups: list[VisualGroup],
+    ) -> list[tuple[int, int]]:
+        """Return a maximum-weight, order-preserving alignment of equal shapes."""
+
+        def symbol_shape(moment: list[EncodedSymbol]) -> tuple[int, int]:
+            return (
+                sum(symbol.position != "lower" for symbol in moment),
+                sum(symbol.position == "lower" for symbol in moment),
+            )
+
+        def visual_shape(moment: list[int]) -> tuple[int, int]:
+            return (
+                sum(visual_groups[index].stave_index == 0 for index in moment),
+                sum(visual_groups[index].stave_index == 1 for index in moment),
+            )
+
+        symbol_shapes = [symbol_shape(moment) for moment in symbol_moments]
+        visual_shapes = [visual_shape(moment) for moment in visual_moments]
+        symbol_count = len(symbol_moments)
+        visual_count = len(visual_moments)
+        visual_centers = [
+            float(
+                np.median(
+                    [visual_groups[group_index].prediction_center[0] for group_index in moment]
+                )
+            )
+            for moment in visual_moments
+        ]
+        # A staff line can split every head of a hollow chord into matching left
+        # and right fragment columns. Neither column is a complete musical moment,
+        # even though each has the expected per-stave count. Leave this distinctive
+        # close duplicate pattern to attention matching and fragment rejoining.
+        ambiguous_visual_moments = {
+            visual_index
+            for visual_index, shape in enumerate(visual_shapes)
+            if sum(shape) > 1
+            and any(
+                visual_shapes[neighbor] == shape
+                and abs(visual_centers[neighbor] - visual_centers[visual_index])
+                <= VISUAL_MOMENT_X_TOLERANCE * 3
+                for neighbor in (visual_index - 1, visual_index + 1)
+                if 0 <= neighbor < visual_count
+            )
+        }
+        # Score by noteheads first and matched moments second. The final term
+        # selects the least-displaced alignment when repeated one-note shapes
+        # admit several otherwise equivalent subsequences.
+        scores: list[list[tuple[int, int, float]]] = [
+            [(0, 0, 0.0) for _ in range(visual_count + 1)] for _ in range(symbol_count + 1)
+        ]
+        actions: list[list[str | None]] = [
+            [None for _ in range(visual_count + 1)] for _ in range(symbol_count + 1)
+        ]
+        for symbol_index in range(1, symbol_count + 1):
+            actions[symbol_index][0] = "skip-symbol"
+        for visual_index in range(1, visual_count + 1):
+            actions[0][visual_index] = "skip-visual"
+
+        for symbol_index in range(1, symbol_count + 1):
+            for visual_index in range(1, visual_count + 1):
+                options = [
+                    (scores[symbol_index - 1][visual_index], "skip-symbol"),
+                    (scores[symbol_index][visual_index - 1], "skip-visual"),
+                ]
+                if (
+                    symbol_shapes[symbol_index - 1] == visual_shapes[visual_index - 1]
+                    and visual_index - 1 not in ambiguous_visual_moments
+                ):
+                    previous = scores[symbol_index - 1][visual_index - 1]
+                    symbol_position = (symbol_index - 0.5) / max(symbol_count, 1)
+                    visual_position = (visual_index - 0.5) / max(visual_count, 1)
+                    options.append(
+                        (
+                            (
+                                previous[0] + sum(symbol_shapes[symbol_index - 1]),
+                                previous[1] + 1,
+                                previous[2] - abs(symbol_position - visual_position),
+                            ),
+                            "match",
+                        )
+                    )
+                score, action = max(
+                    options,
+                    key=lambda option: (
+                        option[0],
+                        option[1] == "match",
+                        option[1] == "skip-visual",
+                    ),
+                )
+                scores[symbol_index][visual_index] = score
+                actions[symbol_index][visual_index] = action
+
+        result: list[tuple[int, int]] = []
+        symbol_index = symbol_count
+        visual_index = visual_count
+        while symbol_index > 0 or visual_index > 0:
+            action = actions[symbol_index][visual_index]
+            if action == "match":
+                result.append((symbol_index - 1, visual_index - 1))
+                symbol_index -= 1
+                visual_index -= 1
+            elif action == "skip-symbol":
+                symbol_index -= 1
+            elif action == "skip-visual":
+                visual_index -= 1
+            else:
+                break
+        result.reverse()
+        return result
 
     @staticmethod
     def _assign_around_locked_matches(
         note_symbols: list[EncodedSymbol],
         visual_groups: list[VisualGroup],
         locked_assignments: list[tuple[int, int]],
+        reserved_group_indices: set[int] | None = None,
     ) -> list[tuple[int, int]]:
         """Complete a one-to-one match without disturbing structural assignments."""
         assignments = list(locked_assignments)
         assigned_symbols = {symbol_index for symbol_index, _ in assignments}
         assigned_groups = {group_index for _, group_index in assignments}
+        assigned_groups.update(reserved_group_indices or set())
+        has_multiple_staves = any(group.stave_index == 1 for group in visual_groups)
         candidates: list[tuple[float, int, int]] = []
         for symbol_index, symbol in enumerate(note_symbols):
             if symbol_index in assigned_symbols or symbol.coordinates is None:
@@ -1024,6 +1174,9 @@ class VisualSidecar:
                 continue
             for group_index, group in enumerate(visual_groups):
                 if group_index in assigned_groups or group.transformer_center is None:
+                    continue
+                expected_stave_index = 1 if symbol.position == "lower" else 0
+                if has_multiple_staves and group.stave_index != expected_stave_index:
                     continue
                 if not bool(np.all(np.isfinite(group.transformer_center))):
                     continue
@@ -1049,15 +1202,23 @@ class VisualSidecar:
         unmatched_symbol_indices = [
             index for index in range(len(note_symbols)) if index not in assigned_symbols
         ]
-        unmatched_group_indices = [
-            index for index in range(len(visual_groups)) if index not in assigned_groups
-        ]
-        unmatched_group_indices.sort(
-            key=lambda index: visual_groups[index].transformer_center or (0.0, 0.0)
-        )
-        assignments.extend(
-            zip(unmatched_symbol_indices, unmatched_group_indices, strict=False)
-        )
+        for symbol_index in unmatched_symbol_indices:
+            expected_stave_index = 1 if note_symbols[symbol_index].position == "lower" else 0
+            compatible_group_indices = [
+                index
+                for index, group in enumerate(visual_groups)
+                if index not in assigned_groups
+                and (not has_multiple_staves or group.stave_index == expected_stave_index)
+            ]
+            if not compatible_group_indices:
+                continue
+            group_index = min(
+                compatible_group_indices,
+                key=lambda index: visual_groups[index].transformer_center or (0.0, 0.0),
+            )
+            assignments.append((symbol_index, group_index))
+            assigned_symbols.add(symbol_index)
+            assigned_groups.add(group_index)
         return sorted(assignments)
 
     def _repair_chord_assignments(
@@ -1271,6 +1432,85 @@ class VisualSidecar:
                     changed = True
             if not changed:
                 break
+
+        return sorted(group_by_symbol_index.items())
+
+    def _release_split_moment_outliers(
+        self,
+        symbols: list[EncodedSymbol],
+        note_symbols: list[EncodedSymbol],
+        visual_groups: list[VisualGroup],
+        assignments: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        """Unassign chord members pulled outside their neighboring moments.
+
+        When one chord head is missing from segmentation, greedy attention can
+        attach that member to an unrelated earlier notehead. If another member is
+        correctly anchored between the previous and next musical moments, release
+        only the outlier. The normal pixel-backed chord recovery can then recreate
+        it at the anchor x-position.
+        """
+        group_by_symbol_index = dict(assignments)
+        symbol_index_by_match_id = {
+            symbol.visual_match_id: index for index, symbol in enumerate(note_symbols)
+        }
+        moments = [
+            [
+                symbol_index_by_match_id[symbol.visual_match_id]
+                for symbol in chord
+                if symbol.visual_match_id in symbol_index_by_match_id
+            ]
+            for chord in sort_token_chords(symbols)
+        ]
+        moments = [moment for moment in moments if moment]
+
+        def assigned_center(moment: list[int]) -> float | None:
+            centers = [
+                visual_groups[group_by_symbol_index[index]].prediction_center[0]
+                for index in moment
+                if index in group_by_symbol_index
+            ]
+            return float(np.median(centers)) if centers else None
+
+        moment_centers = [assigned_center(moment) for moment in moments]
+        for moment_index, moment in enumerate(moments):
+            assigned_indices = [index for index in moment if index in group_by_symbol_index]
+            if len(assigned_indices) < 2:
+                continue
+            previous_center = next(
+                (
+                    moment_centers[index]
+                    for index in range(moment_index - 1, -1, -1)
+                    if moment_centers[index] is not None
+                ),
+                None,
+            )
+            next_center = next(
+                (
+                    moment_centers[index]
+                    for index in range(moment_index + 1, len(moments))
+                    if moment_centers[index] is not None
+                ),
+                None,
+            )
+            in_order: list[int] = []
+            outliers: list[int] = []
+            for symbol_index in assigned_indices:
+                center_x = visual_groups[group_by_symbol_index[symbol_index]].prediction_center[0]
+                follows_previous = (
+                    previous_center is None
+                    or center_x >= previous_center - VISUAL_MOMENT_X_TOLERANCE
+                )
+                precedes_next = (
+                    next_center is None or center_x <= next_center + VISUAL_MOMENT_X_TOLERANCE
+                )
+                if follows_previous and precedes_next:
+                    in_order.append(symbol_index)
+                else:
+                    outliers.append(symbol_index)
+            if in_order:
+                for symbol_index in outliers:
+                    del group_by_symbol_index[symbol_index]
 
         return sorted(group_by_symbol_index.items())
 
