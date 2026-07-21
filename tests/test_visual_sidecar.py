@@ -370,6 +370,85 @@ class TestVisualSidecar(unittest.TestCase):
             "sequence-g",
         )
 
+    def test_discards_small_notehead_fragment_that_duplicates_a_detected_stem(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(160, 120),
+            autocrop_box=(0, 0, 160, 120),
+            cropped_size=(160, 120),
+            resized_size=(160, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(160, 120),
+        )
+        image = np.full((120, 160), 255, dtype=np.uint8)
+        cv2.ellipse(image, (40, 60), (10, 7), 0, 0, 360, 0, 2)
+        cv2.ellipse(image, (110, 60), (10, 7), 0, 0, 360, 0, -1)
+        shared_stem_contour = np.array(
+            [[[29, 60]], [[31, 60]], [[31, 100]], [[29, 100]]], dtype=np.float32
+        )
+        separate_stem_contour = np.array(
+            [[[99, 60]], [[101, 60]], [[101, 100]], [[99, 100]]], dtype=np.float32
+        )
+        shared_stem = RotatedBoundingBox(
+            cv2.minAreaRect(shared_stem_contour), shared_stem_contour
+        )
+        separate_stem = RotatedBoundingBox(
+            cv2.minAreaRect(separate_stem_contour), separate_stem_contour
+        )
+
+        def note(
+            visual_id: str,
+            center_x: int,
+            stem: RotatedBoundingBox,
+            contour: np.ndarray,
+        ) -> Note:
+            return Note(
+                BoundingEllipse(((center_x, 60), (20, 14), 0), contour),
+                position=10,
+                stem=stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        full_first_contour = cv2.ellipse2Poly(
+            (40, 60), (10, 7), 0, 0, 360, 10
+        ).reshape(-1, 1, 2)
+        fragment_contour = np.array(
+            [[[58, 58]], [[63, 58]], [[63, 62]], [[58, 62]]], dtype=np.float32
+        )
+        full_second_contour = cv2.ellipse2Poly(
+            (110, 60), (10, 7), 0, 0, 360, 10
+        ).reshape(-1, 1, 2)
+        notes = [
+            note("full-first", 40, shared_stem, full_first_contour),
+            note("fragment", 61, shared_stem, fragment_contour),
+            note("full-second", 110, separate_stem, full_second_contour),
+        ]
+        collector = VisualSidecar(metadata, source_image=image)
+        collector.add_staff_visual_notes(
+            0, notes, [candidate.copy() for candidate in notes]
+        )
+        first_symbol = EncodedSymbol("note_16", "B3", coordinates=(40, 60))
+        second_symbol = EncodedSymbol("note_16", "D4", coordinates=(110, 60))
+
+        collector.add_staff_matches([first_symbol, second_symbol], 0)
+
+        sidecar = collector.to_json_dict()
+        self.assertEqual(
+            {group["visual_group_id"] for group in sidecar["visual_groups"]},
+            {"full-first", "full-second"},
+        )
+        self.assertEqual(sidecar["unmatched_visual_notes"], [])
+        self.assertEqual(
+            collector.matches_by_symbol_id[first_symbol.visual_match_id].visual_id,
+            "full-first",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[second_symbol.visual_match_id].visual_id,
+            "full-second",
+        )
+
     def test_split_stem_across_displaced_noteheads_is_exported_as_one_chord(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),

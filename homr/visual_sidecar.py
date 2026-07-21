@@ -20,6 +20,9 @@ HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 MAX_RECONSTRUCTED_STEM_DISTANCE_IN_NOTEHEADS = 8.0
 MAX_STEM_COMPONENT_GAP_IN_NOTEHEADS = 1.5
 VISUAL_MOMENT_X_TOLERANCE = 5.0
+DUPLICATE_NOTEHEAD_AREA_RATIO = 0.6
+DUPLICATE_NOTEHEAD_MAX_HORIZONTAL_DISTANCE = 1.5
+DUPLICATE_NOTEHEAD_MAX_VERTICAL_DISTANCE = 0.3
 
 
 class StemRepairDirection(Enum):
@@ -617,6 +620,7 @@ class VisualSidecar:
         staff_index: int,
         source_staff: Staff | None = None,
     ) -> None:
+        self._discard_duplicate_notehead_fragments(staff_index)
         visual_groups = [
             group for group in self.visual_groups.values() if group.staff_index == staff_index
         ]
@@ -695,6 +699,79 @@ class VisualSidecar:
             )
 
         self._merge_split_whole_note_fragments(staff_index)
+
+    def _discard_duplicate_notehead_fragments(self, staff_index: int) -> None:
+        """Drop weak horizontal fragments duplicated from a nearby notehead.
+
+        Segmentation can emit a small, hollow-looking fragment beside a full
+        notehead while attaching both candidates to the exact same detected stem.
+        Keeping both candidates shifts matching through dense note sequences. A
+        genuine chord may also share a stem, so require the fragment to have much
+        less detected ink and nearly the same vertical center as the full head.
+        """
+        staff_groups = [
+            group
+            for group in self.visual_groups.values()
+            if group.staff_index == staff_index
+        ]
+        duplicate_ids: set[str] = set()
+        for fragment in staff_groups:
+            if not fragment.is_hollow_notehead or not fragment.detected_stem_contours:
+                continue
+            fragment_area = self._detected_notehead_area(fragment)
+            fragment_bounds = self._source_notehead_bounds(fragment)
+            if fragment_area <= 0 or fragment_bounds is None:
+                continue
+            for notehead in staff_groups:
+                if (
+                    notehead.visual_id == fragment.visual_id
+                    or notehead.stave_index != fragment.stave_index
+                    or notehead.detected_stem_contours
+                    != fragment.detected_stem_contours
+                ):
+                    continue
+                notehead_area = self._detected_notehead_area(notehead)
+                notehead_bounds = self._source_notehead_bounds(notehead)
+                if notehead_area <= 0 or notehead_bounds is None:
+                    continue
+                if fragment_area > notehead_area * DUPLICATE_NOTEHEAD_AREA_RATIO:
+                    continue
+                fragment_width = fragment_bounds[2] - fragment_bounds[0]
+                fragment_height = fragment_bounds[3] - fragment_bounds[1]
+                notehead_width = notehead_bounds[2] - notehead_bounds[0]
+                notehead_height = notehead_bounds[3] - notehead_bounds[1]
+                max_width = max(fragment_width, notehead_width, 1.0)
+                max_height = max(fragment_height, notehead_height, 1.0)
+                center_dx = abs(
+                    fragment.prediction_center[0] - notehead.prediction_center[0]
+                )
+                center_dy = abs(
+                    fragment.prediction_center[1] - notehead.prediction_center[1]
+                )
+                if (
+                    center_dx
+                    <= max_width * DUPLICATE_NOTEHEAD_MAX_HORIZONTAL_DISTANCE
+                    and center_dy
+                    <= max_height * DUPLICATE_NOTEHEAD_MAX_VERTICAL_DISTANCE
+                ):
+                    duplicate_ids.add(fragment.visual_id)
+                    break
+
+        for visual_id in duplicate_ids:
+            self.unmatched_visual_notes.discard(visual_id)
+            del self.visual_groups[visual_id]
+
+    @staticmethod
+    def _detected_notehead_area(group: VisualGroup) -> float:
+        return sum(
+            abs(
+                cv2.contourArea(
+                    np.asarray(contour, dtype=np.float32).reshape(-1, 1, 2)
+                )
+            )
+            for contour in group.detected_notehead_contours
+            if len(contour) >= 3
+        )
 
     def _merge_split_whole_note_fragments(self, staff_index: int) -> None:
         """Rejoin whole-note heads split into touching horizontal fragments.
