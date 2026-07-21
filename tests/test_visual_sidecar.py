@@ -105,6 +105,60 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(recovered[0].center, (50, 50))
         self.assertEqual(staff.symbols, [existing_note])
 
+    def test_discards_visual_group_at_recognized_clef_position(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(200, 100),
+            autocrop_box=(0, 0, 200, 100),
+            cropped_size=(200, 100),
+            resized_size=(200, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(200, 100),
+        )
+
+        def note(x: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly(
+                (x, 50), (5, 4), 0, 0, 360, 10
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, 50), (10, 8), 0), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        clef_fragment = note(100, "clef-fragment")
+        real_note = note(150, "real-note")
+        transformed_clef_fragment = clef_fragment.copy()
+        transformed_clef_fragment.center = (102, 51)
+        transformed_real_note = real_note.copy()
+        transformed_real_note.center = (150, 50)
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(
+            0,
+            [clef_fragment, real_note],
+            [transformed_clef_fragment, transformed_real_note],
+        )
+        musicxml_note = EncodedSymbol(
+            "note_16", "E3", coordinates=(150, 50)
+        )
+
+        collector.add_staff_matches(
+            [EncodedSymbol("clef_F4", coordinates=(100, 50)), musicxml_note],
+            0,
+        )
+
+        sidecar = collector.to_json_dict()
+        self.assertEqual(
+            [group["visual_group_id"] for group in sidecar["visual_groups"]],
+            ["real-note"],
+        )
+        self.assertEqual(sidecar["unmatched_visual_notes"], [])
+        self.assertEqual(
+            collector.matches_by_symbol_id[musicxml_note.visual_match_id].visual_id,
+            "real-note",
+        )
+
     def test_prediction_to_source_mapping_accounts_for_crop_and_resize(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(1000, 800),

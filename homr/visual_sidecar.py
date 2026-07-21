@@ -24,6 +24,7 @@ DUPLICATE_NOTEHEAD_AREA_RATIO = 0.6
 DUPLICATE_NOTEHEAD_MAX_HORIZONTAL_DISTANCE = 1.5
 DUPLICATE_NOTEHEAD_MAX_VERTICAL_DISTANCE = 0.3
 MAX_CHORD_NOTEHEAD_HORIZONTAL_GAP_RATIO = 0.25
+MAX_VISUAL_GROUP_DISTANCE_FROM_CLEF = 16.0
 
 
 class StemRepairDirection(Enum):
@@ -621,6 +622,7 @@ class VisualSidecar:
         staff_index: int,
         source_staff: Staff | None = None,
     ) -> None:
+        self._discard_visual_groups_near_clefs(symbols, staff_index)
         self._discard_duplicate_notehead_fragments(staff_index)
         visual_groups = [
             group for group in self.visual_groups.values() if group.staff_index == staff_index
@@ -700,6 +702,34 @@ class VisualSidecar:
             )
 
         self._merge_split_whole_note_fragments(staff_index)
+
+    def _discard_visual_groups_near_clefs(
+        self, symbols: list[EncodedSymbol], staff_index: int
+    ) -> None:
+        """Remove notehead candidates sitting on recognized clef glyphs."""
+        clef_centers = [
+            symbol.coordinates
+            for symbol in symbols
+            if symbol.rhythm.startswith("clef") and symbol.coordinates is not None
+        ]
+        if not clef_centers:
+            return
+        clef_artifact_ids = {
+            group.visual_id
+            for group in self.visual_groups.values()
+            if group.staff_index == staff_index
+            and group.transformer_center is not None
+            and any(
+                np.linalg.norm(
+                    np.subtract(group.transformer_center, clef_center)
+                )
+                <= MAX_VISUAL_GROUP_DISTANCE_FROM_CLEF
+                for clef_center in clef_centers
+            )
+        }
+        for visual_id in clef_artifact_ids:
+            self.unmatched_visual_notes.discard(visual_id)
+            del self.visual_groups[visual_id]
 
     def _discard_duplicate_notehead_fragments(self, staff_index: int) -> None:
         """Drop weak horizontal fragments duplicated from a nearby notehead.
