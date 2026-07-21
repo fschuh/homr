@@ -23,6 +23,7 @@ VISUAL_MOMENT_X_TOLERANCE = 5.0
 DUPLICATE_NOTEHEAD_AREA_RATIO = 0.6
 DUPLICATE_NOTEHEAD_MAX_HORIZONTAL_DISTANCE = 1.5
 DUPLICATE_NOTEHEAD_MAX_VERTICAL_DISTANCE = 0.3
+MAX_CHORD_NOTEHEAD_HORIZONTAL_GAP_RATIO = 0.25
 
 
 class StemRepairDirection(Enum):
@@ -1411,10 +1412,33 @@ class VisualSidecar:
                 and candidate.duration is not None
                 and candidate.duration.rstrip(".") == duration_class
                 and component_id in candidate.owned_stem_component_ids
+                and self._noteheads_can_share_chord_stem(group, candidate)
                 for candidate in self.visual_groups.values()
             ):
                 result.append(f"{component_id}-duration-{duration_class}")
         return result
+
+    @classmethod
+    def _noteheads_can_share_chord_stem(
+        cls, first: VisualGroup, second: VisualGroup
+    ) -> bool:
+        first_bounds = cls._source_notehead_bounds(first)
+        second_bounds = cls._source_notehead_bounds(second)
+        if first_bounds is None or second_bounds is None:
+            return False
+        first_left, _first_top, first_right, _first_bottom = first_bounds
+        second_left, _second_top, second_right, _second_bottom = second_bounds
+        first_width = max(first_right - first_left, 1.0)
+        second_width = max(second_right - second_left, 1.0)
+        horizontal_gap = max(
+            0.0,
+            max(first_left, second_left) - min(first_right, second_right),
+        )
+        return (
+            horizontal_gap
+            <= min(first_width, second_width)
+            * MAX_CHORD_NOTEHEAD_HORIZONTAL_GAP_RATIO
+        )
 
     def create_musicxml_id(self) -> str:
         musicxml_id = f"homr-note-{self._next_musicxml_note_id}"

@@ -281,6 +281,76 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(groups["vnote-4"]["stem_component_ids"], [])
         self.assertEqual(groups["vnote-3"]["stem_component_ids"], [])
 
+    def test_separate_notes_do_not_share_chord_identity_from_misassigned_stem(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        stem_contour = np.array(
+            [[[29, 15]], [[31, 15]], [[31, 70]], [[29, 70]]], dtype=np.float32
+        )
+        shared_stem = RotatedBoundingBox(
+            cv2.minAreaRect(stem_contour), stem_contour
+        )
+
+        def make_note(
+            x: int,
+            y: int,
+            visual_id: str,
+            width: int = 20,
+            note_stem: RotatedBoundingBox | None = shared_stem,
+        ) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (width // 2, 7), 0, 0, 360, 10).reshape(
+                -1, 1, 2
+            )
+            return Note(
+                BoundingEllipse(((x, y), (width, 14), 0), contour),
+                position=4,
+                stem=note_stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(20, 60, "first"),
+            make_note(50, 40, "second"),
+            # A wider neighboring candidate reproduces the global ownership
+            # search radius present in the full score.
+            make_note(90, 80, "padding", width=40, note_stem=None),
+        ]
+        collector = VisualSidecar(metadata, stem_fragments=[shared_stem])
+        collector.add_staff_visual_notes(
+            0, notes, [candidate.copy() for candidate in notes]
+        )
+        collector.add_staff_matches(
+            [
+                EncodedSymbol("note_16", "D4", coordinates=(20, 60)),
+                EncodedSymbol("note_16", "G4", coordinates=(50, 40)),
+                EncodedSymbol("note_16", "C4", coordinates=(90, 80)),
+            ],
+            0,
+        )
+
+        self.assertTrue(
+            collector.visual_groups["first"].owned_stem_component_ids
+        )
+        self.assertEqual(
+            collector.visual_groups["first"].owned_stem_component_ids,
+            collector.visual_groups["second"].owned_stem_component_ids,
+        )
+        groups = {
+            group["visual_group_id"]: group
+            for group in collector.to_json_dict()["visual_groups"]
+        }
+        self.assertEqual(groups["first"]["stem_component_ids"], [])
+        self.assertEqual(groups["second"]["stem_component_ids"], [])
+
     def test_rejoins_horizontally_split_whole_note_chord_heads(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(100, 100),
