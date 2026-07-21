@@ -691,6 +691,110 @@ class VisualSidecar:
                 confidence=0.0,
             )
 
+        self._merge_split_whole_note_fragments(staff_index)
+
+    def _merge_split_whole_note_fragments(self, staff_index: int) -> None:
+        """Rejoin whole-note heads split into touching horizontal fragments.
+
+        Staff lines can divide the outline of a vertically stacked whole-note chord
+        into four segmentation components: a left and right half for each actual
+        head. Recognition still emits the correct two-note chord, leaving one half
+        of each head unmatched. Rejoin only those tightly touching, stemless hollow
+        fragments that share an exact staff position with a recognized whole note.
+        """
+        matched_groups = [
+            group
+            for group in self.visual_groups.values()
+            if (
+                group.staff_index == staff_index
+                and group.duration is not None
+                and group.duration.rstrip(".") == "note_1"
+                and group.is_hollow_notehead
+                and not group.stem_contours
+            )
+        ]
+        for group in matched_groups:
+            candidates = [
+                candidate
+                for candidate in self.visual_groups.values()
+                if (
+                    candidate.visual_id in self.unmatched_visual_notes
+                    and candidate.staff_index == group.staff_index
+                    and candidate.stave_index == group.stave_index
+                    and candidate.staff_position == group.staff_position
+                    and candidate.is_hollow_notehead
+                    and not candidate.stem_contours
+                    and self._looks_like_horizontal_notehead_fragment(group, candidate)
+                )
+            ]
+            if not candidates:
+                continue
+            fragment = min(
+                candidates,
+                key=lambda candidate: abs(
+                    candidate.prediction_center[0] - group.prediction_center[0]
+                ),
+            )
+            self._merge_notehead_fragment(group, fragment)
+            self.unmatched_visual_notes.discard(fragment.visual_id)
+            del self.visual_groups[fragment.visual_id]
+
+    @staticmethod
+    def _source_notehead_bounds(group: VisualGroup) -> tuple[float, float, float, float] | None:
+        points = [point for contour in group.notehead_contours for point in contour]
+        if not points:
+            return None
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    @classmethod
+    def _looks_like_horizontal_notehead_fragment(
+        cls, group: VisualGroup, candidate: VisualGroup
+    ) -> bool:
+        group_bounds = cls._source_notehead_bounds(group)
+        candidate_bounds = cls._source_notehead_bounds(candidate)
+        if group_bounds is None or candidate_bounds is None:
+            return False
+        group_left, group_top, group_right, group_bottom = group_bounds
+        candidate_left, candidate_top, candidate_right, candidate_bottom = candidate_bounds
+        group_width = max(group_right - group_left, 1.0)
+        candidate_width = max(candidate_right - candidate_left, 1.0)
+        group_height = max(group_bottom - group_top, 1.0)
+        candidate_height = max(candidate_bottom - candidate_top, 1.0)
+        vertical_overlap = min(group_bottom, candidate_bottom) - max(
+            group_top, candidate_top
+        )
+        if vertical_overlap < min(group_height, candidate_height) * 0.75:
+            return False
+        horizontal_gap = max(
+            0.0,
+            max(group_left, candidate_left) - min(group_right, candidate_right),
+        )
+        if horizontal_gap > min(group_width, candidate_width) * 0.2:
+            return False
+        return abs(group.prediction_center[1] - candidate.prediction_center[1]) <= min(
+            group_height, candidate_height
+        ) * 0.2
+
+    def _merge_notehead_fragment(self, group: VisualGroup, fragment: VisualGroup) -> None:
+        group.notehead_contours.extend(fragment.notehead_contours)
+        group.detected_notehead_contours.extend(fragment.detected_notehead_contours)
+        group.refined_notehead_contours.extend(fragment.refined_notehead_contours)
+        points = [point for contour in group.notehead_contours for point in contour]
+        if len(points) >= 5:
+            ellipse = cv2.fitEllipse(
+                np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+            )
+            fitted = self.metadata._ellipse_to_json(ellipse)
+            fitted["_fit_source"] = "merged-fragments"
+            fitted["_is_hollow"] = True
+            group.notehead_ellipses = [fitted]
+        group.prediction_center = (
+            (group.prediction_center[0] + fragment.prediction_center[0]) / 2,
+            (group.prediction_center[1] + fragment.prediction_center[1]) / 2,
+        )
+
     def _structural_moment_assignments(
         self,
         symbols: list[EncodedSymbol],

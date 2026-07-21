@@ -281,6 +281,74 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(groups["vnote-4"]["stem_component_ids"], [])
         self.assertEqual(groups["vnote-3"]["stem_component_ids"], [])
 
+    def test_rejoins_horizontally_split_whole_note_chord_heads(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        image = np.full((100, 100), 255, dtype=np.uint8)
+        cv2.ellipse(image, ((50, 38), (26, 18), 0), 0, 2)
+        cv2.ellipse(image, ((50, 62), (26, 18), 0), 0, 2)
+        cv2.line(image, (15, 38), (85, 38), 0, 1)
+        cv2.line(image, (15, 62), (85, 62), 0, 1)
+        collector = VisualSidecar(metadata, source_image=image)
+
+        def fragment(
+            visual_id: str, center_x: int, center_y: int, position: int
+        ) -> Note:
+            contour = np.array(
+                [
+                    [[center_x - 6, center_y - 9]],
+                    [[center_x + 6, center_y - 9]],
+                    [[center_x + 6, center_y + 9]],
+                    [[center_x - 6, center_y + 9]],
+                ],
+                dtype=np.int32,
+            )
+            return Note(
+                BoundingEllipse(
+                    ((center_x, center_y), (12, 18), 0),
+                    contour,
+                    position,
+                ),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            fragment("top-left", 44, 38, 9),
+            fragment("bottom-left", 44, 62, 7),
+            fragment("top-right", 56, 38, 9),
+            fragment("bottom-right", 56, 62, 7),
+        ]
+        collector.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        collector.add_staff_matches(
+            [
+                EncodedSymbol("note_1", "F3", position="lower", coordinates=(44, 62)),
+                EncodedSymbol("chord"),
+                EncodedSymbol("note_1", "A3", position="lower", coordinates=(56, 38)),
+            ],
+            0,
+        )
+
+        sidecar = collector.to_json_dict()
+        groups = {
+            group["visual_group_id"]: group for group in sidecar["visual_groups"]
+        }
+
+        self.assertEqual(set(groups), {"bottom-left", "top-right"})
+        self.assertEqual(sidecar["unmatched_visual_notes"], [])
+        self.assertAlmostEqual(groups["bottom-left"]["center"][0], 50, delta=0.5)
+        self.assertAlmostEqual(groups["top-right"]["center"][0], 50, delta=0.5)
+        self.assertGreater(groups["bottom-left"]["notehead_ellipses"][0]["rx"], 10)
+        self.assertGreater(groups["top-right"]["notehead_ellipses"][0]["rx"], 10)
+
     def test_split_stem_across_displaced_noteheads_is_exported_as_one_chord(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),
