@@ -302,15 +302,56 @@ class Staff(DebugDrawable):
         return True
 
     def merge(self, other: "Staff") -> "Staff":
-        grid_a: dict[int, StaffPoint] = {}
-        for p in self.grid:
-            grid_a[int(round(p.x))] = p
-        grid_b: dict[int, StaffPoint] = {}
-        for p in other.grid:
-            grid_b[int(round(p.x))] = p
-        x_positions = set(grid_a.keys()).intersection(grid_b.keys())
+        grid_a = {int(round(point.x)): point for point in self.grid}
+        grid_b = {int(round(point.x)): point for point in other.grid}
+        shared_x = set(grid_a).intersection(grid_b)
+        all_x = set(grid_a).union(grid_b)
 
-        grid = [grid_a[x].merge(grid_b[x]) for x in sorted(x_positions)]
+        # A grand staff is cropped and dewarped from this merged grid. Keeping only
+        # shared x positions means that one partially detected stave truncates the
+        # complete sibling as well, even when its staff lines and notes continue to
+        # the end of the system. Recover the missing side from the complete stave's
+        # curvature plus the median inter-stave line offsets observed where both
+        # grids are reliable.
+        minimum_shared_grid_points = 3
+        can_extend = len(shared_x) >= minimum_shared_grid_points and all(
+            len(grid_a[x].y) == len(grid_b[x].y) for x in shared_x
+        )
+        line_offsets: NDArray | None = None
+        angle_offset = 0.0
+        if can_extend:
+            line_offsets = np.median(
+                [
+                    np.subtract(grid_a[x].y, grid_b[x].y)
+                    for x in sorted(shared_x)
+                ],
+                axis=0,
+            )
+            angle_offset = float(
+                np.median(
+                    [grid_a[x].angle - grid_b[x].angle for x in sorted(shared_x)]
+                )
+            )
+
+        grid: list[StaffPoint] = []
+        for x in sorted(all_x if line_offsets is not None else shared_x):
+            point_a = grid_a.get(x)
+            point_b = grid_b.get(x)
+            if point_a is None and point_b is not None and line_offsets is not None:
+                point_a = StaffPoint(
+                    point_b.x,
+                    list(np.add(point_b.y, line_offsets)),
+                    point_b.angle + angle_offset,
+                )
+            elif point_b is None and point_a is not None and line_offsets is not None:
+                point_b = StaffPoint(
+                    point_a.x,
+                    list(np.subtract(point_a.y, line_offsets)),
+                    point_a.angle - angle_offset,
+                )
+            if point_a is not None and point_b is not None:
+                grid.append(point_a.merge(point_b))
+
         result = Staff(grid)
         result.symbols.extend(self.symbols)
         result.symbols.extend(other.symbols)

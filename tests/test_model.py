@@ -11,6 +11,23 @@ def make_staff(number: int) -> Staff:
     return Staff([StaffPoint(0.0, y_points, 0)])
 
 
+def make_staff_grid(
+    number: int,
+    x_positions: list[int],
+    y_curve: float = 0.0,
+) -> Staff:
+    return Staff(
+        [
+            StaffPoint(
+                float(x),
+                [10 * i + 100 * float(number) + y_curve * x for i in range(5)],
+                y_curve,
+            )
+            for x in x_positions
+        ]
+    )
+
+
 def make_connection(number: int) -> RotatedBoundingBox:
     rect = ((float(number), float(number)), (number, number), float(number))
     contours = np.empty((0, 0))
@@ -41,6 +58,29 @@ def make_brace(
 
 
 class TestModel(unittest.TestCase):
+
+    def test_staff_merge_recovers_truncated_grandstaff_span(self) -> None:
+        upper = make_staff_grid(0, [0, 10, 20], y_curve=0.1)
+        lower = make_staff_grid(1, [0, 10, 20, 30, 40, 50], y_curve=0.1)
+
+        result = upper.merge(lower)
+
+        self.assertTrue(result.is_grandstaff)
+        self.assertEqual([point.x for point in result.grid], [0, 10, 20, 30, 40, 50])
+        self.assertEqual(result.max_x, 50)
+        self.assertEqual(len(result.grid[-1].y), 10)
+        np.testing.assert_allclose(
+            result.grid[-1].y,
+            [5, 15, 25, 35, 45, 105, 115, 125, 135, 145],
+        )
+
+    def test_staff_merge_does_not_extrapolate_from_too_little_overlap(self) -> None:
+        upper = make_staff_grid(0, [0, 10, 20])
+        lower = make_staff_grid(1, [10, 20, 30])
+
+        result = upper.merge(lower)
+
+        self.assertEqual([point.x for point in result.grid], [10, 20])
 
     def test_multi_staff_merge(self) -> None:
         staff1 = MultiStaff(
