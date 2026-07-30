@@ -2245,6 +2245,7 @@ class VisualSidecar:
             return None
         prediction_center: tuple[float, float] | None = None
         recovered_staff_position: int | None = None
+        recovered_stave_index: int | None = None
         symbol_pitch_index = self._diatonic_pitch_index(symbol.pitch)
         for mate_symbol, mate_group in chord_mates:
             mate_pitch_index = self._diatonic_pitch_index(mate_symbol.pitch)
@@ -2275,8 +2276,13 @@ class VisualSidecar:
                 float(mate_group.prediction_center[1]) - pitch_steps * local_unit / 2,
             )
             recovered_staff_position = mate_group.staff_position + pitch_steps
+            recovered_stave_index = mate_group.stave_index
             break
-        if prediction_center is None or recovered_staff_position is None:
+        if (
+            prediction_center is None
+            or recovered_staff_position is None
+            or recovered_stave_index is None
+        ):
             return None
         source_point = source_staff.get_at(prediction_center[0])
         if source_point is None:
@@ -2337,7 +2343,7 @@ class VisualSidecar:
         return VisualGroup(
             visual_id=visual_id,
             staff_index=staff_index,
-            stave_index=self._stave_index_for_center(source_staff, center),
+            stave_index=recovered_stave_index,
             staff_position=guessed_note.position,
             prediction_center=center,
             prediction_notehead_size=(float(width), float(height)),
@@ -2448,6 +2454,21 @@ class VisualSidecar:
                     self._noteheads_can_share_chord_stem(first, second)
                     for first, second in zip(groups, groups[1:], strict=False)
                 )
+                compact_chord_geometry = all(
+                    self._noteheads_can_share_chord_stem(first, second)
+                    for group_index, first in enumerate(groups)
+                    for second in groups[group_index + 1 :]
+                )
+                structural_chord_proven = (
+                    compact_chord_geometry
+                    and len({group.moment_id for group in groups}) == 1
+                    and groups[0].moment_id is not None
+                    and all(
+                        self.matches_by_symbol_id[symbol.visual_match_id].alignment_method
+                        == "structural"
+                        for symbol, _group in members
+                    )
+                )
                 widths = [
                     max(group.prediction_notehead_size[0], 1.0)
                     for group in groups
@@ -2467,7 +2488,15 @@ class VisualSidecar:
                     <= float(np.median(widths))
                     * VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO
                 )
-                if not stem_proven and not whole_note_proven:
+                transformer_chord_recovered = any(
+                    group.provenance == "transformer_recovered" for group in groups
+                ) and compact_chord_geometry
+                if (
+                    not stem_proven
+                    and not structural_chord_proven
+                    and not whole_note_proven
+                    and not transformer_chord_recovered
+                ):
                     continue
                 moment_id = next(
                     (group.moment_id for group in groups if group.moment_id),
@@ -2483,6 +2512,16 @@ class VisualSidecar:
                     group.moment_id = moment_id
                     if stem_proven and "shared_stem_proven" not in group.repair_actions:
                         group.repair_actions.append("shared_stem_proven")
+                    if (
+                        structural_chord_proven
+                        and "structural_chord_proven" not in group.repair_actions
+                    ):
+                        group.repair_actions.append("structural_chord_proven")
+                    if (
+                        transformer_chord_recovered
+                        and "transformer_chord_recovered" not in group.repair_actions
+                    ):
+                        group.repair_actions.append("transformer_chord_recovered")
                     match = self.matches_by_symbol_id[symbol.visual_match_id]
                     if (
                         match.alignment_method == "attention"

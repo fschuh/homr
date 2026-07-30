@@ -345,6 +345,67 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(groups["vnote-4"]["stem_component_ids"], [])
         self.assertEqual(groups["vnote-3"]["stem_component_ids"], [])
 
+    def test_structural_chord_without_stem_components_gets_physical_identity(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+
+        def make_note(y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((50, y), (7, 5), -20, 0, 360, 5).reshape(
+                -1, 1, 2
+            )
+            return Note(
+                BoundingEllipse(((50, y), (14, 10), -20), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        top = make_note(25, "top")
+        bottom = make_note(55, "bottom")
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(
+            0,
+            [top, bottom],
+            [top.copy(), bottom.copy()],
+        )
+        top_symbol = EncodedSymbol(
+            "note_16", "Eb6", position="upper", coordinates=(50, 25)
+        )
+        bottom_symbol = EncodedSymbol(
+            "note_16", "Eb5", position="upper", coordinates=(50, 55)
+        )
+
+        collector.add_staff_matches(
+            [top_symbol, EncodedSymbol("chord"), bottom_symbol],
+            0,
+        )
+
+        top_group = collector.visual_groups["top"]
+        bottom_group = collector.visual_groups["bottom"]
+        self.assertEqual(
+            collector.matches_by_symbol_id[top_symbol.visual_match_id].alignment_method,
+            "structural",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[bottom_symbol.visual_match_id].alignment_method,
+            "structural",
+        )
+        self.assertEqual(top_group.chord_id, bottom_group.chord_id)
+        self.assertIsNotNone(top_group.chord_id)
+        self.assertIn("structural_chord_proven", top_group.repair_actions)
+        self.assertIn("structural_chord_proven", bottom_group.repair_actions)
+        self.assertEqual(top_group.visual_status, "canonical")
+        self.assertEqual(bottom_group.visual_status, "canonical")
+
     def test_separate_notes_do_not_share_chord_identity_from_misassigned_stem(
         self,
     ) -> None:
@@ -1665,6 +1726,13 @@ class TestVisualSidecar(unittest.TestCase):
         recovered = collector.visual_groups[str(recovered_id)]
         self.assertAlmostEqual(recovered.prediction_center[0], 100, delta=2)
         self.assertAlmostEqual(recovered.prediction_center[1], 50, delta=2)
+        self.assertEqual(
+            recovered.chord_id,
+            collector.visual_groups["chord-top"].chord_id,
+        )
+        self.assertIsNotNone(recovered.chord_id)
+        self.assertEqual(recovered.visual_status, "fallback")
+        self.assertIn("transformer_chord_recovered", recovered.repair_actions)
         self.assertEqual(collector.unmatched_visual_notes, {"stray"})
 
     def test_recovers_hollow_notehead_positioned_by_transformer(self) -> None:
@@ -1721,6 +1789,91 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(recovered.staff_position, 8)
         self.assertEqual(recovered.visual_status, "fallback")
         self.assertEqual(recovered.provenance, "transformer_recovered")
+        self.assertEqual(recovered.chord_id, collector.visual_groups["vnote-lower"].chord_id)
+        self.assertIsNotNone(recovered.chord_id)
+        self.assertIn("transformer_chord_recovered", recovered.repair_actions)
+
+    def test_transformer_recovered_ledger_head_inherits_its_chord_mates_stave(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 160),
+            autocrop_box=(0, 0, 120, 160),
+            cropped_size=(120, 160),
+            resized_size=(120, 160),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 160),
+        )
+        image = np.full((160, 120), 255, dtype=np.uint8)
+        for center in ((60, 30), (60, 70), (60, 110)):
+            cv2.ellipse(image, center, (7, 5), -20, 0, 360, 0, -1)
+        staff = Staff(
+            [
+                StaffPoint(0, [20, 30, 40, 50, 60, 100, 110, 120, 130, 140], 0),
+                StaffPoint(120, [20, 30, 40, 50, 60, 100, 110, 120, 130, 140], 0),
+            ]
+        )
+
+        def make_note(y: int, visual_id: str, position: int) -> Note:
+            contour = cv2.ellipse2Poly((60, y), (7, 5), -20, 0, 360, 5).reshape(
+                -1, 1, 2
+            )
+            return Note(
+                BoundingEllipse(((60, y), (14, 10), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        treble = make_note(30, "treble", 3)
+        bass_bottom = make_note(110, "bass-bottom", 3)
+        collector = VisualSidecar(metadata, source_image=image)
+        collector.add_staff_visual_notes(
+            0,
+            [treble, bass_bottom],
+            [treble.copy(), bass_bottom.copy()],
+        )
+        collector.visual_groups["treble"].stave_index = 0
+        collector.visual_groups["bass-bottom"].stave_index = 1
+        treble_symbol = EncodedSymbol(
+            "note_2", "C6", position="upper", coordinates=(60, 30)
+        )
+        bass_top_symbol = EncodedSymbol(
+            "note_2", "D5", position="lower", coordinates=(68, 70)
+        )
+        bass_bottom_symbol = EncodedSymbol(
+            "note_2", "C4", position="lower", coordinates=(60, 110)
+        )
+
+        collector.add_staff_matches(
+            [
+                treble_symbol,
+                EncodedSymbol("chord"),
+                bass_top_symbol,
+                EncodedSymbol("chord"),
+                bass_bottom_symbol,
+            ],
+            0,
+            source_staff=staff,
+        )
+
+        recovered_id = collector.matches_by_symbol_id[
+            bass_top_symbol.visual_match_id
+        ].visual_id
+        self.assertIsNotNone(recovered_id)
+        recovered = collector.visual_groups[str(recovered_id)]
+        self.assertEqual(recovered.stave_index, 1)
+        self.assertEqual(
+            recovered.chord_id,
+            collector.visual_groups["bass-bottom"].chord_id,
+        )
+        self.assertIsNotNone(recovered.chord_id)
+        self.assertNotEqual(
+            recovered.chord_id,
+            collector.visual_groups["treble"].chord_id,
+        )
+        self.assertEqual(recovered.visual_status, "fallback")
 
     def test_does_not_recover_transformer_note_without_notehead_ink(self) -> None:
         metadata = PreprocessingMetadata(
