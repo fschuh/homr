@@ -179,6 +179,13 @@ class VisualMatch:
 class StructuralMatchPlan:
     assignments: list[tuple[int, int]]
     reserved_group_indices: set[int]
+    fallback_assignments: set[tuple[int, int]] = field(default_factory=set)
+
+
+@dataclass
+class StructuralMomentCompatibility:
+    stave_by_group_index: dict[int, int]
+    fallback_subset: bool = False
 
 
 @dataclass
@@ -735,6 +742,9 @@ class VisualSidecar:
         reserved_group_indices = (
             moment_plan.reserved_group_indices if moment_plan is not None else set()
         )
+        fallback_assignments = (
+            moment_plan.fallback_assignments if moment_plan is not None else set()
+        )
         assignments = self._assign_around_locked_matches(
             note_symbols,
             visual_groups,
@@ -755,12 +765,16 @@ class VisualSidecar:
             confidence = self._score_match(symbol, visual_group)
             visual_group.duration = symbol.rhythm
             alignment_method = (
-                "structural"
-                if (symbol_index, group_index) in locked_pairs
+                "sequence_repair"
+                if (symbol_index, group_index) in fallback_assignments
                 else (
-                    "sequence_repair"
-                    if symbol.coordinates is None
-                    else "attention"
+                    "structural"
+                    if (symbol_index, group_index) in locked_pairs
+                    else (
+                        "sequence_repair"
+                        if symbol.coordinates is None
+                        else "attention"
+                    )
                 )
             )
             if alignment_method == "structural":
@@ -1151,6 +1165,7 @@ class VisualSidecar:
 
         assignments: list[tuple[int, int]] = []
         reserved_group_indices: set[int] = set()
+        fallback_assignments: set[tuple[int, int]] = set()
         for moment_index, symbol_moment in enumerate(symbol_moments):
             moment_id = f"moment-{visual_groups[0].staff_index + 1}-{moment_index + 1}"
             for symbol in symbol_moment:
@@ -1163,6 +1178,11 @@ class VisualSidecar:
             self._repair_aligned_visual_moment_staves(
                 symbol_moment, visual_moment, visual_groups
             )
+            compatibility = self._compatible_visual_moment(
+                symbol_moment, visual_moment, visual_groups
+            )
+            if compatibility is None:
+                continue
             moment_id = f"moment-{visual_groups[0].staff_index + 1}-{symbol_moment_index + 1}"
             symbols_by_stave: dict[int, list[EncodedSymbol]] = {}
             for symbol in symbol_moment:
@@ -1170,8 +1190,7 @@ class VisualSidecar:
                 stave_index = 1 if position == "lower" else 0
                 symbols_by_stave.setdefault(stave_index, []).append(symbol)
             groups_by_stave: dict[int, list[int]] = {}
-            for group_index in visual_moment:
-                stave_index = visual_groups[group_index].stave_index
+            for group_index, stave_index in compatibility.stave_by_group_index.items():
                 groups_by_stave.setdefault(stave_index, []).append(group_index)
             for stave_index, stave_symbols in symbols_by_stave.items():
                 stave_group_indices = groups_by_stave.get(stave_index, [])
@@ -1194,13 +1213,21 @@ class VisualSidecar:
                     if symbol in placeholder_symbols:
                         reserved_group_indices.add(group_index)
                         continue
-                    assignments.append(
-                        (symbol_index_by_match_id[symbol.visual_match_id], group_index)
+                    assignment = (
+                        symbol_index_by_match_id[symbol.visual_match_id],
+                        group_index,
                     )
+                    assignments.append(assignment)
+                    if compatibility.fallback_subset:
+                        fallback_assignments.add(assignment)
 
         if not assignments and not reserved_group_indices:
             return None
-        return StructuralMatchPlan(sorted(assignments), reserved_group_indices)
+        return StructuralMatchPlan(
+            sorted(assignments),
+            reserved_group_indices,
+            fallback_assignments,
+        )
 
     def _repair_aligned_visual_moment_staves(
         self,
@@ -1356,6 +1383,15 @@ class VisualSidecar:
         visual_count = len(visual_moments)
         if symbol_count == 0 or visual_count == 0:
             return []
+        compatibilities = [
+            [
+                cls._compatible_visual_moment(
+                    symbol_moment, visual_moment, visual_groups
+                )
+                for visual_moment in visual_moments
+            ]
+            for symbol_moment in symbol_moments
+        ]
         visual_centers = [
             float(
                 np.median(
@@ -1393,13 +1429,9 @@ class VisualSidecar:
         }
 
         def attention_cost(
-            symbol_moment: list[EncodedSymbol], visual_moment: list[int]
+            symbol_moment: list[EncodedSymbol],
+            compatibility: StructuralMomentCompatibility,
         ) -> float:
-            repaired_staves = cls._repairable_visual_moment_staves(
-                symbol_moment, visual_moment, visual_groups
-            )
-            if repaired_staves is None:
-                return 0.5
             distances: list[float] = []
             for stave_index in (0, 1):
                 stave_symbols = [
@@ -1410,8 +1442,10 @@ class VisualSidecar:
                 stave_groups = sorted(
                     [
                         index
-                        for index in visual_moment
-                        if repaired_staves[index] == stave_index
+                        for index, assigned_stave in (
+                            compatibility.stave_by_group_index.items()
+                        )
+                        if assigned_stave == stave_index
                     ],
                     key=lambda index: visual_groups[index].prediction_center[1],
                 )
@@ -1465,14 +1499,13 @@ class VisualSidecar:
                     ),
                 ]
                 if (
-                    cls._repairable_visual_moment_staves(
-                        symbol_moments[symbol_index - 1],
-                        visual_moments[visual_index - 1],
-                        visual_groups,
-                    )
-                    is not None
+                    compatibilities[symbol_index - 1][visual_index - 1] is not None
                     and visual_index - 1 not in ambiguous_visual_moments
                 ):
+                    compatibility = compatibilities[symbol_index - 1][
+                        visual_index - 1
+                    ]
+                    assert compatibility is not None
                     pair = (symbol_index - 1, visual_index - 1)
                     symbol_position = (symbol_index - 0.5) / symbol_count
                     visual_position = (visual_index - 0.5) / visual_count
@@ -1483,7 +1516,7 @@ class VisualSidecar:
                             + abs(symbol_position - visual_position)
                             + attention_cost(
                                 symbol_moments[symbol_index - 1],
-                                visual_moments[visual_index - 1],
+                                compatibility,
                             ),
                             common_pairs[symbol_index - 1][visual_index - 1]
                             | {pair},
@@ -1502,6 +1535,187 @@ class VisualSidecar:
                 common_pairs[symbol_index][visual_index] = common
 
         return sorted(common_pairs[symbol_count][visual_count])
+
+    @classmethod
+    def _compatible_visual_moment(
+        cls,
+        symbol_moment: list[EncodedSymbol],
+        visual_moment: list[int],
+        visual_groups: list[VisualGroup],
+    ) -> StructuralMomentCompatibility | None:
+        """Select a structurally safe visual subset for one musical moment.
+
+        An otherwise complete cross-stave moment can contain one or more surplus
+        candidates on a stave. When transformer attention uniquely identifies the
+        recognized heads, or a common physical stem makes token-order prefix mapping
+        safe, retain the exact-count groups on the other stave and leave only the
+        surplus candidates unmatched. The resulting links remain fallback evidence
+        because the whole moment was not independently complete.
+        """
+        repaired_staves = cls._repairable_visual_moment_staves(
+            symbol_moment, visual_moment, visual_groups
+        )
+        if repaired_staves is not None:
+            return StructuralMomentCompatibility(repaired_staves)
+
+        selected_staves: dict[int, int] = {}
+        pruned_any = False
+        for stave_index in (0, 1):
+            stave_symbols = [
+                symbol
+                for symbol in symbol_moment
+                if (1 if symbol.position == "lower" else 0) == stave_index
+            ]
+            stave_group_indices = [
+                group_index
+                for group_index in visual_moment
+                if visual_groups[group_index].stave_index == stave_index
+            ]
+            if len(stave_group_indices) < len(stave_symbols):
+                return None
+            if len(stave_group_indices) == len(stave_symbols):
+                selected_staves.update(
+                    {group_index: stave_index for group_index in stave_group_indices}
+                )
+                continue
+            if not stave_symbols:
+                return None
+            selected_group_indices = cls._attention_selected_group_subset(
+                stave_symbols, stave_group_indices, visual_groups
+            )
+            if selected_group_indices is None:
+                selected_group_indices = cls._shared_stem_ordered_group_subset(
+                    stave_symbols, stave_group_indices, visual_groups
+                )
+            if selected_group_indices is None:
+                return None
+            selected_staves.update(
+                {group_index: stave_index for group_index in selected_group_indices}
+            )
+            pruned_any = True
+
+        return StructuralMomentCompatibility(selected_staves, pruned_any)
+
+    @staticmethod
+    def _attention_selected_group_subset(
+        symbols: list[EncodedSymbol],
+        group_indices: list[int],
+        visual_groups: list[VisualGroup],
+    ) -> list[int] | None:
+        """Return a mutually unique attention-backed subset of surplus groups."""
+        widths = [
+            max(
+                (
+                    visual_groups[group_index].transformer_notehead_size
+                    or visual_groups[group_index].prediction_notehead_size
+                )[0],
+                1.0,
+            )
+            for group_index in group_indices
+        ]
+        typical_width = float(np.median(widths)) if widths else 10.0
+        max_distance = max(
+            6.0, typical_width * ATTENTION_MATCH_NOTEHEAD_WIDTH_RATIO
+        )
+        uniqueness_margin = max(
+            1.0, typical_width * ATTENTION_UNIQUENESS_NOTEHEAD_WIDTH_RATIO
+        )
+        distances: dict[tuple[int, int], float] = {}
+        for symbol_index, symbol in enumerate(symbols):
+            if symbol.coordinates is None or not bool(
+                np.all(np.isfinite(symbol.coordinates))
+            ):
+                return None
+            for group_index in group_indices:
+                center = visual_groups[group_index].transformer_center
+                if center is None or not bool(np.all(np.isfinite(center))):
+                    continue
+                distances[(symbol_index, group_index)] = float(
+                    np.linalg.norm(np.subtract(symbol.coordinates, center))
+                )
+
+        def unique_nearest(
+            values: list[tuple[float, int]]
+        ) -> tuple[float, int] | None:
+            if not values:
+                return None
+            ordered = sorted(values)
+            if ordered[0][0] > max_distance:
+                return None
+            if (
+                len(ordered) > 1
+                and ordered[1][0] - ordered[0][0] < uniqueness_margin
+            ):
+                return None
+            return ordered[0]
+
+        nearest_group_by_symbol: dict[int, int] = {}
+        for symbol_index in range(len(symbols)):
+            nearest = unique_nearest(
+                [
+                    (distance, group_index)
+                    for (candidate_symbol, group_index), distance in distances.items()
+                    if candidate_symbol == symbol_index
+                ]
+            )
+            if nearest is None:
+                return None
+            nearest_group_by_symbol[symbol_index] = nearest[1]
+        if len(set(nearest_group_by_symbol.values())) != len(symbols):
+            return None
+
+        for symbol_index, group_index in nearest_group_by_symbol.items():
+            nearest = unique_nearest(
+                [
+                    (distance, candidate_symbol)
+                    for (candidate_symbol, candidate_group), distance in distances.items()
+                    if candidate_group == group_index
+                ]
+            )
+            if nearest is None or nearest[1] != symbol_index:
+                return None
+        return list(nearest_group_by_symbol.values())
+
+    @classmethod
+    def _shared_stem_ordered_group_subset(
+        cls,
+        symbols: list[EncodedSymbol],
+        group_indices: list[int],
+        visual_groups: list[VisualGroup],
+    ) -> list[int] | None:
+        """Select an ordered prefix only when every candidate is one physical chord.
+
+        Transformer attention is occasionally absent for a recognized member of a
+        partially recognized chord. A common owned stem proves that the surplus
+        heads belong to one physical chord rather than separate aligned voices.
+        Token member order can then select the corresponding visual prefix without
+        consulting predicted pitch. These assignments remain fallback evidence.
+        """
+        if not symbols or len(symbols) >= len(group_indices):
+            return None
+        ordered_groups = sorted(
+            group_indices,
+            key=lambda group_index: visual_groups[group_index].prediction_center[1],
+        )
+        common_components = set(
+            visual_groups[ordered_groups[0]].owned_stem_component_ids
+        )
+        for group_index in ordered_groups[1:]:
+            common_components.intersection_update(
+                visual_groups[group_index].owned_stem_component_ids
+            )
+        if not common_components:
+            return None
+        if any(
+            not cls._noteheads_can_share_chord_stem(
+                visual_groups[first_index], visual_groups[second_index]
+            )
+            for first_index, second_index in itertools.combinations(
+                ordered_groups, 2
+            )
+        ):
+            return None
+        return ordered_groups[: len(symbols)]
 
     @staticmethod
     def _repairable_visual_moment_staves(
