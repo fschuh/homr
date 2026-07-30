@@ -212,6 +212,9 @@ class VisualSidecar:
         self._stave_index_by_visual_id: dict[str, int] = {}
         self._duplicate_staff_positions_by_visual_id: dict[str, dict[int, int]] = {}
         self._stem_ownership_cache: StemOwnershipCache | None = None
+        self._stem_component_bounds_cache: dict[
+            int, tuple[float, float, float, float]
+        ] | None = None
         self.visual_groups: dict[str, VisualGroup] = {}
         self.matches_by_symbol_id: dict[int, VisualMatch] = {}
         self.musicxml_notes: list[MusicXmlNoteRecord] = []
@@ -2420,6 +2423,92 @@ class VisualSidecar:
             * MAX_CHORD_NOTEHEAD_HORIZONTAL_GAP_RATIO
         )
 
+    def _stem_component_bounds(self) -> dict[int, tuple[float, float, float, float]]:
+        if self._stem_component_bounds_cache is not None:
+            return self._stem_component_bounds_cache
+        stem_ownership = (
+            self._stem_ownership_cache
+            if self._stem_ownership_cache is not None
+            else self._build_stem_ownership_cache([])
+        )
+
+        bounds_by_component: dict[int, tuple[float, float, float, float]] = {}
+        for stem in self.stem_fragments:
+            component = stem_ownership.component_by_fragment_id.get(id(stem))
+            if component is None:
+                continue
+            left, right, top, bottom = self._stem_bounds(stem)
+            previous = bounds_by_component.get(component)
+            if previous is not None:
+                left = min(left, previous[0])
+                right = max(right, previous[1])
+                top = min(top, previous[2])
+                bottom = max(bottom, previous[3])
+            bounds_by_component[component] = (left, right, top, bottom)
+        self._stem_component_bounds_cache = bounds_by_component
+        return bounds_by_component
+
+    def _have_opposed_independent_stems(
+        self, first: VisualGroup, second: VisualGroup
+    ) -> bool:
+        """Detect close simultaneous voices whose stems leave opposite sides.
+
+        Adjacent heads can make the lower, downward stem touch both segmentation
+        candidates. That shared ownership is not chord proof when a separate upward
+        stem also leaves the upper head on the other side.
+        """
+        upper, lower = sorted(
+            (first, second), key=lambda group: group.prediction_center[1]
+        )
+        center_x = float(
+            np.median([upper.prediction_center[0], lower.prediction_center[0]])
+        )
+        notehead_width = max(
+            min(
+                float(upper.prediction_notehead_size[0]),
+                float(lower.prediction_notehead_size[0]),
+            ),
+            1.0,
+        )
+        notehead_height = max(
+            min(
+                float(upper.prediction_notehead_size[1]),
+                float(lower.prediction_notehead_size[1]),
+            ),
+            1.0,
+        )
+        side_offset = max(1.0, notehead_width * 0.18)
+        horizontal_limit = max(6.0, notehead_width * 0.9)
+        minimum_extension = notehead_height * 0.55
+
+        upward_components: set[int] = set()
+        downward_components: set[int] = set()
+        for component, (left, right, top, bottom) in self._stem_component_bounds().items():
+            component_x = (left + right) / 2
+            if abs(component_x - center_x) > horizontal_limit:
+                continue
+            if (
+                component_x >= center_x + side_offset
+                and top <= upper.prediction_center[1] - minimum_extension
+                and upper.prediction_center[1] - notehead_height * 0.9
+                <= bottom
+                <= upper.prediction_center[1] + notehead_height * 0.25
+            ):
+                upward_components.add(component)
+            if (
+                component_x <= center_x - side_offset
+                and bottom >= lower.prediction_center[1] + minimum_extension
+                and lower.prediction_center[1] - notehead_height * 0.25
+                <= top
+                <= lower.prediction_center[1] + notehead_height * 0.9
+            ):
+                downward_components.add(component)
+        return any(
+            upward != downward
+            for upward in upward_components
+            for downward in downward_components
+        )
+
     def _assign_physical_chord_ids(
         self, symbols: list[EncodedSymbol], staff_index: int
     ) -> None:
@@ -2444,92 +2533,136 @@ class VisualSidecar:
             for stave_index, members in sorted(matched_by_stave.items()):
                 if len(members) < 2:
                     continue
-                groups = [group for _symbol, group in members]
-                common_stem_components = set(groups[0].owned_stem_component_ids)
-                for group in groups[1:]:
-                    common_stem_components.intersection_update(
-                        group.owned_stem_component_ids
-                    )
-                stem_proven = bool(common_stem_components) and all(
-                    self._noteheads_can_share_chord_stem(first, second)
-                    for first, second in zip(groups, groups[1:], strict=False)
-                )
-                compact_chord_geometry = all(
-                    self._noteheads_can_share_chord_stem(first, second)
-                    for group_index, first in enumerate(groups)
-                    for second in groups[group_index + 1 :]
-                )
-                structural_chord_proven = (
-                    compact_chord_geometry
-                    and len({group.moment_id for group in groups}) == 1
-                    and groups[0].moment_id is not None
-                    and all(
-                        self.matches_by_symbol_id[symbol.visual_match_id].alignment_method
-                        == "structural"
-                        for symbol, _group in members
-                    )
-                )
-                widths = [
-                    max(group.prediction_notehead_size[0], 1.0)
-                    for group in groups
-                ]
-                whole_note_proven = (
-                    all(group.is_hollow_notehead for group in groups)
-                    and all(
-                        group.duration is not None
-                        and group.duration.rstrip(".") == "note_1"
-                        for group in groups
-                    )
-                    and bool(widths)
-                    and max(
-                        group.prediction_center[0] for group in groups
-                    )
-                    - min(group.prediction_center[0] for group in groups)
-                    <= float(np.median(widths))
-                    * VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO
-                )
-                transformer_chord_recovered = any(
-                    group.provenance == "transformer_recovered" for group in groups
-                ) and compact_chord_geometry
-                if (
-                    not stem_proven
-                    and not structural_chord_proven
-                    and not whole_note_proven
-                    and not transformer_chord_recovered
-                ):
-                    continue
-                moment_id = next(
-                    (group.moment_id for group in groups if group.moment_id),
-                    f"moment-{staff_index + 1}-repair-{chord_index}",
-                )
-                chord_id = (
-                    f"chord-{staff_index + 1}-{moment_id}-"
-                    f"{stave_index + 1}-{chord_index}"
-                )
-                chord_index += 1
+                members_by_duration: dict[
+                    str, list[tuple[EncodedSymbol, VisualGroup]]
+                ] = {}
                 for symbol, group in members:
-                    group.chord_id = chord_id
-                    group.moment_id = moment_id
-                    if stem_proven and "shared_stem_proven" not in group.repair_actions:
-                        group.repair_actions.append("shared_stem_proven")
-                    if (
-                        structural_chord_proven
-                        and "structural_chord_proven" not in group.repair_actions
-                    ):
-                        group.repair_actions.append("structural_chord_proven")
-                    if (
-                        transformer_chord_recovered
-                        and "transformer_chord_recovered" not in group.repair_actions
-                    ):
-                        group.repair_actions.append("transformer_chord_recovered")
-                    match = self.matches_by_symbol_id[symbol.visual_match_id]
-                    if (
-                        match.alignment_method == "attention"
-                        and group.provenance
-                        not in ("recovered_candidate", "transformer_recovered")
-                    ):
-                        match.alignment_method = "stem_repair"
-                        group.visual_status = "canonical"
+                    members_by_duration.setdefault(
+                        symbol.rhythm.rstrip("."), []
+                    ).append((symbol, group))
+                if len(members_by_duration) > 1:
+                    for _symbol, group in members:
+                        if (
+                            "mixed_duration_stems_separated"
+                            not in group.repair_actions
+                        ):
+                            group.repair_actions.append(
+                                "mixed_duration_stems_separated"
+                            )
+
+                for duration_members in members_by_duration.values():
+                    if len(duration_members) < 2:
+                        continue
+                    chord_assigned = self._assign_physical_chord_id_to_members(
+                        duration_members,
+                        staff_index,
+                        stave_index,
+                        chord_index,
+                    )
+                    if chord_assigned:
+                        chord_index += 1
+
+    def _assign_physical_chord_id_to_members(
+        self,
+        members: list[tuple[EncodedSymbol, VisualGroup]],
+        staff_index: int,
+        stave_index: int,
+        chord_index: int,
+    ) -> bool:
+        groups = [group for _symbol, group in members]
+        opposed_stems = any(
+            self._have_opposed_independent_stems(first, second)
+            for group_index, first in enumerate(groups)
+            for second in groups[group_index + 1 :]
+        )
+        if opposed_stems:
+            for group in groups:
+                if "opposed_stems_separated" not in group.repair_actions:
+                    group.repair_actions.append("opposed_stems_separated")
+            return False
+
+        common_stem_components = set(groups[0].owned_stem_component_ids)
+        for group in groups[1:]:
+            common_stem_components.intersection_update(
+                group.owned_stem_component_ids
+            )
+        stem_proven = bool(common_stem_components) and all(
+            self._noteheads_can_share_chord_stem(first, second)
+            for first, second in zip(groups, groups[1:], strict=False)
+        )
+        compact_chord_geometry = all(
+            self._noteheads_can_share_chord_stem(first, second)
+            for group_index, first in enumerate(groups)
+            for second in groups[group_index + 1 :]
+        )
+        structural_chord_proven = (
+            compact_chord_geometry
+            and len({group.moment_id for group in groups}) == 1
+            and groups[0].moment_id is not None
+            and all(
+                self.matches_by_symbol_id[symbol.visual_match_id].alignment_method
+                == "structural"
+                for symbol, _group in members
+            )
+        )
+        widths = [
+            max(group.prediction_notehead_size[0], 1.0) for group in groups
+        ]
+        whole_note_proven = (
+            all(group.is_hollow_notehead for group in groups)
+            and all(
+                group.duration is not None
+                and group.duration.rstrip(".") == "note_1"
+                for group in groups
+            )
+            and bool(widths)
+            and max(group.prediction_center[0] for group in groups)
+            - min(group.prediction_center[0] for group in groups)
+            <= float(np.median(widths)) * VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO
+        )
+        transformer_chord_recovered = any(
+            group.provenance == "transformer_recovered" for group in groups
+        ) and compact_chord_geometry
+        if (
+            not stem_proven
+            and not structural_chord_proven
+            and not whole_note_proven
+            and not transformer_chord_recovered
+        ):
+            return False
+
+        moment_id = next(
+            (group.moment_id for group in groups if group.moment_id),
+            f"moment-{staff_index + 1}-repair-{chord_index}",
+        )
+        chord_id = (
+            f"chord-{staff_index + 1}-{moment_id}-"
+            f"{stave_index + 1}-{chord_index}"
+        )
+        for symbol, group in members:
+            group.chord_id = chord_id
+            group.moment_id = moment_id
+            if stem_proven and "shared_stem_proven" not in group.repair_actions:
+                group.repair_actions.append("shared_stem_proven")
+            if (
+                structural_chord_proven
+                and "structural_chord_proven" not in group.repair_actions
+            ):
+                group.repair_actions.append("structural_chord_proven")
+            if (
+                transformer_chord_recovered
+                and "transformer_chord_recovered" not in group.repair_actions
+            ):
+                group.repair_actions.append("transformer_chord_recovered")
+            match = self.matches_by_symbol_id[symbol.visual_match_id]
+            if (
+                match.alignment_method == "attention"
+                and group.provenance
+                not in ("recovered_candidate", "transformer_recovered")
+            ):
+                match.alignment_method = "stem_repair"
+                group.visual_status = "canonical"
+        return True
 
     def _finalize_unmatched_groups(self, staff_index: int) -> None:
         for visual_id in sorted(self.unmatched_visual_notes):

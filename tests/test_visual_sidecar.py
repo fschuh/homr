@@ -406,6 +406,79 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(top_group.visual_status, "canonical")
         self.assertEqual(bottom_group.visual_status, "canonical")
 
+    def test_close_opposed_stem_voices_never_share_physical_chord(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 140),
+            autocrop_box=(0, 0, 120, 140),
+            cropped_size=(120, 140),
+            resized_size=(120, 140),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 140),
+        )
+        upward_contour = np.array(
+            [[[57, 10]], [[59, 10]], [[59, 34]], [[57, 34]]],
+            dtype=np.float32,
+        )
+        downward_contour = np.array(
+            [[[41, 60]], [[43, 60]], [[43, 120]], [[41, 120]]],
+            dtype=np.float32,
+        )
+        upward_stem = RotatedBoundingBox(
+            cv2.minAreaRect(upward_contour), upward_contour
+        )
+        downward_stem = RotatedBoundingBox(
+            cv2.minAreaRect(downward_contour), downward_contour
+        )
+
+        def make_note(y: int, position: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly(
+                (50, y), (10, 7), -20, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            # Reproduce segmentation assigning the visible downward stem to both
+            # touching heads even though a separate upward component also exists.
+            return Note(
+                BoundingEllipse(((50, y), (20, 14), -20), contour),
+                position=position,
+                stem=downward_stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        for lower_rhythm, expected_action in (
+            ("note_16", "mixed_duration_stems_separated"),
+            ("note_8", "opposed_stems_separated"),
+        ):
+            with self.subTest(lower_rhythm=lower_rhythm):
+                upper = make_note(40, 12, "upper")
+                lower = make_note(54, 10, "lower")
+                collector = VisualSidecar(
+                    metadata, stem_fragments=[upward_stem, downward_stem]
+                )
+                collector.add_staff_visual_notes(
+                    0,
+                    [upper, lower],
+                    [upper.copy(), lower.copy()],
+                )
+                collector.add_staff_matches(
+                    [
+                        EncodedSymbol("note_8", "Bb5", coordinates=(50, 40)),
+                        EncodedSymbol("chord"),
+                        EncodedSymbol(
+                            lower_rhythm, "Gb5", coordinates=(50, 54)
+                        ),
+                    ],
+                    0,
+                )
+
+                upper_group = collector.visual_groups["upper"]
+                lower_group = collector.visual_groups["lower"]
+                self.assertEqual(upper_group.moment_id, lower_group.moment_id)
+                self.assertIsNotNone(upper_group.moment_id)
+                self.assertIsNone(upper_group.chord_id)
+                self.assertIsNone(lower_group.chord_id)
+                self.assertIn(expected_action, upper_group.repair_actions)
+                self.assertIn(expected_action, lower_group.repair_actions)
+
     def test_separate_notes_do_not_share_chord_identity_from_misassigned_stem(
         self,
     ) -> None:
