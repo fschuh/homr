@@ -24,6 +24,9 @@ HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 MAX_RECONSTRUCTED_STEM_DISTANCE_IN_NOTEHEADS = 8.0
 MAX_STEM_COMPONENT_GAP_IN_NOTEHEADS = 1.5
 VISUAL_MOMENT_X_TOLERANCE = 6.0
+VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO = 0.65
+ATTENTION_MATCH_NOTEHEAD_WIDTH_RATIO = 1.5
+ATTENTION_UNIQUENESS_NOTEHEAD_WIDTH_RATIO = 0.25
 DUPLICATE_NOTEHEAD_AREA_RATIO = 0.6
 DUPLICATE_NOTEHEAD_MAX_HORIZONTAL_DISTANCE = 1.5
 DUPLICATE_NOTEHEAD_MAX_VERTICAL_DISTANCE = 0.3
@@ -119,7 +122,9 @@ class VisualGroup:
     stave_index: int
     staff_position: int
     prediction_center: tuple[float, float]
+    prediction_notehead_size: tuple[float, float]
     transformer_center: tuple[float, float] | None
+    transformer_notehead_size: tuple[float, float] | None
     notehead_ellipses: list[dict[str, Any]]
     notehead_contours: list[list[list[float]]]
     detected_notehead_contours: list[list[list[float]]]
@@ -128,6 +133,11 @@ class VisualGroup:
     stem_contours: list[list[list[float]]]
     owned_stem_component_ids: list[str]
     is_hollow_notehead: bool
+    visual_status: str
+    provenance: str
+    moment_id: str | None = None
+    chord_id: str | None = None
+    repair_actions: list[str] = field(default_factory=list)
     duration: str | None = None
     linked_musicxml_ids: list[str] = field(default_factory=list)
 
@@ -154,6 +164,7 @@ class MusicXmlNoteRecord:
     duration: str
     match_confidence: float
     visual_group_id: str | None
+    alignment_method: str
 
 
 @dataclass
@@ -161,6 +172,7 @@ class VisualMatch:
     symbol: EncodedSymbol
     visual_id: str | None
     confidence: float
+    alignment_method: str
 
 
 @dataclass
@@ -191,11 +203,13 @@ class VisualSidecar:
         self.source_image = source_image
         self._recovery_notes_by_staff_id: dict[int, list[Note]] = {}
         self._stave_index_by_visual_id: dict[str, int] = {}
+        self._duplicate_staff_positions_by_visual_id: dict[str, dict[int, int]] = {}
         self._stem_ownership_cache: StemOwnershipCache | None = None
         self.visual_groups: dict[str, VisualGroup] = {}
         self.matches_by_symbol_id: dict[int, VisualMatch] = {}
         self.musicxml_notes: list[MusicXmlNoteRecord] = []
         self.unmatched_visual_notes: set[str] = set()
+        self._moment_id_by_symbol_id: dict[int, str] = {}
         self._next_musicxml_note_id = 1
         self._next_recovered_visual_id = 1
         self._next_transformer_recovered_visual_id = 1
@@ -208,7 +222,7 @@ class VisualSidecar:
         """
         self._recovery_notes_by_staff_id = {id(staff): [] for staff in staffs}
         self._stave_index_by_visual_id = {
-            note.visual_id: self._stave_index_for_center(staff, note.center)
+            note.visual_id: self._stave_index_for_note(staff, note)
             for staff in staffs
             for note in staff.get_notes()
             if note.visual_id is not None
@@ -310,6 +324,45 @@ class VisualSidecar:
             key=lambda index: min(abs(line_y - center[1]) for line_y in line_groups[index]),
         )
 
+    @classmethod
+    def _stave_index_for_note(cls, staff: Staff, note: Note) -> int:
+        """Recover the stave that originally supplied a grand-staff note.
+
+        Ledger zones between two staves overlap, so the same segmentation candidate
+        can be admitted by both source staves. Its ``position`` was calculated on
+        the source stave before the staves were merged and therefore preserves
+        ownership even when the notehead center is closer to the other stave.
+        """
+        point = staff.get_at(note.center[0])
+        if point is None:
+            point = min(staff.grid, key=lambda candidate: abs(candidate.x - note.center[0]))
+        lines_per_stave = constants.number_of_lines_on_a_staff
+        line_groups = [
+            point.y[index : index + lines_per_stave]
+            for index in range(0, len(point.y), lines_per_stave)
+        ]
+        if len(line_groups) <= 1:
+            return 0
+
+        def position_error(stave_index: int) -> tuple[int, float]:
+            lines = line_groups[stave_index]
+            closest_line_index = int(
+                np.argmin(np.abs(np.subtract(lines, note.center[1])))
+            )
+            unit_size = float(np.mean(np.diff(lines)))
+            if unit_size <= 0:
+                return (abs(note.position), float("inf"))
+            distance = lines[closest_line_index] - note.center[1]
+            expected_position = (
+                2 * (len(lines) - closest_line_index)
+                + round(2 * distance / unit_size)
+                - 1
+            )
+            geometric_distance = min(abs(line_y - note.center[1]) for line_y in lines)
+            return (abs(expected_position - note.position), geometric_distance)
+
+        return min(range(len(line_groups)), key=position_error)
+
     def add_staff_visual_notes(
         self, staff_index: int, original_notes: list[Note], transformed_notes: list[Note]
     ) -> None:
@@ -343,6 +396,19 @@ class VisualSidecar:
                 stem_contours.append(
                     self.metadata.prediction_contour_to_source(stem.polygon)
                 )
+            repair_actions: list[str] = []
+            if recovered_stretched_notehead:
+                repair_actions.append("refined_stretched_notehead")
+            if stem is not None and (
+                original.stem is None
+                or not self._same_stem_fragment(stem, original.stem)
+            ):
+                repair_actions.append("stem_geometry_repaired")
+            provenance = (
+                "recovered_candidate"
+                if original.visual_id.startswith("vnote-recovered-")
+                else "segmentation"
+            )
             owned_stem_component_ids = sorted(
                 f"staff-{staff_index}-stem-{component}"
                 for component, owner_note_ids in stem_ownership.owner_note_ids_by_component.items()
@@ -354,7 +420,15 @@ class VisualSidecar:
                 stave_index=self._stave_index_by_visual_id.get(original.visual_id, 0),
                 staff_position=original.position,
                 prediction_center=original.center,
+                prediction_notehead_size=(
+                    float(original.box.size[0]),
+                    float(original.box.size[1]),
+                ),
                 transformer_center=transformed.center,
+                transformer_notehead_size=(
+                    float(transformed.box.size[0]),
+                    float(transformed.box.size[1]),
+                ),
                 notehead_ellipses=[notehead_ellipse],
                 notehead_contours=[notehead_contour],
                 detected_notehead_contours=[detected_notehead_contour],
@@ -365,6 +439,9 @@ class VisualSidecar:
                 stem_contours=stem_contours,
                 owned_stem_component_ids=owned_stem_component_ids,
                 is_hollow_notehead=is_hollow_notehead,
+                visual_status="fallback",
+                provenance=provenance,
+                repair_actions=repair_actions,
             )
             self.unmatched_visual_notes.add(original.visual_id)
 
@@ -632,43 +709,43 @@ class VisualSidecar:
         staff_index: int,
         source_staff: Staff | None = None,
     ) -> None:
-        # Match the same cleaned symbol identities that MusicXML generation will
-        # retain. In particular, a duplicate pitch inside one predicted chord must
-        # not consume a second visual group and shift every following note.
+        """Repair, organize, and align one staff without changing recognition.
+
+        This is deliberately a post-inference pipeline. It works from the cleaned
+        transformer symbols and pixel-backed candidates, but never changes either
+        the symbol stream used for MusicXML or the detected staff itself.
+        """
+        # Match the same cleaned symbol identities that MusicXML generation retains.
         symbols = remove_duplicated_symbols(symbols, cleanup_tuplets=False)
-        self._discard_visual_groups_near_clefs(symbols, staff_index)
-        self._discard_duplicate_notehead_fragments(staff_index)
+        self._repair_candidate_geometry(symbols, staff_index)
+        # Stage 3 constructs physical chord units and normalized visual moments;
+        # stage 4 performs the order-preserving global sequence alignment.
         visual_groups = [
-            group for group in self.visual_groups.values() if group.staff_index == staff_index
+            group
+            for group in self.visual_groups.values()
+            if group.staff_index == staff_index and group.visual_status != "diagnostic"
         ]
         note_symbols = [
             symbol
             for symbol in symbols
             if symbol.rhythm.startswith(("note", "rest")) and symbol.pitch not in ("_", ".")
         ]
-
-        assignments = self._assign_around_locked_matches(
-            note_symbols, visual_groups, []
-        )
-
         moment_plan = self._structural_moment_assignments(symbols, note_symbols, visual_groups)
-        if moment_plan is not None:
-            assignments = self._assign_around_locked_matches(
-                note_symbols,
-                visual_groups,
-                moment_plan.assignments,
-                moment_plan.reserved_group_indices,
-            )
-        assignments = self._repair_chord_assignments(
-            symbols, note_symbols, visual_groups, assignments
+        locked_assignments = moment_plan.assignments if moment_plan is not None else []
+        reserved_group_indices = (
+            moment_plan.reserved_group_indices if moment_plan is not None else set()
         )
-        assignments = self._repair_adjacent_sequence_inversions(
-            symbols, note_symbols, visual_groups, assignments
+        assignments = self._assign_around_locked_matches(
+            note_symbols,
+            visual_groups,
+            locked_assignments,
+            reserved_group_indices,
         )
         assignments = self._release_split_moment_outliers(
             symbols, note_symbols, visual_groups, assignments
         )
         assigned_symbols = {symbol_index for symbol_index, _ in assignments}
+        locked_pairs = set(locked_assignments)
 
         assigned_group_by_symbol_id: dict[int, VisualGroup] = {}
         for symbol_index, group_index in assignments:
@@ -677,10 +754,34 @@ class VisualSidecar:
             assigned_group_by_symbol_id[symbol.visual_match_id] = visual_group
             confidence = self._score_match(symbol, visual_group)
             visual_group.duration = symbol.rhythm
+            alignment_method = (
+                "structural"
+                if (symbol_index, group_index) in locked_pairs
+                else (
+                    "sequence_repair"
+                    if symbol.coordinates is None
+                    else "attention"
+                )
+            )
+            if alignment_method == "structural":
+                visual_group.visual_status = (
+                    "fallback"
+                    if visual_group.provenance == "recovered_candidate"
+                    else "canonical"
+                )
+            else:
+                visual_group.visual_status = "fallback"
+                repair_action = f"{alignment_method}_aligned"
+                if repair_action not in visual_group.repair_actions:
+                    visual_group.repair_actions.append(repair_action)
+                visual_group.moment_id = self._moment_id_by_symbol_id.get(
+                    symbol.visual_match_id
+                )
             self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                 symbol=symbol,
                 visual_id=visual_group.visual_id,
                 confidence=confidence,
+                alignment_method=alignment_method,
             )
             self.unmatched_visual_notes.discard(visual_group.visual_id)
 
@@ -689,7 +790,7 @@ class VisualSidecar:
                 continue
             chord_mates = [
                 (mate, assigned_group_by_symbol_id[mate.visual_match_id])
-                for chord in sort_token_chords(symbols)
+                for chord in self._token_moments(symbols)
                 if any(candidate.visual_match_id == symbol.visual_match_id for candidate in chord)
                 for mate in chord
                 if (
@@ -711,20 +812,105 @@ class VisualSidecar:
                     symbol=symbol,
                     visual_id=recovered_group.visual_id,
                     confidence=self._score_match(symbol, recovered_group),
+                    alignment_method="sequence_repair",
+                )
+                recovered_group.moment_id = self._moment_id_by_symbol_id.get(
+                    symbol.visual_match_id
                 )
                 continue
             self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                 symbol=symbol,
                 visual_id=None,
                 confidence=0.0,
+                alignment_method="none",
             )
 
         self._merge_split_whole_note_fragments(staff_index)
+        self._assign_physical_chord_ids(symbols, staff_index)
+        self._finalize_unmatched_groups(staff_index)
+
+    def _repair_candidate_geometry(
+        self, symbols: list[EncodedSymbol], staff_index: int
+    ) -> None:
+        """Stage 2: quarantine artifacts and repair mergeable segmentation."""
+        self._discard_visual_groups_near_clefs(symbols, staff_index)
+        self._consolidate_exact_duplicate_noteheads(staff_index)
+        self._discard_duplicate_notehead_fragments(staff_index)
+
+    def _consolidate_exact_duplicate_noteheads(self, staff_index: int) -> None:
+        """Keep one physical head when overlapping stave zones emitted it twice.
+
+        ``add_notes_to_staffs`` deliberately permits ledger notes in each nearby
+        stave zone. In the overlap between a grand staff's staves, that can create
+        two Note objects backed by the exact same segmentation contour but with
+        different staff positions. Retain one physical candidate, preserve the
+        rejected candidate for diagnostics, and remember both stave positions so a
+        structurally complete transformer moment can resolve ownership later.
+        """
+        staff_groups = [
+            group
+            for group in self.visual_groups.values()
+            if group.staff_index == staff_index and group.visual_status != "diagnostic"
+        ]
+        visited: set[str] = set()
+        for group_index, group in enumerate(staff_groups):
+            if group.visual_id in visited:
+                continue
+            duplicates = [
+                candidate
+                for candidate in staff_groups[group_index + 1 :]
+                if candidate.visual_id not in visited
+                and self._same_exact_notehead_candidate(group, candidate)
+            ]
+            if not duplicates:
+                continue
+            cluster = [group, *duplicates]
+            visited.update(candidate.visual_id for candidate in cluster)
+            primary = min(cluster, key=lambda candidate: candidate.visual_id)
+            staff_positions = {
+                candidate.stave_index: candidate.staff_position
+                for candidate in cluster
+            }
+            self._duplicate_staff_positions_by_visual_id[primary.visual_id] = (
+                staff_positions
+            )
+            if "duplicate_candidates_consolidated" not in primary.repair_actions:
+                primary.repair_actions.append("duplicate_candidates_consolidated")
+            if len(staff_positions) > 1 and (
+                "cross_stave_duplicate_consolidated" not in primary.repair_actions
+            ):
+                primary.repair_actions.append("cross_stave_duplicate_consolidated")
+            for duplicate in cluster:
+                if duplicate is primary:
+                    continue
+                duplicate.visual_status = "diagnostic"
+                if "suspected_duplicate" not in duplicate.repair_actions:
+                    duplicate.repair_actions.append("suspected_duplicate")
+                duplicate_of = f"duplicate_of:{primary.visual_id}"
+                if duplicate_of not in duplicate.repair_actions:
+                    duplicate.repair_actions.append(duplicate_of)
+
+    @staticmethod
+    def _same_exact_notehead_candidate(
+        first: VisualGroup, second: VisualGroup
+    ) -> bool:
+        """Return true only for candidates backed by the same segmented pixels."""
+        return (
+            np.allclose(first.prediction_center, second.prediction_center, atol=1e-6)
+            and np.allclose(
+                first.prediction_notehead_size,
+                second.prediction_notehead_size,
+                atol=1e-6,
+            )
+            and first.notehead_contours == second.notehead_contours
+            and first.detected_notehead_contours == second.detected_notehead_contours
+            and first.refined_notehead_contours == second.refined_notehead_contours
+        )
 
     def _discard_visual_groups_near_clefs(
         self, symbols: list[EncodedSymbol], staff_index: int
     ) -> None:
-        """Remove notehead candidates sitting on recognized clef glyphs."""
+        """Quarantine notehead candidates sitting on recognized clef glyphs."""
         clef_centers = [
             symbol.coordinates
             for symbol in symbols
@@ -746,11 +932,13 @@ class VisualSidecar:
             )
         }
         for visual_id in clef_artifact_ids:
-            self.unmatched_visual_notes.discard(visual_id)
-            del self.visual_groups[visual_id]
+            group = self.visual_groups[visual_id]
+            group.visual_status = "diagnostic"
+            if "clef_artifact" not in group.repair_actions:
+                group.repair_actions.append("clef_artifact")
 
     def _discard_duplicate_notehead_fragments(self, staff_index: int) -> None:
-        """Drop weak horizontal fragments duplicated from a nearby notehead.
+        """Quarantine weak horizontal fragments duplicated from a nearby notehead.
 
         Segmentation can emit a small, hollow-looking fragment beside a full
         notehead while attaching both candidates to the exact same detected stem.
@@ -807,8 +995,10 @@ class VisualSidecar:
                     break
 
         for visual_id in duplicate_ids:
-            self.unmatched_visual_notes.discard(visual_id)
-            del self.visual_groups[visual_id]
+            group = self.visual_groups[visual_id]
+            group.visual_status = "diagnostic"
+            if "suspected_duplicate" not in group.repair_actions:
+                group.repair_actions.append("suspected_duplicate")
 
     @staticmethod
     def _detected_notehead_area(group: VisualGroup) -> float:
@@ -865,8 +1055,11 @@ class VisualSidecar:
                 ),
             )
             self._merge_notehead_fragment(group, fragment)
-            self.unmatched_visual_notes.discard(fragment.visual_id)
-            del self.visual_groups[fragment.visual_id]
+            group.provenance = "merged_fragments"
+            if "merged_split_notehead" not in group.repair_actions:
+                group.repair_actions.append("merged_split_notehead")
+            fragment.visual_status = "diagnostic"
+            fragment.repair_actions.append(f"merged_into:{group.visual_id}")
 
     @staticmethod
     def _source_notehead_bounds(group: VisualGroup) -> tuple[float, float, float, float] | None:
@@ -949,41 +1142,28 @@ class VisualSidecar:
         }
         symbol_moments = [
             [symbol for symbol in chord if self._symbol_occupies_visual_moment(symbol)]
-            for chord in sort_token_chords(symbols)
+            for chord in self._token_moments(symbols)
         ]
         symbol_moments = [moment for moment in symbol_moments if moment]
-
-        visual_moments: list[list[int]] = []
-        for group_index in sorted(
-            range(len(visual_groups)),
-            key=lambda index: visual_groups[index].prediction_center[0],
-        ):
-            if not visual_moments:
-                visual_moments.append([group_index])
-                continue
-            current_center = float(
-                np.median(
-                    [
-                        visual_groups[index].prediction_center[0]
-                        for index in visual_moments[-1]
-                    ]
-                )
-            )
-            if (
-                abs(visual_groups[group_index].prediction_center[0] - current_center)
-                <= VISUAL_MOMENT_X_TOLERANCE
-            ):
-                visual_moments[-1].append(group_index)
-            else:
-                visual_moments.append([group_index])
+        if not visual_groups:
+            return None
+        visual_moments = self._construct_visual_moments(visual_groups)
 
         assignments: list[tuple[int, int]] = []
         reserved_group_indices: set[int] = set()
+        for moment_index, symbol_moment in enumerate(symbol_moments):
+            moment_id = f"moment-{visual_groups[0].staff_index + 1}-{moment_index + 1}"
+            for symbol in symbol_moment:
+                self._moment_id_by_symbol_id[symbol.visual_match_id] = moment_id
         for symbol_moment_index, visual_moment_index in self._align_structural_moments(
             symbol_moments, visual_moments, visual_groups
         ):
             symbol_moment = symbol_moments[symbol_moment_index]
             visual_moment = visual_moments[visual_moment_index]
+            self._repair_aligned_visual_moment_staves(
+                symbol_moment, visual_moment, visual_groups
+            )
+            moment_id = f"moment-{visual_groups[0].staff_index + 1}-{symbol_moment_index + 1}"
             symbols_by_stave: dict[int, list[EncodedSymbol]] = {}
             for symbol in symbol_moment:
                 position = symbol.position
@@ -994,43 +1174,155 @@ class VisualSidecar:
                 stave_index = visual_groups[group_index].stave_index
                 groups_by_stave.setdefault(stave_index, []).append(group_index)
             for stave_index, stave_symbols in symbols_by_stave.items():
-                stave_group_indices = groups_by_stave[stave_index]
+                stave_group_indices = groups_by_stave.get(stave_index, [])
+                if len(stave_group_indices) != len(stave_symbols):
+                    continue
                 placeholder_symbols = [
                     symbol
                     for symbol in stave_symbols
                     if symbol.visual_match_id not in symbol_index_by_match_id
                 ]
-                available_group_indices = set(stave_group_indices)
-                for placeholder in placeholder_symbols:
-                    reserved_group_index = min(
-                        available_group_indices,
-                        key=lambda group_index: self._symbol_group_distance(
-                            placeholder, visual_groups[group_index]
-                        ),
-                    )
-                    available_group_indices.remove(reserved_group_index)
-                    reserved_group_indices.add(reserved_group_index)
-
-                stave_symbol_indices = [
-                    symbol_index_by_match_id[symbol.visual_match_id]
-                    for symbol in stave_symbols
-                    if symbol.visual_match_id in symbol_index_by_match_id
-                ]
-
-                def pitch_height(symbol_index: int) -> int:
-                    pitch_index = self._diatonic_pitch_index(note_symbols[symbol_index].pitch)
-                    return pitch_index if pitch_index is not None else -1
-
-                symbol_order = sorted(stave_symbol_indices, key=pitch_height, reverse=True)
                 group_order = sorted(
-                    available_group_indices,
+                    stave_group_indices,
                     key=lambda index: visual_groups[index].prediction_center[1],
                 )
-                assignments.extend(zip(symbol_order, group_order, strict=True))
+                # Transformer chord token order is the stable member order. Pitch
+                # values are recognition output, not visual evidence, so they must
+                # never be allowed to exchange two noteheads.
+                for symbol, group_index in zip(stave_symbols, group_order, strict=True):
+                    visual_groups[group_index].moment_id = moment_id
+                    if symbol in placeholder_symbols:
+                        reserved_group_indices.add(group_index)
+                        continue
+                    assignments.append(
+                        (symbol_index_by_match_id[symbol.visual_match_id], group_index)
+                    )
 
         if not assignments and not reserved_group_indices:
             return None
         return StructuralMatchPlan(sorted(assignments), reserved_group_indices)
+
+    def _repair_aligned_visual_moment_staves(
+        self,
+        symbol_moment: list[EncodedSymbol],
+        visual_moment: list[int],
+        visual_groups: list[VisualGroup],
+    ) -> None:
+        repaired_staves = self._repairable_visual_moment_staves(
+            symbol_moment, visual_moment, visual_groups
+        )
+        if repaired_staves is None:
+            return
+        for group_index, stave_index in repaired_staves.items():
+            group = visual_groups[group_index]
+            if group.stave_index == stave_index:
+                continue
+            group.stave_index = stave_index
+            staff_positions = self._duplicate_staff_positions_by_visual_id.get(
+                group.visual_id, {}
+            )
+            if stave_index in staff_positions:
+                group.staff_position = staff_positions[stave_index]
+            if "stave_membership_repaired" not in group.repair_actions:
+                group.repair_actions.append("stave_membership_repaired")
+
+    @staticmethod
+    def _token_moments(symbols: list[EncodedSymbol]) -> list[list[EncodedSymbol]]:
+        """Group chord tokens without re-sorting members by predicted pitch."""
+        moments: list[list[EncodedSymbol]] = []
+        append_to_previous = False
+        for symbol in symbols:
+            if symbol.rhythm == "chord":
+                append_to_previous = True
+                continue
+            if append_to_previous and moments:
+                moments[-1].append(symbol)
+                append_to_previous = False
+            else:
+                moments.append([symbol])
+        return moments
+
+    @classmethod
+    def _construct_visual_moments(
+        cls, visual_groups: list[VisualGroup]
+    ) -> list[list[int]]:
+        """Build staff-normalized x moments while preserving physical chords."""
+        if not visual_groups:
+            return []
+        widths = [
+            max(group.prediction_notehead_size[0], 1.0)
+            for group in visual_groups
+        ]
+        typical_width = float(np.median(widths)) if widths else 10.0
+        x_tolerance = max(
+            2.0,
+            typical_width * VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO,
+        )
+
+        # First combine noteheads that share a plausible physical stem. A
+        # displaced second may sit outside the ordinary x tolerance.
+        components: list[list[int]] = []
+        remaining = set(range(len(visual_groups)))
+        while remaining:
+            seed = min(remaining)
+            component = {seed}
+            frontier = [seed]
+            remaining.remove(seed)
+            while frontier:
+                current = frontier.pop()
+                current_group = visual_groups[current]
+                for candidate in list(remaining):
+                    candidate_group = visual_groups[candidate]
+                    if current_group.stave_index != candidate_group.stave_index:
+                        continue
+                    shared_components = set(
+                        current_group.owned_stem_component_ids
+                    ).intersection(candidate_group.owned_stem_component_ids)
+                    if shared_components and cls._noteheads_can_share_chord_stem(
+                        current_group, candidate_group
+                    ):
+                        remaining.remove(candidate)
+                        component.add(candidate)
+                        frontier.append(candidate)
+            components.append(sorted(component))
+
+        units = sorted(
+            components,
+            key=lambda component: float(
+                np.median(
+                    [
+                        visual_groups[index].prediction_center[0]
+                        for index in component
+                    ]
+                )
+            ),
+        )
+        moments: list[list[int]] = []
+        for component in units:
+            center = float(
+                np.median(
+                    [
+                        visual_groups[index].prediction_center[0]
+                        for index in component
+                    ]
+                )
+            )
+            if moments:
+                previous_center = float(
+                    np.median(
+                        [
+                            visual_groups[index].prediction_center[0]
+                            for index in moments[-1]
+                        ]
+                    )
+                )
+            else:
+                previous_center = float("-inf")
+            if moments and abs(center - previous_center) <= x_tolerance:
+                moments[-1].extend(component)
+            else:
+                moments.append(list(component))
+        return moments
 
     @staticmethod
     def _symbol_occupies_visual_moment(symbol: EncodedSymbol) -> bool:
@@ -1045,13 +1337,13 @@ class VisualSidecar:
         visual_moments: list[list[int]],
         visual_groups: list[VisualGroup],
     ) -> list[tuple[int, int]]:
-        """Return a maximum-weight, order-preserving alignment of equal shapes."""
+        """Return assignments common to every best order-preserving alignment.
 
-        def symbol_shape(moment: list[EncodedSymbol]) -> tuple[int, int]:
-            return (
-                sum(symbol.position != "lower" for symbol in moment),
-                sum(symbol.position == "lower" for symbol in moment),
-            )
+        Insertions and deletions are ordinary gaps. Attention contributes a bounded
+        local cost, so it can choose between otherwise equivalent gaps but cannot
+        make two moments cross. If two repeated-note alignments remain equally good,
+        neither disputed edge is returned.
+        """
 
         def visual_shape(moment: list[int]) -> tuple[int, int]:
             return (
@@ -1059,10 +1351,11 @@ class VisualSidecar:
                 sum(visual_groups[index].stave_index == 1 for index in moment),
             )
 
-        symbol_shapes = [symbol_shape(moment) for moment in symbol_moments]
         visual_shapes = [visual_shape(moment) for moment in visual_moments]
         symbol_count = len(symbol_moments)
         visual_count = len(visual_moments)
+        if symbol_count == 0 or visual_count == 0:
+            return []
         visual_centers = [
             float(
                 np.median(
@@ -1071,6 +1364,17 @@ class VisualSidecar:
             )
             for moment in visual_moments
         ]
+        widths = [
+            max(
+                (
+                    group.transformer_notehead_size
+                    or group.prediction_notehead_size
+                )[0],
+                1.0,
+            )
+            for group in visual_groups
+        ]
+        typical_width = float(np.median(widths)) if widths else 10.0
         # A staff line can split every head of a hollow chord into matching left
         # and right fragment columns. Neither column is a complete musical moment,
         # even though each has the expected per-stave count. Leave this distinctive
@@ -1082,91 +1386,194 @@ class VisualSidecar:
             and any(
                 visual_shapes[neighbor] == shape
                 and abs(visual_centers[neighbor] - visual_centers[visual_index])
-                <= VISUAL_MOMENT_X_TOLERANCE * 3
+                <= typical_width * 2
                 for neighbor in (visual_index - 1, visual_index + 1)
                 if 0 <= neighbor < visual_count
             )
         }
-        # Score by noteheads first and matched moments second. The final term
-        # selects the least-displaced alignment when repeated one-note shapes
-        # admit several otherwise equivalent subsequences.
-        scores: list[list[tuple[int, int, float]]] = [
-            [(0, 0, 0.0) for _ in range(visual_count + 1)] for _ in range(symbol_count + 1)
+
+        def attention_cost(
+            symbol_moment: list[EncodedSymbol], visual_moment: list[int]
+        ) -> float:
+            repaired_staves = cls._repairable_visual_moment_staves(
+                symbol_moment, visual_moment, visual_groups
+            )
+            if repaired_staves is None:
+                return 0.5
+            distances: list[float] = []
+            for stave_index in (0, 1):
+                stave_symbols = [
+                    symbol
+                    for symbol in symbol_moment
+                    if (1 if symbol.position == "lower" else 0) == stave_index
+                ]
+                stave_groups = sorted(
+                    [
+                        index
+                        for index in visual_moment
+                        if repaired_staves[index] == stave_index
+                    ],
+                    key=lambda index: visual_groups[index].prediction_center[1],
+                )
+                for symbol, group_index in zip(
+                    stave_symbols, stave_groups, strict=True
+                ):
+                    group = visual_groups[group_index]
+                    if symbol.coordinates is None or group.transformer_center is None:
+                        continue
+                    distances.append(
+                        float(
+                            np.linalg.norm(
+                                np.subtract(
+                                    symbol.coordinates, group.transformer_center
+                                )
+                            )
+                        )
+                    )
+            if not distances:
+                return 0.5
+            return min(
+                float(np.mean(distances)) / max(typical_width * 2, 1.0),
+                0.4,
+            )
+
+        gap_cost = 1.0
+        costs = [
+            [float("inf") for _ in range(visual_count + 1)]
+            for _ in range(symbol_count + 1)
         ]
-        actions: list[list[str | None]] = [
-            [None for _ in range(visual_count + 1)] for _ in range(symbol_count + 1)
+        common_pairs: list[list[set[tuple[int, int]]]] = [
+            [set() for _ in range(visual_count + 1)]
+            for _ in range(symbol_count + 1)
         ]
+        costs[0][0] = 0.0
         for symbol_index in range(1, symbol_count + 1):
-            actions[symbol_index][0] = "skip-symbol"
+            costs[symbol_index][0] = symbol_index * gap_cost
         for visual_index in range(1, visual_count + 1):
-            actions[0][visual_index] = "skip-visual"
+            costs[0][visual_index] = visual_index * gap_cost
 
         for symbol_index in range(1, symbol_count + 1):
             for visual_index in range(1, visual_count + 1):
-                options = [
-                    (scores[symbol_index - 1][visual_index], "skip-symbol"),
-                    (scores[symbol_index][visual_index - 1], "skip-visual"),
+                options: list[tuple[float, set[tuple[int, int]]]] = [
+                    (
+                        costs[symbol_index - 1][visual_index] + gap_cost,
+                        common_pairs[symbol_index - 1][visual_index],
+                    ),
+                    (
+                        costs[symbol_index][visual_index - 1] + gap_cost,
+                        common_pairs[symbol_index][visual_index - 1],
+                    ),
                 ]
                 if (
-                    symbol_shapes[symbol_index - 1] == visual_shapes[visual_index - 1]
+                    cls._repairable_visual_moment_staves(
+                        symbol_moments[symbol_index - 1],
+                        visual_moments[visual_index - 1],
+                        visual_groups,
+                    )
+                    is not None
                     and visual_index - 1 not in ambiguous_visual_moments
                 ):
-                    previous = scores[symbol_index - 1][visual_index - 1]
-                    symbol_position = (symbol_index - 0.5) / max(symbol_count, 1)
-                    visual_position = (visual_index - 0.5) / max(visual_count, 1)
+                    pair = (symbol_index - 1, visual_index - 1)
+                    symbol_position = (symbol_index - 0.5) / symbol_count
+                    visual_position = (visual_index - 0.5) / visual_count
                     options.append(
                         (
-                            (
-                                previous[0] + sum(symbol_shapes[symbol_index - 1]),
-                                previous[1] + 1,
-                                previous[2] - abs(symbol_position - visual_position),
+                            costs[symbol_index - 1][visual_index - 1]
+                            + 0.1
+                            + abs(symbol_position - visual_position)
+                            + attention_cost(
+                                symbol_moments[symbol_index - 1],
+                                visual_moments[visual_index - 1],
                             ),
-                            "match",
+                            common_pairs[symbol_index - 1][visual_index - 1]
+                            | {pair},
                         )
                     )
-                score, action = max(
-                    options,
-                    key=lambda option: (
-                        option[0],
-                        option[1] == "match",
-                        option[1] == "skip-visual",
-                    ),
-                )
-                scores[symbol_index][visual_index] = score
-                actions[symbol_index][visual_index] = action
+                best_cost = min(option[0] for option in options)
+                best_pair_sets = [
+                    option[1]
+                    for option in options
+                    if abs(option[0] - best_cost) <= 1e-6
+                ]
+                costs[symbol_index][visual_index] = best_cost
+                common = set(best_pair_sets[0])
+                for pair_set in best_pair_sets[1:]:
+                    common.intersection_update(pair_set)
+                common_pairs[symbol_index][visual_index] = common
 
-        result: list[tuple[int, int]] = []
-        symbol_index = symbol_count
-        visual_index = visual_count
-        while symbol_index > 0 or visual_index > 0:
-            action = actions[symbol_index][visual_index]
-            if action == "match":
-                result.append((symbol_index - 1, visual_index - 1))
-                symbol_index -= 1
-                visual_index -= 1
-            elif action == "skip-symbol":
-                symbol_index -= 1
-            elif action == "skip-visual":
-                visual_index -= 1
-            else:
-                break
-        result.reverse()
-        return result
+        return sorted(common_pairs[symbol_count][visual_count])
 
     @staticmethod
+    def _repairable_visual_moment_staves(
+        symbol_moment: list[EncodedSymbol],
+        visual_moment: list[int],
+        visual_groups: list[VisualGroup],
+    ) -> dict[int, int] | None:
+        """Return a safe stave assignment for an exact-duplicate boundary head."""
+        upper_count = sum(symbol.position != "lower" for symbol in symbol_moment)
+        lower_count = len(symbol_moment) - upper_count
+        if len(visual_moment) != upper_count + lower_count:
+            return None
+        current = {
+            group_index: visual_groups[group_index].stave_index
+            for group_index in visual_moment
+        }
+        if (
+            sum(stave_index == 0 for stave_index in current.values()) == upper_count
+            and sum(stave_index == 1 for stave_index in current.values()) == lower_count
+        ):
+            return current
+
+        vertical_order = sorted(
+            visual_moment,
+            key=lambda group_index: visual_groups[group_index].prediction_center[1],
+        )
+        repaired = {
+            group_index: 0 if order_index < upper_count else 1
+            for order_index, group_index in enumerate(vertical_order)
+        }
+        changed_groups = [
+            visual_groups[group_index]
+            for group_index in visual_moment
+            if current[group_index] != repaired[group_index]
+        ]
+        if not changed_groups or any(
+            "cross_stave_duplicate_consolidated" not in group.repair_actions
+            for group in changed_groups
+        ):
+            return None
+        return repaired
+
+    @classmethod
     def _assign_around_locked_matches(
+        cls,
         note_symbols: list[EncodedSymbol],
         visual_groups: list[VisualGroup],
         locked_assignments: list[tuple[int, int]],
         reserved_group_indices: set[int] | None = None,
     ) -> list[tuple[int, int]]:
-        """Complete a one-to-one match without disturbing structural assignments."""
+        """Add only unique, local, order-compatible attention assignments."""
         assignments = list(locked_assignments)
         assigned_symbols = {symbol_index for symbol_index, _ in assignments}
         assigned_groups = {group_index for _, group_index in assignments}
         assigned_groups.update(reserved_group_indices or set())
         has_multiple_staves = any(group.stave_index == 1 for group in visual_groups)
-        candidates: list[tuple[float, int, int]] = []
+        widths = [
+            max(
+                (
+                    group.transformer_notehead_size
+                    or group.prediction_notehead_size
+                )[0],
+                1.0,
+            )
+            for group in visual_groups
+        ]
+        typical_width = float(np.median(widths)) if widths else 10.0
+        max_distance = max(6.0, typical_width * ATTENTION_MATCH_NOTEHEAD_WIDTH_RATIO)
+        uniqueness_margin = max(
+            1.0, typical_width * ATTENTION_UNIQUENESS_NOTEHEAD_WIDTH_RATIO
+        )
+        distances: dict[tuple[int, int], float] = {}
         for symbol_index, symbol in enumerate(note_symbols):
             if symbol_index in assigned_symbols or symbol.coordinates is None:
                 continue
@@ -1180,45 +1587,123 @@ class VisualSidecar:
                     continue
                 if not bool(np.all(np.isfinite(group.transformer_center))):
                     continue
-                candidates.append(
-                    (
-                        float(
-                            np.linalg.norm(
-                                np.subtract(symbol.coordinates, group.transformer_center)
-                            )
-                        ),
-                        symbol_index,
-                        group_index,
+                distances[(symbol_index, group_index)] = float(
+                    np.linalg.norm(
+                        np.subtract(symbol.coordinates, group.transformer_center)
                     )
                 )
 
-        for _, symbol_index, group_index in sorted(candidates):
+        def unique_nearest(
+            values: list[tuple[float, int]]
+        ) -> tuple[float, int] | None:
+            if not values:
+                return None
+            ordered = sorted(values)
+            if ordered[0][0] > max_distance:
+                return None
+            if (
+                len(ordered) > 1
+                and ordered[1][0] - ordered[0][0] < uniqueness_margin
+            ):
+                return None
+            return ordered[0]
+
+        nearest_group_by_symbol: dict[int, int] = {}
+        for symbol_index in range(len(note_symbols)):
+            nearest = unique_nearest(
+                [
+                    (distance, group_index)
+                    for (candidate_symbol, group_index), distance in distances.items()
+                    if candidate_symbol == symbol_index
+                ]
+            )
+            if nearest is not None:
+                nearest_group_by_symbol[symbol_index] = nearest[1]
+        nearest_symbol_by_group: dict[int, int] = {}
+        for group_index in range(len(visual_groups)):
+            nearest = unique_nearest(
+                [
+                    (distance, symbol_index)
+                    for (symbol_index, candidate_group), distance in distances.items()
+                    if candidate_group == group_index
+                ]
+            )
+            if nearest is not None:
+                nearest_symbol_by_group[group_index] = nearest[1]
+
+        candidates = sorted(
+            (
+                distances[(symbol_index, group_index)],
+                symbol_index,
+                group_index,
+            )
+            for symbol_index, group_index in nearest_group_by_symbol.items()
+            if nearest_symbol_by_group.get(group_index) == symbol_index
+        )
+        for _, symbol_index, group_index in candidates:
             if symbol_index in assigned_symbols or group_index in assigned_groups:
+                continue
+            expected_stave_index = (
+                1 if note_symbols[symbol_index].position == "lower" else 0
+            )
+            group_x = visual_groups[group_index].prediction_center[0]
+            crosses = False
+            for assigned_symbol_index, assigned_group_index in assignments:
+                assigned_stave_index = (
+                    1
+                    if note_symbols[assigned_symbol_index].position == "lower"
+                    else 0
+                )
+                if assigned_stave_index != expected_stave_index:
+                    continue
+                assigned_x = visual_groups[
+                    assigned_group_index
+                ].prediction_center[0]
+                if (symbol_index - assigned_symbol_index) * (
+                    group_x - assigned_x
+                ) < 0:
+                    group = visual_groups[group_index]
+                    assigned_group = visual_groups[assigned_group_index]
+                    shares_physical_stem = bool(
+                        set(group.owned_stem_component_ids).intersection(
+                            assigned_group.owned_stem_component_ids
+                        )
+                    ) and cls._noteheads_can_share_chord_stem(
+                        group, assigned_group
+                    )
+                    if not shares_physical_stem:
+                        crosses = True
+                        break
+            if crosses:
                 continue
             assignments.append((symbol_index, group_index))
             assigned_symbols.add(symbol_index)
             assigned_groups.add(group_index)
 
-        unmatched_symbol_indices = [
-            index for index in range(len(note_symbols)) if index not in assigned_symbols
+        # When attention is absent, a single remaining symbol and a single
+        # compatible candidate form a unique sequence repair. Do not generalize
+        # this into a cursor fill: repeated or surplus candidates stay unmatched.
+        remaining_symbols = [
+            index
+            for index in range(len(note_symbols))
+            if index not in assigned_symbols
         ]
-        for symbol_index in unmatched_symbol_indices:
-            expected_stave_index = 1 if note_symbols[symbol_index].position == "lower" else 0
-            compatible_group_indices = [
-                index
-                for index, group in enumerate(visual_groups)
-                if index not in assigned_groups
-                and (not has_multiple_staves or group.stave_index == expected_stave_index)
-            ]
-            if not compatible_group_indices:
-                continue
-            group_index = min(
-                compatible_group_indices,
-                key=lambda index: visual_groups[index].transformer_center or (0.0, 0.0),
+        remaining_groups = [
+            index
+            for index in range(len(visual_groups))
+            if index not in assigned_groups
+        ]
+        if len(remaining_symbols) == 1 and len(remaining_groups) == 1:
+            symbol_index = remaining_symbols[0]
+            group_index = remaining_groups[0]
+            expected_stave_index = (
+                1 if note_symbols[symbol_index].position == "lower" else 0
             )
-            assignments.append((symbol_index, group_index))
-            assigned_symbols.add(symbol_index)
-            assigned_groups.add(group_index)
+            if (
+                not has_multiple_staves
+                or visual_groups[group_index].stave_index == expected_stave_index
+            ):
+                assignments.append((symbol_index, group_index))
         return sorted(assignments)
 
     def _repair_chord_assignments(
@@ -1641,7 +2126,9 @@ class VisualSidecar:
             stave_index=self._stave_index_for_center(source_staff, center),
             staff_position=guessed_note.position,
             prediction_center=center,
+            prediction_notehead_size=(float(width), float(height)),
             transformer_center=(float(symbol.coordinates[0]), float(symbol.coordinates[1])),
+            transformer_notehead_size=None,
             notehead_ellipses=[notehead_ellipse],
             notehead_contours=[refined_contour],
             detected_notehead_contours=[],
@@ -1650,6 +2137,9 @@ class VisualSidecar:
             stem_contours=[],
             owned_stem_component_ids=[],
             is_hollow_notehead=self._is_hollow_notehead(guessed_note),
+            visual_status="fallback",
+            provenance="transformer_recovered",
+            repair_actions=["transformer_notehead_recovered"],
             duration=symbol.rhythm,
         )
 
@@ -1710,6 +2200,97 @@ class VisualSidecar:
             * MAX_CHORD_NOTEHEAD_HORIZONTAL_GAP_RATIO
         )
 
+    def _assign_physical_chord_ids(
+        self, symbols: list[EncodedSymbol], staff_index: int
+    ) -> None:
+        """Assign chord identity only when same-stave geometry proves it."""
+        chord_index = 1
+        for token_moment in self._token_moments(symbols):
+            matched_by_stave: dict[int, list[tuple[EncodedSymbol, VisualGroup]]] = {}
+            for symbol in token_moment:
+                match = self.matches_by_symbol_id.get(symbol.visual_match_id)
+                if match is None or match.visual_id is None:
+                    continue
+                group = self.visual_groups.get(match.visual_id)
+                if (
+                    group is None
+                    or group.staff_index != staff_index
+                    or group.visual_status == "diagnostic"
+                ):
+                    continue
+                matched_by_stave.setdefault(group.stave_index, []).append(
+                    (symbol, group)
+                )
+            for stave_index, members in sorted(matched_by_stave.items()):
+                if len(members) < 2:
+                    continue
+                groups = [group for _symbol, group in members]
+                common_stem_components = set(groups[0].owned_stem_component_ids)
+                for group in groups[1:]:
+                    common_stem_components.intersection_update(
+                        group.owned_stem_component_ids
+                    )
+                stem_proven = bool(common_stem_components) and all(
+                    self._noteheads_can_share_chord_stem(first, second)
+                    for first, second in zip(groups, groups[1:], strict=False)
+                )
+                widths = [
+                    max(group.prediction_notehead_size[0], 1.0)
+                    for group in groups
+                ]
+                whole_note_proven = (
+                    all(group.is_hollow_notehead for group in groups)
+                    and all(
+                        group.duration is not None
+                        and group.duration.rstrip(".") == "note_1"
+                        for group in groups
+                    )
+                    and bool(widths)
+                    and max(
+                        group.prediction_center[0] for group in groups
+                    )
+                    - min(group.prediction_center[0] for group in groups)
+                    <= float(np.median(widths))
+                    * VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO
+                )
+                if not stem_proven and not whole_note_proven:
+                    continue
+                moment_id = next(
+                    (group.moment_id for group in groups if group.moment_id),
+                    f"moment-{staff_index + 1}-repair-{chord_index}",
+                )
+                chord_id = (
+                    f"chord-{staff_index + 1}-{moment_id}-"
+                    f"{stave_index + 1}-{chord_index}"
+                )
+                chord_index += 1
+                for symbol, group in members:
+                    group.chord_id = chord_id
+                    group.moment_id = moment_id
+                    if stem_proven and "shared_stem_proven" not in group.repair_actions:
+                        group.repair_actions.append("shared_stem_proven")
+                    match = self.matches_by_symbol_id[symbol.visual_match_id]
+                    if (
+                        match.alignment_method == "attention"
+                        and group.provenance
+                        not in ("recovered_candidate", "transformer_recovered")
+                    ):
+                        match.alignment_method = "stem_repair"
+                        group.visual_status = "canonical"
+
+    def _finalize_unmatched_groups(self, staff_index: int) -> None:
+        for visual_id in sorted(self.unmatched_visual_notes):
+            group = self.visual_groups.get(visual_id)
+            if group is None or group.staff_index != staff_index:
+                continue
+            group.visual_status = "diagnostic"
+            if not any(
+                action in ("clef_artifact", "suspected_duplicate")
+                or action.startswith("merged_into:")
+                for action in group.repair_actions
+            ):
+                group.repair_actions.append("unmatched_candidate")
+
     def create_musicxml_id(self) -> str:
         musicxml_id = f"homr-note-{self._next_musicxml_note_id}"
         self._next_musicxml_note_id += 1
@@ -1727,6 +2308,7 @@ class VisualSidecar:
         match = self.matches_by_symbol_id.get(symbol.visual_match_id)
         visual_id = match.visual_id if match is not None else None
         confidence = match.confidence if match is not None else 0.0
+        alignment_method = match.alignment_method if match is not None else "none"
         pitch = sounding_pitch(symbol)
         if visual_id is not None and visual_id in self.visual_groups:
             self.visual_groups[visual_id].linked_musicxml_ids.append(musicxml_id)
@@ -1741,6 +2323,7 @@ class VisualSidecar:
                 duration=symbol.rhythm,
                 match_confidence=confidence,
                 visual_group_id=visual_id,
+                alignment_method=alignment_method,
             )
         )
 
@@ -2342,7 +2925,7 @@ class VisualSidecar:
     def to_json_dict(self) -> dict[str, Any]:
         typical_angles_by_staff = self._typical_notehead_angles_by_staff()
         return {
-            "version": 1,
+            "version": 2,
             "source_image_size": list(self.metadata.source_image_size),
             "preprocessing": {
                 "autocrop_box": list(self.metadata.autocrop_box),
@@ -2382,6 +2965,11 @@ class VisualSidecar:
                     "stem_component_ids": self._stem_component_ids_for_output(group),
                     "is_hollow_notehead": group.is_hollow_notehead,
                     "musicxml_ids": group.linked_musicxml_ids,
+                    "visual_status": group.visual_status,
+                    "provenance": group.provenance,
+                    "moment_id": group.moment_id,
+                    "chord_id": group.chord_id,
+                    "repair_actions": group.repair_actions,
                 }
                 for group in sorted(self.visual_groups.values(), key=lambda g: g.visual_id)
             ],

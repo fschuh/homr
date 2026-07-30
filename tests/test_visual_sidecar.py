@@ -149,11 +149,14 @@ class TestVisualSidecar(unittest.TestCase):
         )
 
         sidecar = collector.to_json_dict()
-        self.assertEqual(
-            [group["visual_group_id"] for group in sidecar["visual_groups"]],
-            ["real-note"],
-        )
-        self.assertEqual(sidecar["unmatched_visual_notes"], [])
+        groups = {
+            group["visual_group_id"]: group for group in sidecar["visual_groups"]
+        }
+        self.assertEqual(set(groups), {"clef-fragment", "real-note"})
+        self.assertEqual(groups["clef-fragment"]["visual_status"], "diagnostic")
+        self.assertIn("clef_artifact", groups["clef-fragment"]["repair_actions"])
+        self.assertEqual(groups["real-note"]["visual_status"], "canonical")
+        self.assertEqual(sidecar["unmatched_visual_notes"], ["clef-fragment"])
         self.assertEqual(
             collector.matches_by_symbol_id[musicxml_note.visual_match_id].visual_id,
             "real-note",
@@ -201,6 +204,13 @@ class TestVisualSidecar(unittest.TestCase):
         visual_sidecar_ids = [note["musicxml_id"] for note in visual_sidecar["notes"]]
         linked_ids = visual_sidecar["visual_groups"][0]["musicxml_ids"]
 
+        self.assertEqual(visual_sidecar["version"], 2)
+        self.assertEqual(
+            visual_sidecar["notes"][0]["alignment_method"], "structural"
+        )
+        self.assertEqual(
+            visual_sidecar["visual_groups"][0]["visual_status"], "canonical"
+        )
         self.assertEqual(xml_ids, visual_sidecar_ids)
         self.assertEqual(xml_ids, linked_ids)
         self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
@@ -478,9 +488,22 @@ class TestVisualSidecar(unittest.TestCase):
 
         self.assertEqual(
             set(groups),
-            {"bottom-left", "top-right", "sequence-a", "sequence-g"},
+            {
+                "bottom-left",
+                "top-left",
+                "top-right",
+                "bottom-right",
+                "sequence-a",
+                "sequence-g",
+            },
         )
-        self.assertEqual(sidecar["unmatched_visual_notes"], [])
+        self.assertEqual(
+            sidecar["unmatched_visual_notes"], ["bottom-right", "top-left"]
+        )
+        self.assertEqual(groups["top-left"]["visual_status"], "diagnostic")
+        self.assertEqual(groups["bottom-right"]["visual_status"], "diagnostic")
+        self.assertEqual(groups["bottom-left"]["provenance"], "merged_fragments")
+        self.assertEqual(groups["top-right"]["provenance"], "merged_fragments")
         self.assertAlmostEqual(groups["bottom-left"]["center"][0], 50, delta=0.5)
         self.assertAlmostEqual(groups["top-right"]["center"][0], 50, delta=0.5)
         self.assertGreater(groups["bottom-left"]["notehead_ellipses"][0]["rx"], 10)
@@ -559,11 +582,13 @@ class TestVisualSidecar(unittest.TestCase):
         collector.add_staff_matches([first_symbol, second_symbol], 0)
 
         sidecar = collector.to_json_dict()
-        self.assertEqual(
-            {group["visual_group_id"] for group in sidecar["visual_groups"]},
-            {"full-first", "full-second"},
-        )
-        self.assertEqual(sidecar["unmatched_visual_notes"], [])
+        groups = {
+            group["visual_group_id"]: group for group in sidecar["visual_groups"]
+        }
+        self.assertEqual(set(groups), {"full-first", "fragment", "full-second"})
+        self.assertEqual(groups["fragment"]["visual_status"], "diagnostic")
+        self.assertIn("suspected_duplicate", groups["fragment"]["repair_actions"])
+        self.assertEqual(sidecar["unmatched_visual_notes"], ["fragment"])
         self.assertEqual(
             collector.matches_by_symbol_id[first_symbol.visual_match_id].visual_id,
             "full-first",
@@ -681,6 +706,120 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(collector.matches_by_symbol_id[id(symbols[1])].visual_id, "upper-right")
         self.assertEqual(collector.matches_by_symbol_id[id(symbols[2])].visual_id, "lower-left")
         self.assertEqual(collector.matches_by_symbol_id[id(symbols[3])].visual_id, "lower-right")
+
+    def test_token_chord_order_maps_heads_without_using_predicted_pitch(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        stem_contour = np.array(
+            [[[49, 15]], [[51, 15]], [[51, 75]], [[49, 75]]],
+            dtype=np.float32,
+        )
+        shared_stem = RotatedBoundingBox(
+            cv2.minAreaRect(stem_contour), stem_contour
+        )
+
+        def make_note(x: int, y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly(
+                (x, y), (10, 7), -20, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (20, 14), -20), contour),
+                position=4,
+                stem=shared_stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        top = make_note(60, 30, "top")
+        displaced_bottom = make_note(40, 60, "displaced-bottom")
+        collector = VisualSidecar(metadata, stem_fragments=[shared_stem])
+        collector.add_staff_visual_notes(
+            0,
+            [top, displaced_bottom],
+            [top.copy(), displaced_bottom.copy()],
+        )
+        token_first_with_wrong_low_pitch = EncodedSymbol(
+            "note_8", "C3", position="upper", coordinates=(40, 60)
+        )
+        token_second_with_wrong_high_pitch = EncodedSymbol(
+            "note_8", "C6", position="upper", coordinates=(60, 30)
+        )
+
+        collector.add_staff_matches(
+            [
+                token_first_with_wrong_low_pitch,
+                EncodedSymbol("chord"),
+                token_second_with_wrong_high_pitch,
+            ],
+            0,
+        )
+
+        self.assertEqual(
+            collector.matches_by_symbol_id[
+                token_first_with_wrong_low_pitch.visual_match_id
+            ].visual_id,
+            "top",
+        )
+        self.assertEqual(
+            collector.matches_by_symbol_id[
+                token_second_with_wrong_high_pitch.visual_match_id
+            ].visual_id,
+            "displaced-bottom",
+        )
+        self.assertEqual(
+            collector.visual_groups["top"].moment_id,
+            collector.visual_groups["displaced-bottom"].moment_id,
+        )
+        self.assertEqual(
+            collector.visual_groups["top"].chord_id,
+            collector.visual_groups["displaced-bottom"].chord_id,
+        )
+        self.assertIsNotNone(collector.visual_groups["top"].chord_id)
+
+    def test_ambiguous_repeated_notes_remain_unmatched(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        contour = cv2.ellipse2Poly(
+            (50, 40), (7, 5), -20, 0, 360, 5
+        ).reshape(-1, 1, 2)
+        note = Note(
+            BoundingEllipse(((50, 40), (14, 10), -20), contour),
+            position=4,
+            stem=None,
+            stem_direction=None,
+            visual_id="repeated-candidate",
+        )
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(0, [note], [note.copy()])
+        first = EncodedSymbol("note_16", "C5", coordinates=(50, 40))
+        second = EncodedSymbol("note_16", "C5", coordinates=(50, 40))
+
+        collector.add_staff_matches([first, second], 0)
+
+        self.assertIsNone(
+            collector.matches_by_symbol_id[first.visual_match_id].visual_id
+        )
+        self.assertIsNone(
+            collector.matches_by_symbol_id[second.visual_match_id].visual_id
+        )
+        group = collector.to_json_dict()["visual_groups"][0]
+        self.assertEqual(group["visual_status"], "diagnostic")
+        self.assertEqual(
+            collector.to_json_dict()["unmatched_visual_notes"],
+            ["repeated-candidate"],
+        )
 
     def test_shared_stem_repairs_chord_member_swapped_with_neighbor(self) -> None:
         metadata = PreprocessingMetadata(
@@ -910,6 +1049,130 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(
             collector.matches_by_symbol_id[second_upper_symbol.visual_match_id].visual_id,
             "upper-second",
+        )
+        first_upper_group = collector.visual_groups["upper-first"]
+        first_lower_group = collector.visual_groups["lower-first"]
+        self.assertEqual(first_upper_group.moment_id, first_lower_group.moment_id)
+        self.assertIsNone(first_upper_group.chord_id)
+        self.assertIsNone(first_lower_group.chord_id)
+
+    def test_cross_stave_duplicate_at_ledger_boundary_is_consolidated(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(180, 180),
+            autocrop_box=(0, 0, 180, 180),
+            cropped_size=(180, 180),
+            resized_size=(180, 180),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(180, 180),
+        )
+        upper_point = StaffPoint(80, [20, 30, 40, 50, 60], 0)
+        lower_point = StaffPoint(80, [110, 120, 130, 140, 150], 0)
+        upper_staff = Staff([upper_point])
+        lower_staff = Staff([lower_point])
+
+        def make_note(
+            y: int, visual_id: str, point: StaffPoint, box: BoundingEllipse | None = None
+        ) -> Note:
+            notehead = box or BoundingEllipse(
+                ((80, y), (14, 10), -20),
+                cv2.ellipse2Poly((80, y), (7, 5), -20, 0, 360, 5).reshape(
+                    -1, 1, 2
+                ),
+            )
+            return Note(
+                notehead,
+                position=point.find_position_in_unit_sizes(notehead),
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        upper_top = make_note(30, "upper-top", upper_point)
+        upper_bottom = make_note(50, "upper-bottom", upper_point)
+        shared_boundary_box = BoundingEllipse(
+            ((80, 85), (14, 10), -20),
+            cv2.ellipse2Poly((80, 85), (7, 5), -20, 0, 360, 5).reshape(
+                -1, 1, 2
+            ),
+        )
+        boundary_upper = make_note(
+            85, "boundary-a-upper", upper_point, shared_boundary_box
+        )
+        boundary_lower = make_note(
+            85, "boundary-b-lower", lower_point, shared_boundary_box
+        )
+        lower_middle = make_note(120, "lower-middle", lower_point)
+        lower_bottom = make_note(140, "lower-bottom", lower_point)
+        for note in (upper_top, upper_bottom, boundary_upper):
+            upper_staff.add_symbol(note)
+        for note in (boundary_lower, lower_middle, lower_bottom):
+            lower_staff.add_symbol(note)
+        grand_staff = upper_staff.merge(lower_staff)
+        notes = grand_staff.get_notes()
+        collector = VisualSidecar(metadata)
+        collector.prepare_recovery_notes([grand_staff])
+        collector.add_staff_visual_notes(
+            0, notes, [candidate.copy() for candidate in notes]
+        )
+
+        upper_top_symbol = EncodedSymbol(
+            "note_16", "C6", position="upper", coordinates=(20, 140)
+        )
+        upper_bottom_symbol = EncodedSymbol(
+            "note_16", "C5", position="upper", coordinates=(20, 120)
+        )
+        lower_top_symbol = EncodedSymbol(
+            "note_8", "C4", position="lower", coordinates=(20, 50)
+        )
+        lower_middle_symbol = EncodedSymbol(
+            "note_8", "C3", position="lower", coordinates=(20, 30)
+        )
+        lower_bottom_symbol = EncodedSymbol(
+            "note_8", "C2", position="lower", coordinates=(20, 20)
+        )
+        collector.add_staff_matches(
+            [
+                upper_top_symbol,
+                EncodedSymbol("chord"),
+                upper_bottom_symbol,
+                EncodedSymbol("chord"),
+                lower_top_symbol,
+                EncodedSymbol("chord"),
+                lower_middle_symbol,
+                EncodedSymbol("chord"),
+                lower_bottom_symbol,
+            ],
+            0,
+        )
+
+        self.assertEqual(
+            collector.matches_by_symbol_id[lower_top_symbol.visual_match_id].visual_id,
+            "boundary-a-upper",
+        )
+        repaired = collector.visual_groups["boundary-a-upper"]
+        rejected = collector.visual_groups["boundary-b-lower"]
+        self.assertEqual(repaired.stave_index, 1)
+        self.assertEqual(repaired.staff_position, boundary_lower.position)
+        self.assertEqual(repaired.visual_status, "canonical")
+        self.assertIn("duplicate_candidates_consolidated", repaired.repair_actions)
+        self.assertIn("stave_membership_repaired", repaired.repair_actions)
+        self.assertEqual(rejected.visual_status, "diagnostic")
+        self.assertIn("suspected_duplicate", rejected.repair_actions)
+        self.assertEqual(collector.unmatched_visual_notes, {"boundary-b-lower"})
+        self.assertEqual(
+            {
+                collector.visual_groups[
+                    collector.matches_by_symbol_id[symbol.visual_match_id].visual_id
+                ].moment_id
+                for symbol in (
+                    upper_top_symbol,
+                    upper_bottom_symbol,
+                    lower_top_symbol,
+                    lower_middle_symbol,
+                    lower_bottom_symbol,
+                )
+            },
+            {"moment-1-1"},
         )
 
     def test_surplus_notehead_in_one_moment_does_not_disable_other_structural_matches(
@@ -1271,6 +1534,8 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertAlmostEqual(recovered.notehead_ellipses[0]["center"][0], 60, delta=2)
         self.assertAlmostEqual(recovered.notehead_ellipses[0]["center"][1], 25, delta=2)
         self.assertEqual(recovered.staff_position, 8)
+        self.assertEqual(recovered.visual_status, "fallback")
+        self.assertEqual(recovered.provenance, "transformer_recovered")
 
     def test_does_not_recover_transformer_note_without_notehead_ink(self) -> None:
         metadata = PreprocessingMetadata(
