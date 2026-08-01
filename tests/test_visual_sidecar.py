@@ -651,6 +651,61 @@ class TestVisualSidecar(unittest.TestCase):
             "sequence-g",
         )
 
+    def test_dense_filled_chords_are_not_treated_as_split_whole_note_fragments(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+
+        def make_note(x: int, y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly(
+                (x, y), (7, 5), -20, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (14, 10), -20), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(30, 35, "first-top"),
+            make_note(30, 55, "first-bottom"),
+            make_note(50, 35, "second-top"),
+            make_note(50, 55, "second-bottom"),
+        ]
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(
+            0, notes, [note.copy() for note in notes]
+        )
+        symbols = [
+            EncodedSymbol("note_16", "F5", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_16", "C5", position="upper"),
+            EncodedSymbol("note_16", "F5", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_16", "C5", position="upper"),
+        ]
+
+        collector.add_staff_matches(symbols, 0)
+
+        note_symbols = [symbol for symbol in symbols if symbol.rhythm.startswith("note")]
+        self.assertEqual(
+            [
+                collector.matches_by_symbol_id[symbol.visual_match_id].visual_id
+                for symbol in note_symbols
+            ],
+            ["first-top", "first-bottom", "second-top", "second-bottom"],
+        )
+        self.assertEqual(collector.unmatched_visual_notes, set())
+
     def test_discards_small_notehead_fragment_that_duplicates_a_detected_stem(
         self,
     ) -> None:

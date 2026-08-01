@@ -1418,12 +1418,22 @@ class VisualSidecar:
         # and right fragment columns. Neither column is a complete musical moment,
         # even though each has the expected per-stave count. Leave this distinctive
         # close duplicate pattern to attention matching and fragment rejoining.
+        split_hollow_fragment_moments = {
+            visual_index
+            for visual_index, moment in enumerate(visual_moments)
+            if sum(visual_shapes[visual_index]) > 1
+            and all(
+                visual_groups[group_index].is_hollow_notehead
+                and not visual_groups[group_index].stem_contours
+                for group_index in moment
+            )
+        }
         ambiguous_visual_moments = {
             visual_index
-            for visual_index, shape in enumerate(visual_shapes)
-            if sum(shape) > 1
-            and any(
-                visual_shapes[neighbor] == shape
+            for visual_index in split_hollow_fragment_moments
+            if any(
+                neighbor in split_hollow_fragment_moments
+                and visual_shapes[neighbor] == visual_shapes[visual_index]
                 and abs(visual_centers[neighbor] - visual_centers[visual_index])
                 <= typical_width * 2
                 for neighbor in (visual_index - 1, visual_index + 1)
