@@ -651,6 +651,73 @@ class TestVisualSidecar(unittest.TestCase):
             "sequence-g",
         )
 
+    def test_displaced_second_stays_in_stemless_whole_note_chord_moment(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(160, 120),
+            autocrop_box=(0, 0, 160, 120),
+            cropped_size=(160, 120),
+            resized_size=(160, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(160, 120),
+        )
+        image = np.full((120, 160), 255, dtype=np.uint8)
+
+        def hollow_note(
+            visual_id: str, center_x: int, center_y: int, position: int
+        ) -> Note:
+            contour = cv2.ellipse2Poly(
+                (center_x, center_y), (12, 8), 0, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            cv2.ellipse(image, (center_x, center_y), (12, 8), 0, 0, 360, 2)
+            return Note(
+                BoundingEllipse(
+                    ((center_x, center_y), (24, 16), 0), contour, position
+                ),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        top = hollow_note("top", 60, 35, 7)
+        middle = hollow_note("middle", 60, 55, 4)
+        displaced_bottom = hollow_note("displaced-bottom", 38, 56, 3)
+        collector = VisualSidecar(metadata, source_image=image)
+        collector.add_staff_visual_notes(
+            0,
+            [top, middle, displaced_bottom],
+            [top.copy(), middle.copy(), displaced_bottom.copy()],
+        )
+        top_symbol = EncodedSymbol("note_1", "D5", position="upper")
+        middle_symbol = EncodedSymbol("note_1", "A4", position="upper")
+        bottom_symbol = EncodedSymbol("note_1", "G4", position="upper")
+
+        collector.add_staff_matches(
+            [
+                top_symbol,
+                EncodedSymbol("chord"),
+                middle_symbol,
+                EncodedSymbol("chord"),
+                bottom_symbol,
+            ],
+            0,
+        )
+
+        matched_groups = [
+            collector.visual_groups[
+                collector.matches_by_symbol_id[symbol.visual_match_id].visual_id
+            ]
+            for symbol in (top_symbol, middle_symbol, bottom_symbol)
+        ]
+        self.assertEqual(
+            {group.visual_id for group in matched_groups},
+            {"top", "middle", "displaced-bottom"},
+        )
+        self.assertEqual(len({group.moment_id for group in matched_groups}), 1)
+        self.assertIsNotNone(matched_groups[0].moment_id)
+        self.assertEqual(len({group.chord_id for group in matched_groups}), 1)
+        self.assertIsNotNone(matched_groups[0].chord_id)
+
     def test_dense_filled_chords_are_not_treated_as_split_whole_note_fragments(
         self,
     ) -> None:

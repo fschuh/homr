@@ -31,6 +31,7 @@ DUPLICATE_NOTEHEAD_AREA_RATIO = 0.6
 DUPLICATE_NOTEHEAD_MAX_HORIZONTAL_DISTANCE = 1.5
 DUPLICATE_NOTEHEAD_MAX_VERTICAL_DISTANCE = 0.3
 MAX_CHORD_NOTEHEAD_HORIZONTAL_GAP_RATIO = 0.25
+DISPLACED_CHORD_MAX_VERTICAL_NOTEHEAD_RATIO = 1.25
 MAX_VISUAL_GROUP_DISTANCE_FROM_CLEF = 16.0
 
 
@@ -1352,7 +1353,66 @@ class VisualSidecar:
                 moments[-1].extend(component)
             else:
                 moments.append(list(component))
-        return moments
+
+        # A second in a stemless chord is conventionally displaced left or
+        # right by roughly one notehead width. That can place its singleton
+        # component just outside the ordinary column tolerance even though its
+        # outline still touches another hollow head in the larger chord moment.
+        # Rejoin only that narrow singleton-plus-chord pattern; two ordinary
+        # sequential note columns remain separate.
+        merged_moments: list[list[int]] = []
+        for moment in moments:
+            if merged_moments and cls._moments_form_displaced_hollow_chord(
+                merged_moments[-1], moment, visual_groups
+            ):
+                merged_moments[-1].extend(moment)
+            else:
+                merged_moments.append(list(moment))
+        return merged_moments
+
+    @classmethod
+    def _moments_form_displaced_hollow_chord(
+        cls,
+        first_moment: list[int],
+        second_moment: list[int],
+        visual_groups: list[VisualGroup],
+    ) -> bool:
+        if len(first_moment) == 1 and len(second_moment) > 1:
+            singleton_index = first_moment[0]
+            chord_indices = second_moment
+        elif len(second_moment) == 1 and len(first_moment) > 1:
+            singleton_index = second_moment[0]
+            chord_indices = first_moment
+        else:
+            return False
+
+        singleton = visual_groups[singleton_index]
+        if not singleton.is_hollow_notehead:
+            return False
+        for chord_index in chord_indices:
+            chord_member = visual_groups[chord_index]
+            if (
+                chord_member.stave_index != singleton.stave_index
+                or not chord_member.is_hollow_notehead
+                or not cls._noteheads_can_share_chord_stem(singleton, chord_member)
+            ):
+                continue
+            maximum_vertical_distance = (
+                max(
+                    singleton.prediction_notehead_size[1],
+                    chord_member.prediction_notehead_size[1],
+                )
+                * DISPLACED_CHORD_MAX_VERTICAL_NOTEHEAD_RATIO
+            )
+            if (
+                abs(
+                    singleton.prediction_center[1]
+                    - chord_member.prediction_center[1]
+                )
+                <= maximum_vertical_distance
+            ):
+                return True
+        return False
 
     @staticmethod
     def _symbol_occupies_visual_moment(symbol: EncodedSymbol) -> bool:
