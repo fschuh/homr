@@ -513,6 +513,147 @@ def sort_staffs_top_to_bottom(staffs: list[Staff]) -> list[Staff]:
     return sorted(staffs, key=lambda staff: staff.min_y)
 
 
+def _staff_line_support(staff: Staff, staff_image: NDArray) -> float:
+    supported = 0
+    total = 0
+    height, width = staff_image.shape[:2]
+    for point in staff.grid:
+        x = int(round(point.x))
+        if x < 0 or x >= width:
+            continue
+        for y_value in point.y:
+            y = int(round(y_value))
+            if y < 0 or y >= height:
+                continue
+            total += 1
+            supported += int(
+                np.any(
+                    staff_image[
+                        max(0, y - 1) : min(height, y + 2),
+                        max(0, x - 1) : min(width, x + 2),
+                    ]
+                )
+            )
+    return supported / total if total else 0.0
+
+
+def recover_missing_staff_from_repeated_layout(  # noqa: PLR0911
+    staffs: list[Staff], staff_image: NDArray
+) -> list[Staff]:
+    """Recover one unanchored stave in an otherwise regular paired layout.
+
+    Segmentation can preserve all five staff lines while missing the clef and bar
+    anchors required by ``detect_staff``. A piano page then contains an odd number
+    of staves and one vertical gap equal to an ordinary within-system gap plus the
+    following between-system gap. Infer the missing sibling only when the rest of
+    the page forms a consistent paired layout and the inferred lines have direct
+    support in the staff segmentation mask.
+    """
+    staffs = sort_staffs_top_to_bottom(staffs)
+    if len(staffs) < 7 or len(staffs) % 2 == 0:
+        return staffs
+    if any(
+        not staff.grid
+        or any(len(point.y) != constants.number_of_lines_on_a_staff for point in staff.grid)
+        for staff in staffs
+    ):
+        return staffs
+
+    unit_sizes = np.asarray([staff.average_unit_size for staff in staffs], dtype=float)
+    typical_unit_size = float(np.median(unit_sizes))
+    if (
+        typical_unit_size <= 0
+        or np.max(np.abs(unit_sizes - typical_unit_size)) > 0.2 * typical_unit_size
+    ):
+        return staffs
+
+    centers = np.asarray([(staff.min_y + staff.max_y) / 2 for staff in staffs], dtype=float)
+    gaps = np.diff(centers)
+    expected_existing_pair_gaps = (len(staffs) - 1) // 2
+    typical_pair_gap = float(np.median(np.sort(gaps)[:expected_existing_pair_gaps]))
+    system_gaps = gaps[gaps > typical_pair_gap * 1.35]
+    if len(system_gaps) < 2:
+        return staffs
+    typical_system_gap = float(np.median(system_gaps))
+    combined_gap = typical_pair_gap + typical_system_gap
+
+    proposals: list[tuple[float, int]] = []
+    for gap_index, gap in enumerate(gaps):
+        if abs(gap - combined_gap) > combined_gap * 0.2:
+            continue
+        for inserted_center in (
+            centers[gap_index] + typical_pair_gap,
+            centers[gap_index + 1] - typical_pair_gap,
+        ):
+            augmented_centers = np.insert(centers, gap_index + 1, inserted_center)
+            augmented_gaps = np.diff(augmented_centers)
+            pair_gaps = augmented_gaps[0::2]
+            between_system_gaps = augmented_gaps[1::2]
+            pair_median = float(np.median(pair_gaps))
+            system_median = float(np.median(between_system_gaps))
+            if pair_median <= 0 or system_median <= 0 or pair_median >= system_median * 0.8:
+                continue
+            pair_error = np.abs(pair_gaps - pair_median) / pair_median
+            system_error = np.abs(between_system_gaps - system_median) / system_median
+            if np.max(pair_error) > 0.25 or np.max(system_error) > 0.25:
+                continue
+            proposals.append((float(np.mean(pair_error) + np.mean(system_error)), gap_index + 1))
+
+    if not proposals:
+        return staffs
+    proposals.sort()
+    if len(proposals) > 1 and proposals[1][0] - proposals[0][0] < 0.02:
+        return staffs
+    insertion_index = proposals[0][1]
+    augmented_staffs: list[Staff | None] = list(staffs)
+    augmented_staffs.insert(insertion_index, None)
+
+    line_offsets: list[NDArray] = []
+    angle_offsets: list[float] = []
+    for upper, lower in zip(augmented_staffs[0::2], augmented_staffs[1::2], strict=True):
+        if upper is None or lower is None:
+            continue
+        lower_by_x = {int(round(point.x)): point for point in lower.grid}
+        for upper_point in upper.grid:
+            lower_point = lower_by_x.get(int(round(upper_point.x)))
+            if lower_point is None:
+                continue
+            line_offsets.append(np.subtract(lower_point.y, upper_point.y))
+            angle_offsets.append(lower_point.angle - upper_point.angle)
+    if len(line_offsets) < 3:
+        return staffs
+
+    typical_line_offsets = np.median(line_offsets, axis=0)
+    typical_angle_offset = float(np.median(angle_offsets))
+    if insertion_index % 2 == 1:
+        sibling = augmented_staffs[insertion_index - 1]
+        direction = 1
+    else:
+        sibling = augmented_staffs[insertion_index + 1]
+        direction = -1
+    if sibling is None:
+        return staffs
+
+    recovered = Staff(
+        [
+            StaffPoint(
+                point.x,
+                list(np.add(point.y, direction * typical_line_offsets)),
+                point.angle + direction * typical_angle_offset,
+            )
+            for point in sibling.grid
+        ]
+    )
+    known_support = float(np.median([_staff_line_support(staff, staff_image) for staff in staffs]))
+    recovered_support = _staff_line_support(recovered, staff_image)
+    if recovered_support < max(0.4, known_support * 0.5):
+        return staffs
+
+    result = list(staffs)
+    result.insert(insertion_index, recovered)
+    return result
+
+
 def filter_unusual_anchors(anchors: list[StaffAnchor]) -> list[StaffAnchor]:
     if len(anchors) == 0:
         return anchors
@@ -736,5 +877,10 @@ def detect_staff(
     staffs = filter_edge_of_vision(staffs, image.shape)
 
     staffs = sort_staffs_top_to_bottom(staffs)
+
+    recovered_staffs = recover_missing_staff_from_repeated_layout(staffs, image)
+    if len(recovered_staffs) > len(staffs):
+        eprint("Recovered 1 unanchored staff from the repeated page layout")
+    staffs = recovered_staffs
 
     return staffs
