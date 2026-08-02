@@ -1680,6 +1680,106 @@ class TestVisualSidecar(unittest.TestCase):
             "diagnostic",
         )
 
+    def test_unique_shared_stem_subset_excludes_unrelated_chord_candidate(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(140, 180),
+            autocrop_box=(0, 0, 140, 180),
+            cropped_size=(140, 180),
+            resized_size=(140, 180),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 180),
+        )
+
+        def make_note(
+            x: int,
+            y: int,
+            visual_id: str,
+        ) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(
+                -1, 1, 2
+            )
+            return Note(
+                BoundingEllipse(((x, y), (14, 10), -20), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        upper_anchor = make_note(60, 30, "upper-anchor")
+        surplus_lower = make_note(54, 150, "surplus-lower")
+        lower_top = make_note(66, 105, "lower-top")
+        lower_middle = make_note(60, 120, "lower-middle")
+        lower_bottom = make_note(60, 135, "lower-bottom")
+        notes = [
+            upper_anchor,
+            surplus_lower,
+            lower_top,
+            lower_middle,
+            lower_bottom,
+        ]
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(
+            0,
+            notes,
+            [note.copy() for note in notes],
+        )
+        for visual_id in (
+            "surplus-lower",
+            "lower-top",
+            "lower-middle",
+            "lower-bottom",
+        ):
+            collector.visual_groups[visual_id].stave_index = 1
+        for visual_id in ("lower-top", "lower-middle", "lower-bottom"):
+            collector.visual_groups[visual_id].owned_stem_component_ids = [
+                "shared-lower-stem"
+            ]
+
+        upper_symbol = EncodedSymbol("note_32", "D5", position="upper")
+        lower_top_symbol = EncodedSymbol("note_16", "G4", position="lower")
+        lower_middle_symbol = EncodedSymbol("note_16", "F4", position="lower")
+        lower_bottom_symbol = EncodedSymbol("note_16", "D4", position="lower")
+        collector.add_staff_matches(
+            [
+                upper_symbol,
+                EncodedSymbol("chord"),
+                lower_top_symbol,
+                EncodedSymbol("chord"),
+                lower_middle_symbol,
+                EncodedSymbol("chord"),
+                lower_bottom_symbol,
+            ],
+            0,
+        )
+
+        expected_matches = {
+            upper_symbol.visual_match_id: "upper-anchor",
+            lower_top_symbol.visual_match_id: "lower-top",
+            lower_middle_symbol.visual_match_id: "lower-middle",
+            lower_bottom_symbol.visual_match_id: "lower-bottom",
+        }
+        for match_id, visual_id in expected_matches.items():
+            match = collector.matches_by_symbol_id[match_id]
+            self.assertEqual(match.visual_id, visual_id)
+            self.assertEqual(match.alignment_method, "sequence_repair")
+            self.assertEqual(
+                collector.visual_groups[visual_id].visual_status,
+                "fallback",
+            )
+        self.assertEqual(
+            {
+                collector.visual_groups[visual_id].moment_id
+                for visual_id in expected_matches.values()
+            },
+            {"moment-1-1"},
+        )
+        self.assertEqual(collector.unmatched_visual_notes, {"surplus-lower"})
+        self.assertEqual(
+            collector.visual_groups["surplus-lower"].visual_status,
+            "diagnostic",
+        )
+
     def test_extra_visual_moment_does_not_shift_later_structural_matches(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(160, 120),

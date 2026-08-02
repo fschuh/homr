@@ -1756,12 +1756,14 @@ class VisualSidecar:
         group_indices: list[int],
         visual_groups: list[VisualGroup],
     ) -> list[int] | None:
-        """Select an ordered prefix only when every candidate is one physical chord.
+        """Select an ordered subset only when its physical stem is unambiguous.
 
         Transformer attention is occasionally absent for a recognized member of a
         partially recognized chord. A common owned stem proves that the surplus
-        heads belong to one physical chord rather than separate aligned voices.
-        Token member order can then select the corresponding visual prefix without
+        heads belong to one physical chord rather than separate aligned voices. If
+        one unrelated or fragmented candidate lacks that stem, accept the unique
+        exact-count stem subset instead of rejecting the complete visual moment.
+        Token member order can then select the corresponding visual heads without
         consulting predicted pitch. These assignments remain fallback evidence.
         """
         if not symbols or len(symbols) >= len(group_indices):
@@ -1770,25 +1772,38 @@ class VisualSidecar:
             group_indices,
             key=lambda group_index: visual_groups[group_index].prediction_center[1],
         )
-        common_components = set(
-            visual_groups[ordered_groups[0]].owned_stem_component_ids
-        )
-        for group_index in ordered_groups[1:]:
-            common_components.intersection_update(
-                visual_groups[group_index].owned_stem_component_ids
+
+        def forms_physical_chord(candidate_indices: tuple[int, ...]) -> bool:
+            common_components = set(
+                visual_groups[candidate_indices[0]].owned_stem_component_ids
             )
-        if not common_components:
+            for group_index in candidate_indices[1:]:
+                common_components.intersection_update(
+                    visual_groups[group_index].owned_stem_component_ids
+                )
+            return bool(common_components) and all(
+                cls._noteheads_can_share_chord_stem(
+                    visual_groups[first_index], visual_groups[second_index]
+                )
+                for first_index, second_index in itertools.combinations(
+                    candidate_indices, 2
+                )
+            )
+
+        all_groups = tuple(ordered_groups)
+        if forms_physical_chord(all_groups):
+            return ordered_groups[: len(symbols)]
+
+        exact_count_subsets = [
+            candidate_indices
+            for candidate_indices in itertools.combinations(
+                ordered_groups, len(symbols)
+            )
+            if forms_physical_chord(candidate_indices)
+        ]
+        if len(exact_count_subsets) != 1:
             return None
-        if any(
-            not cls._noteheads_can_share_chord_stem(
-                visual_groups[first_index], visual_groups[second_index]
-            )
-            for first_index, second_index in itertools.combinations(
-                ordered_groups, 2
-            )
-        ):
-            return None
-        return ordered_groups[: len(symbols)]
+        return list(exact_count_subsets[0])
 
     @staticmethod
     def _repairable_visual_moment_staves(
