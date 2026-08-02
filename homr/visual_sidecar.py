@@ -803,29 +803,65 @@ class VisualSidecar:
             )
             self.unmatched_visual_notes.discard(visual_group.visual_id)
 
-        for symbol_index, symbol in enumerate(note_symbols):
-            if symbol_index in assigned_symbols:
-                continue
-            chord_mates = [
-                (mate, assigned_group_by_symbol_id[mate.visual_match_id])
-                for chord in self._token_moments(symbols)
-                if any(candidate.visual_match_id == symbol.visual_match_id for candidate in chord)
-                for mate in chord
-                if (
-                    mate.visual_match_id != symbol.visual_match_id
-                    and mate.visual_match_id in assigned_group_by_symbol_id
+        token_moment_by_symbol_id = {
+            symbol.visual_match_id: moment
+            for moment in self._token_moments(symbols)
+            for symbol in moment
+        }
+        assigned_visual_ids = {
+            group.visual_id for group in assigned_group_by_symbol_id.values()
+        }
+        assigned_visual_ids.update(
+            visual_groups[index].visual_id for index in reserved_group_indices
+        )
+        pending_symbols = [
+            symbol
+            for symbol_index, symbol in enumerate(note_symbols)
+            if symbol_index not in assigned_symbols
+        ]
+        while pending_symbols:
+            still_pending: list[EncodedSymbol] = []
+            recovered_any = False
+            for symbol in pending_symbols:
+                chord_mates = [
+                    (mate, assigned_group_by_symbol_id[mate.visual_match_id])
+                    for mate in token_moment_by_symbol_id.get(
+                        symbol.visual_match_id, []
+                    )
+                    if (
+                        mate.visual_match_id != symbol.visual_match_id
+                        and mate.visual_match_id in assigned_group_by_symbol_id
+                    )
+                ]
+                recovered_group = self._recover_transformer_chord_notehead(
+                    symbol,
+                    staff_index,
+                    source_staff,
+                    visual_groups,
+                    chord_mates,
+                    available_groups=[
+                        group
+                        for group in visual_groups
+                        if group.visual_id not in assigned_visual_ids
+                    ],
                 )
-            ]
-            recovered_group = self._recover_transformer_chord_notehead(
-                symbol,
-                staff_index,
-                source_staff,
-                visual_groups,
-                chord_mates,
-            )
-            if recovered_group is not None:
-                self.visual_groups[recovered_group.visual_id] = recovered_group
-                visual_groups.append(recovered_group)
+                if recovered_group is None:
+                    still_pending.append(symbol)
+                    continue
+                if recovered_group.visual_id not in self.visual_groups:
+                    self.visual_groups[recovered_group.visual_id] = recovered_group
+                    visual_groups.append(recovered_group)
+                else:
+                    recovered_group.visual_status = "fallback"
+                    recovered_group.duration = symbol.rhythm
+                    if (
+                        "transformer_chord_candidate_recovered"
+                        not in recovered_group.repair_actions
+                    ):
+                        recovered_group.repair_actions.append(
+                            "transformer_chord_candidate_recovered"
+                        )
+                    self.unmatched_visual_notes.discard(recovered_group.visual_id)
                 self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                     symbol=symbol,
                     visual_id=recovered_group.visual_id,
@@ -835,7 +871,14 @@ class VisualSidecar:
                 recovered_group.moment_id = self._moment_id_by_symbol_id.get(
                     symbol.visual_match_id
                 )
-                continue
+                assigned_group_by_symbol_id[symbol.visual_match_id] = recovered_group
+                assigned_visual_ids.add(recovered_group.visual_id)
+                recovered_any = True
+            pending_symbols = still_pending
+            if not recovered_any:
+                break
+
+        for symbol in pending_symbols:
             self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                 symbol=symbol,
                 visual_id=None,
@@ -1354,15 +1397,15 @@ class VisualSidecar:
             else:
                 moments.append(list(component))
 
-        # A second in a stemless chord is conventionally displaced left or
-        # right by roughly one notehead width. That can place its singleton
-        # component just outside the ordinary column tolerance even though its
-        # outline still touches another hollow head in the larger chord moment.
-        # Rejoin only that narrow singleton-plus-chord pattern; two ordinary
-        # sequential note columns remain separate.
+        # A simultaneous second is conventionally displaced left or right by
+        # roughly one notehead width. This occurs both inside stemless chords and
+        # between close opposing voices, and can put its singleton component just
+        # outside the ordinary column tolerance. Rejoin only that narrow
+        # singleton-plus-stack pattern when the physical notehead outlines still
+        # touch; two ordinary sequential note columns remain separate.
         merged_moments: list[list[int]] = []
         for moment in moments:
-            if merged_moments and cls._moments_form_displaced_hollow_chord(
+            if merged_moments and cls._moments_form_displaced_notehead_stack(
                 merged_moments[-1], moment, visual_groups
             ):
                 merged_moments[-1].extend(moment)
@@ -1371,47 +1414,62 @@ class VisualSidecar:
         return merged_moments
 
     @classmethod
-    def _moments_form_displaced_hollow_chord(
+    def _moments_form_displaced_notehead_stack(
         cls,
         first_moment: list[int],
         second_moment: list[int],
         visual_groups: list[VisualGroup],
     ) -> bool:
-        if len(first_moment) == 1 and len(second_moment) > 1:
-            singleton_index = first_moment[0]
-            chord_indices = second_moment
-        elif len(second_moment) == 1 and len(first_moment) > 1:
-            singleton_index = second_moment[0]
-            chord_indices = first_moment
-        else:
-            return False
+        for stave_index in (0, 1):
+            first_stave = [
+                index
+                for index in first_moment
+                if visual_groups[index].stave_index == stave_index
+            ]
+            second_stave = [
+                index
+                for index in second_moment
+                if visual_groups[index].stave_index == stave_index
+            ]
+            if len(first_stave) == 1 and len(second_stave) > 1:
+                singleton_index = first_stave[0]
+                chord_indices = second_stave
+            elif len(second_stave) == 1 and len(first_stave) > 1:
+                singleton_index = second_stave[0]
+                chord_indices = first_stave
+            else:
+                continue
 
-        singleton = visual_groups[singleton_index]
-        if not singleton.is_hollow_notehead:
-            return False
-        for chord_index in chord_indices:
-            chord_member = visual_groups[chord_index]
-            if (
-                chord_member.stave_index != singleton.stave_index
-                or not chord_member.is_hollow_notehead
-                or not cls._noteheads_can_share_chord_stem(singleton, chord_member)
+            other_stave_index = 1 - stave_index
+            if any(
+                visual_groups[index].stave_index == other_stave_index
+                for index in first_moment
+            ) and any(
+                visual_groups[index].stave_index == other_stave_index
+                for index in second_moment
             ):
                 continue
-            maximum_vertical_distance = (
-                max(
-                    singleton.prediction_notehead_size[1],
-                    chord_member.prediction_notehead_size[1],
+
+            singleton = visual_groups[singleton_index]
+            for chord_index in chord_indices:
+                chord_member = visual_groups[chord_index]
+                if not cls._noteheads_can_share_chord_stem(singleton, chord_member):
+                    continue
+                maximum_vertical_distance = (
+                    max(
+                        singleton.prediction_notehead_size[1],
+                        chord_member.prediction_notehead_size[1],
+                    )
+                    * DISPLACED_CHORD_MAX_VERTICAL_NOTEHEAD_RATIO
                 )
-                * DISPLACED_CHORD_MAX_VERTICAL_NOTEHEAD_RATIO
-            )
-            if (
-                abs(
-                    singleton.prediction_center[1]
-                    - chord_member.prediction_center[1]
-                )
-                <= maximum_vertical_distance
-            ):
-                return True
+                if (
+                    abs(
+                        singleton.prediction_center[1]
+                        - chord_member.prediction_center[1]
+                    )
+                    <= maximum_vertical_distance
+                ):
+                    return True
         return False
 
     @staticmethod
@@ -2314,6 +2372,8 @@ class VisualSidecar:
         source_staff: Staff | None,
         neighboring_groups: list[VisualGroup],
         chord_mates: list[tuple[EncodedSymbol, VisualGroup]],
+        *,
+        available_groups: list[VisualGroup],
     ) -> VisualGroup | None:
         """Recover a chord head that segmentation missed but TrOMR recognized.
 
@@ -2384,6 +2444,26 @@ class VisualSidecar:
         width = constants.NOTEHEAD_SIZE_RATIO * unit_size
         height = unit_size
         center = (float(prediction_center[0]), float(prediction_center[1]))
+        existing_candidates: list[VisualGroup] = []
+        for candidate in available_groups:
+            if (
+                candidate.staff_index != staff_index
+                or candidate.stave_index != recovered_stave_index
+                or abs(candidate.staff_position - recovered_staff_position) > 2
+            ):
+                continue
+            horizontal_distance = abs(candidate.prediction_center[0] - center[0])
+            vertical_distance = abs(candidate.prediction_center[1] - center[1])
+            candidate_width = max(candidate.prediction_notehead_size[0], 1.0)
+            if (
+                horizontal_distance > max(width, candidate_width) * 1.5
+                or vertical_distance > unit_size * 0.85
+            ):
+                continue
+            existing_candidates.append(candidate)
+        if len(existing_candidates) == 1:
+            return existing_candidates[0]
+
         axes = (max(2, int(round(width / 2))), max(2, int(round(height / 2))))
         contour = cv2.ellipse2Poly(
             (int(round(center[0])), int(round(center[1]))),
@@ -2402,27 +2482,45 @@ class VisualSidecar:
             None,
             visual_id,
         )
-        neighboring_notes = [
-            Note(
-                BoundingEllipse(
-                    (
-                        group.prediction_center,
-                        (width, height),
-                        -20,
+        neighboring_group_notes = [
+            (
+                group,
+                Note(
+                    BoundingEllipse(
+                        (
+                            group.prediction_center,
+                            (width, height),
+                            -20,
+                        ),
+                        contour,
                     ),
-                    contour,
+                    group.staff_position,
+                    None,
+                    None,
+                    group.visual_id,
                 ),
-                group.staff_position,
-                None,
-                None,
-                group.visual_id,
             )
             for group in neighboring_groups
             if group.staff_index == staff_index
         ]
+        neighboring_notes = [note for _group, note in neighboring_group_notes]
         refined_contour = self._refined_notehead_contour(
             guessed_note, [guessed_note, *neighboring_notes]
         )
+        relaxed_dense_chord_fit = False
+        if refined_contour is None:
+            chord_mate_visual_ids = {
+                mate_group.visual_id for _mate_symbol, mate_group in chord_mates
+            }
+            non_mate_neighbors = [
+                note
+                for group, note in neighboring_group_notes
+                if group.visual_id not in chord_mate_visual_ids
+            ]
+            refined_contour = self._refined_notehead_contour(
+                guessed_note, [guessed_note, *non_mate_neighbors]
+            )
+            relaxed_dense_chord_fit = refined_contour is not None
         if refined_contour is None:
             return None
         self._next_transformer_recovered_visual_id += 1
@@ -2447,7 +2545,14 @@ class VisualSidecar:
             is_hollow_notehead=self._is_hollow_notehead(guessed_note),
             visual_status="fallback",
             provenance="transformer_recovered",
-            repair_actions=["transformer_notehead_recovered"],
+            repair_actions=[
+                "transformer_notehead_recovered",
+                *(
+                    ["dense_chord_notehead_recovered"]
+                    if relaxed_dense_chord_fit
+                    else []
+                ),
+            ],
             duration=symbol.rhythm,
         )
 

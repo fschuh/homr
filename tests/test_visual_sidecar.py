@@ -718,6 +718,75 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(len({group.chord_id for group in matched_groups}), 1)
         self.assertIsNotNone(matched_groups[0].chord_id)
 
+    def test_displaced_opposing_voice_stays_in_the_shared_visual_moment(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(140, 120),
+            autocrop_box=(0, 0, 140, 120),
+            cropped_size=(140, 120),
+            resized_size=(140, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 120),
+        )
+
+        def make_note(x: int, y: int, position: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly(
+                (x, y), (10, 7), -20, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (20, 14), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(60, 30, 8, "chord-top"),
+            make_note(60, 50, 5, "chord-middle"),
+            make_note(60, 64, 3, "chord-bottom"),
+            make_note(40, 72, 2, "displaced-voice"),
+            make_note(40, 105, 4, "bass-anchor"),
+        ]
+        collector = VisualSidecar(metadata)
+        collector.add_staff_visual_notes(
+            0, notes, [note.copy() for note in notes]
+        )
+        collector.visual_groups["bass-anchor"].stave_index = 1
+        symbols = [
+            EncodedSymbol("note_2", "D5", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_2", "A4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_2", "F4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_8", "E4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_8", "C3", position="lower"),
+        ]
+
+        collector.add_staff_matches(symbols, 0)
+
+        matched_groups = [
+            collector.visual_groups[
+                collector.matches_by_symbol_id[symbol.visual_match_id].visual_id
+            ]
+            for symbol in symbols
+            if symbol.rhythm.startswith("note")
+        ]
+        self.assertEqual(
+            {group.visual_id for group in matched_groups},
+            {
+                "chord-top",
+                "chord-middle",
+                "chord-bottom",
+                "displaced-voice",
+                "bass-anchor",
+            },
+        )
+        self.assertEqual(len({group.moment_id for group in matched_groups}), 1)
+        self.assertIsNotNone(matched_groups[0].moment_id)
+        self.assertEqual(collector.unmatched_visual_notes, set())
+
     def test_dense_filled_chords_are_not_treated_as_split_whole_note_fragments(
         self,
     ) -> None:
@@ -2029,6 +2098,149 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(recovered.visual_status, "fallback")
         self.assertIn("transformer_chord_recovered", recovered.repair_actions)
         self.assertEqual(collector.unmatched_visual_notes, {"stray"})
+
+    def test_recovers_unique_displaced_chord_candidate_after_attention_misses_it(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(140, 110),
+            autocrop_box=(0, 0, 140, 110),
+            cropped_size=(140, 110),
+            resized_size=(140, 110),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 110),
+        )
+        image = np.full((110, 140), 255, dtype=np.uint8)
+        for center in ((60, 50), (78, 45), (115, 80)):
+            cv2.ellipse(image, center, (7, 5), -20, 0, 360, 0, -1)
+        staff = Staff(
+            [
+                StaffPoint(0, [30, 40, 50, 60, 70], 0),
+                StaffPoint(140, [30, 40, 50, 60, 70], 0),
+            ]
+        )
+
+        def make_note(
+            center: tuple[int, int], position: int, visual_id: str
+        ) -> Note:
+            contour = cv2.ellipse2Poly(
+                center, (7, 5), -20, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse((center, (14, 10), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        anchor = make_note((60, 50), 5, "anchor")
+        displaced = make_note((78, 45), 6, "displaced")
+        stray = make_note((115, 80), 1, "stray")
+        collector = VisualSidecar(metadata, source_image=image)
+        collector.add_staff_visual_notes(
+            0,
+            [anchor, displaced, stray],
+            [anchor.copy(), displaced.copy(), stray.copy()],
+        )
+        anchor_symbol = EncodedSymbol(
+            "note_4", "G4", position="upper", coordinates=(60, 50)
+        )
+        displaced_symbol = EncodedSymbol(
+            "note_4", "A4", position="upper", coordinates=(5, 5)
+        )
+
+        collector.add_staff_matches(
+            [anchor_symbol, EncodedSymbol("chord"), displaced_symbol],
+            0,
+            source_staff=staff,
+        )
+
+        match = collector.matches_by_symbol_id[displaced_symbol.visual_match_id]
+        self.assertEqual(match.visual_id, "displaced")
+        self.assertEqual(match.alignment_method, "sequence_repair")
+        self.assertEqual(
+            collector.visual_groups["displaced"].visual_status, "fallback"
+        )
+        self.assertIn(
+            "transformer_chord_candidate_recovered",
+            collector.visual_groups["displaced"].repair_actions,
+        )
+        self.assertEqual(collector.unmatched_visual_notes, {"stray"})
+
+    def test_recovers_missing_head_at_the_edge_of_a_dense_hollow_chord(self) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        image = np.full((120, 120), 255, dtype=np.uint8)
+        centers = ((60, 30), (60, 46), (60, 62))
+        for center in centers:
+            cv2.ellipse(image, center, (10, 7), -20, 0, 360, 2)
+        staff = Staff(
+            [
+                StaffPoint(0, [30, 46, 62, 78, 94], 0),
+                StaffPoint(120, [30, 46, 62, 78, 94], 0),
+            ]
+        )
+
+        def make_note(
+            center: tuple[int, int], position: int, visual_id: str
+        ) -> Note:
+            contour = cv2.ellipse2Poly(
+                center, (10, 7), -20, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse((center, (20, 14), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        top = make_note(centers[0], 9, "top")
+        middle = make_note(centers[1], 7, "middle")
+        collector = VisualSidecar(metadata, source_image=image)
+        collector.add_staff_visual_notes(
+            0, [top, middle], [top.copy(), middle.copy()]
+        )
+        bottom_symbol = EncodedSymbol(
+            "note_1", "F4", position="upper", coordinates=centers[2]
+        )
+        top_symbol = EncodedSymbol(
+            "note_1", "C5", position="upper", coordinates=centers[0]
+        )
+        middle_symbol = EncodedSymbol(
+            "note_1", "A4", position="upper", coordinates=centers[1]
+        )
+
+        collector.add_staff_matches(
+            [
+                bottom_symbol,
+                EncodedSymbol("chord"),
+                top_symbol,
+                EncodedSymbol("chord"),
+                middle_symbol,
+            ],
+            0,
+            source_staff=staff,
+        )
+
+        bottom_match = collector.matches_by_symbol_id[
+            bottom_symbol.visual_match_id
+        ]
+        self.assertIsNotNone(bottom_match.visual_id)
+        self.assertTrue(
+            str(bottom_match.visual_id).startswith("vnote-transformer-recovered-")
+        )
+        recovered = collector.visual_groups[str(bottom_match.visual_id)]
+        self.assertAlmostEqual(recovered.prediction_center[0], 60, delta=2)
+        self.assertAlmostEqual(recovered.prediction_center[1], 62, delta=2)
+        self.assertEqual(recovered.visual_status, "fallback")
 
     def test_recovers_hollow_notehead_positioned_by_transformer(self) -> None:
         metadata = PreprocessingMetadata(
