@@ -2278,6 +2278,102 @@ class TestVisualSidecar(unittest.TestCase):
         )
         self.assertEqual(collector.unmatched_visual_notes, {"stray"})
 
+    def test_incomplete_lower_chord_uses_interval_anchors_to_recover_middle_head(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(160, 170),
+            autocrop_box=(0, 0, 160, 170),
+            cropped_size=(160, 170),
+            resized_size=(160, 170),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(160, 170),
+        )
+        image = np.full((170, 160), 255, dtype=np.uint8)
+        for center in ((80, 30), (80, 100), (80, 110), (80, 130)):
+            cv2.ellipse(image, center, (8, 5), -20, 0, 360, 0, -1)
+        source_staff = Staff(
+            [
+                StaffPoint(0, [80, 90, 100, 110, 120], 0),
+                StaffPoint(160, [80, 90, 100, 110, 120], 0),
+            ]
+        )
+
+        def note(
+            visual_id: str,
+            center: tuple[int, int],
+            position: int,
+        ) -> Note:
+            contour = cv2.ellipse2Poly(
+                center, (8, 5), -20, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse((center, (16, 10), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        upper = note("upper-g5", (80, 30), 10)
+        upper_duplicate = note("f4-a-upper", (80, 100), -6)
+        lower_top = note("f4-z-lower", (80, 100), 14)
+        lower_bottom = note("lower-g3", (80, 130), 8)
+        notes = [upper, upper_duplicate, lower_top, lower_bottom]
+        collector = VisualSidecar(metadata, source_image=image)
+        collector.add_staff_visual_notes(
+            0, notes, [candidate.copy() for candidate in notes]
+        )
+        collector.visual_groups["f4-z-lower"].stave_index = 1
+        collector.visual_groups["lower-g3"].stave_index = 1
+
+        upper_symbol = EncodedSymbol(
+            "note_8", "G5", position="upper", coordinates=(80, 30)
+        )
+        top_symbol = EncodedSymbol(
+            "note_4", "F4", position="lower", coordinates=(80, 100)
+        )
+        middle_symbol = EncodedSymbol(
+            "note_4", "D4", position="lower", coordinates=(80, 110)
+        )
+        bottom_symbol = EncodedSymbol(
+            "note_4", "G3", position="lower", coordinates=(80, 130)
+        )
+        symbols = [
+            upper_symbol,
+            EncodedSymbol("chord"),
+            top_symbol,
+            EncodedSymbol("chord"),
+            middle_symbol,
+            EncodedSymbol("chord"),
+            bottom_symbol,
+        ]
+
+        collector.add_staff_matches(symbols, 0, source_staff=source_staff)
+
+        upper_match = collector.matches_by_symbol_id[upper_symbol.visual_match_id]
+        top_match = collector.matches_by_symbol_id[top_symbol.visual_match_id]
+        middle_match = collector.matches_by_symbol_id[middle_symbol.visual_match_id]
+        bottom_match = collector.matches_by_symbol_id[bottom_symbol.visual_match_id]
+        self.assertEqual(upper_match.visual_id, "upper-g5")
+        self.assertEqual(top_match.visual_id, "f4-a-upper")
+        self.assertEqual(bottom_match.visual_id, "lower-g3")
+        self.assertTrue(
+            str(middle_match.visual_id).startswith("vnote-transformer-recovered-")
+        )
+        groups = [
+            collector.visual_groups[str(match.visual_id)]
+            for match in (upper_match, top_match, middle_match, bottom_match)
+        ]
+        self.assertEqual(len({group.moment_id for group in groups}), 1)
+        lower_groups = groups[1:]
+        self.assertEqual(lower_groups[0].stave_index, 1)
+        self.assertEqual(lower_groups[0].staff_position, 14)
+        self.assertIn("stave_membership_repaired", lower_groups[0].repair_actions)
+        self.assertEqual(len({group.chord_id for group in lower_groups}), 1)
+        self.assertIsNotNone(lower_groups[0].chord_id)
+        self.assertEqual(collector.unmatched_visual_notes, {"f4-z-lower"})
+
     def test_recovers_missing_head_at_the_edge_of_a_dense_hollow_chord(self) -> None:
         metadata = PreprocessingMetadata(
             source_image_size=(120, 120),

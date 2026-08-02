@@ -187,6 +187,7 @@ class StructuralMatchPlan:
 class StructuralMomentCompatibility:
     stave_by_group_index: dict[int, int]
     fallback_subset: bool = False
+    symbol_by_group_index: dict[int, EncodedSymbol] = field(default_factory=dict)
 
 
 @dataclass
@@ -1285,6 +1286,9 @@ class VisualSidecar:
             )
             if compatibility is None:
                 continue
+            self._apply_visual_moment_staves(
+                compatibility.stave_by_group_index, visual_groups
+            )
             moment_id = f"moment-{visual_groups[0].staff_index + 1}-{symbol_moment_index + 1}"
             symbols_by_stave: dict[int, list[EncodedSymbol]] = {}
             for symbol in symbol_moment:
@@ -1296,6 +1300,24 @@ class VisualSidecar:
                 groups_by_stave.setdefault(stave_index, []).append(group_index)
             for stave_index, stave_symbols in symbols_by_stave.items():
                 stave_group_indices = groups_by_stave.get(stave_index, [])
+                partial_symbols = {
+                    group_index: compatibility.symbol_by_group_index[group_index]
+                    for group_index in stave_group_indices
+                    if group_index in compatibility.symbol_by_group_index
+                }
+                if partial_symbols:
+                    for group_index, symbol in partial_symbols.items():
+                        visual_groups[group_index].moment_id = moment_id
+                        if symbol.visual_match_id not in symbol_index_by_match_id:
+                            reserved_group_indices.add(group_index)
+                            continue
+                        assignment = (
+                            symbol_index_by_match_id[symbol.visual_match_id],
+                            group_index,
+                        )
+                        assignments.append(assignment)
+                        fallback_assignments.add(assignment)
+                    continue
                 if len(stave_group_indices) != len(stave_symbols):
                     continue
                 placeholder_symbols = [
@@ -1342,6 +1364,13 @@ class VisualSidecar:
         )
         if repaired_staves is None:
             return
+        self._apply_visual_moment_staves(repaired_staves, visual_groups)
+
+    def _apply_visual_moment_staves(
+        self,
+        repaired_staves: dict[int, int],
+        visual_groups: list[VisualGroup],
+    ) -> None:
         for group_index, stave_index in repaired_staves.items():
             group = visual_groups[group_index]
             if group.stave_index == stave_index:
@@ -1533,9 +1562,8 @@ class VisualSidecar:
             return True
         return symbol.rhythm.startswith("rest") and symbol.pitch not in ("_", ".")
 
-    @classmethod
     def _align_structural_moments(
-        cls,
+        self,
         symbol_moments: list[list[EncodedSymbol]],
         visual_moments: list[list[int]],
         visual_groups: list[VisualGroup],
@@ -1561,7 +1589,7 @@ class VisualSidecar:
             return []
         compatibilities = [
             [
-                cls._compatible_visual_moment(
+                self._compatible_visual_moment(
                     symbol_moment, visual_moment, visual_groups
                 )
                 for visual_moment in visual_moments
@@ -1635,9 +1663,17 @@ class VisualSidecar:
                     ],
                     key=lambda index: visual_groups[index].prediction_center[1],
                 )
-                for symbol, group_index in zip(
-                    stave_symbols, stave_groups, strict=True
-                ):
+                partial_pairs = [
+                    (compatibility.symbol_by_group_index[group_index], group_index)
+                    for group_index in stave_groups
+                    if group_index in compatibility.symbol_by_group_index
+                ]
+                symbol_group_pairs = (
+                    partial_pairs
+                    if partial_pairs
+                    else list(zip(stave_symbols, stave_groups, strict=True))
+                )
+                for symbol, group_index in symbol_group_pairs:
                     group = visual_groups[group_index]
                     if symbol.coordinates is None or group.transformer_center is None:
                         continue
@@ -1722,29 +1758,74 @@ class VisualSidecar:
 
         return sorted(common_pairs[symbol_count][visual_count])
 
-    @classmethod
     def _compatible_visual_moment(
-        cls,
+        self,
         symbol_moment: list[EncodedSymbol],
         visual_moment: list[int],
         visual_groups: list[VisualGroup],
     ) -> StructuralMomentCompatibility | None:
         """Select a structurally safe visual subset for one musical moment.
 
-        An otherwise complete cross-stave moment can contain one or more surplus
-        candidates on a stave. When transformer attention uniquely identifies the
-        recognized heads, or a common physical stem makes token-order prefix mapping
-        safe, retain the exact-count groups on the other stave and leave only the
-        surplus candidates unmatched. The resulting links remain fallback evidence
-        because the whole moment was not independently complete.
+        An otherwise complete cross-stave moment can contain surplus candidates or
+        be missing a chord head on one stave. Retain a subset only when attention,
+        physical stems, or diatonic staff-position intervals uniquely prove it.
+        The resulting links remain fallback evidence because the whole moment was
+        not independently complete.
         """
-        repaired_staves = cls._repairable_visual_moment_staves(
+        repaired_staves = self._repairable_visual_moment_staves(
             symbol_moment, visual_moment, visual_groups
         )
         if repaired_staves is not None:
             return StructuralMomentCompatibility(repaired_staves)
 
+        stave_options: list[list[tuple[int, int]]] = []
+        for group_index in visual_moment:
+            group = visual_groups[group_index]
+            positions = {
+                group.stave_index: group.staff_position,
+                **self._duplicate_staff_positions_by_visual_id.get(
+                    group.visual_id, {}
+                ),
+            }
+            stave_options.append(sorted(positions.items()))
+        compatibilities: list[StructuralMomentCompatibility] = []
+        for stave_choices in itertools.product(*stave_options):
+            stave_by_group_index = {
+                group_index: stave_index
+                for group_index, (stave_index, _staff_position) in zip(
+                    visual_moment, stave_choices, strict=True
+                )
+            }
+            staff_position_by_group_index = {
+                group_index: staff_position
+                for group_index, (_stave_index, staff_position) in zip(
+                    visual_moment, stave_choices, strict=True
+                )
+            }
+            compatibility = self._compatible_visual_moment_for_staves(
+                symbol_moment,
+                visual_moment,
+                visual_groups,
+                stave_by_group_index,
+                staff_position_by_group_index,
+            )
+            if compatibility is not None:
+                compatibilities.append(compatibility)
+        if len(compatibilities) != 1:
+            return None
+        return compatibilities[0]
+
+    @classmethod
+    def _compatible_visual_moment_for_staves(
+        cls,
+        symbol_moment: list[EncodedSymbol],
+        visual_moment: list[int],
+        visual_groups: list[VisualGroup],
+        stave_by_group_index: dict[int, int],
+        staff_position_by_group_index: dict[int, int],
+    ) -> StructuralMomentCompatibility | None:
         selected_staves: dict[int, int] = {}
+        symbol_by_group_index: dict[int, EncodedSymbol] = {}
         pruned_any = False
         for stave_index in (0, 1):
             stave_symbols = [
@@ -1755,10 +1836,23 @@ class VisualSidecar:
             stave_group_indices = [
                 group_index
                 for group_index in visual_moment
-                if visual_groups[group_index].stave_index == stave_index
+                if stave_by_group_index[group_index] == stave_index
             ]
             if len(stave_group_indices) < len(stave_symbols):
-                return None
+                partial_mapping = cls._partial_stave_symbol_group_mapping(
+                    stave_symbols,
+                    stave_group_indices,
+                    visual_groups,
+                    staff_position_by_group_index,
+                )
+                if partial_mapping is None:
+                    return None
+                selected_staves.update(
+                    dict.fromkeys(partial_mapping, stave_index)
+                )
+                symbol_by_group_index.update(partial_mapping)
+                pruned_any = True
+                continue
             if len(stave_group_indices) == len(stave_symbols):
                 selected_staves.update(
                     {group_index: stave_index for group_index in stave_group_indices}
@@ -1780,7 +1874,64 @@ class VisualSidecar:
             )
             pruned_any = True
 
-        return StructuralMomentCompatibility(selected_staves, pruned_any)
+        return StructuralMomentCompatibility(
+            selected_staves,
+            pruned_any,
+            symbol_by_group_index,
+        )
+
+    @classmethod
+    def _partial_stave_symbol_group_mapping(
+        cls,
+        symbols: list[EncodedSymbol],
+        group_indices: list[int],
+        visual_groups: list[VisualGroup],
+        staff_position_by_group_index: dict[int, int] | None = None,
+    ) -> dict[int, EncodedSymbol] | None:
+        """Map an incomplete chord only when diatonic intervals prove the subset."""
+        if len(group_indices) < 2 or len(group_indices) >= len(symbols):
+            return None
+        pitched_symbols: list[tuple[int, EncodedSymbol]] = []
+        for symbol in symbols:
+            pitch_index = cls._diatonic_pitch_index(symbol.pitch)
+            if pitch_index is None:
+                return None
+            pitched_symbols.append((pitch_index, symbol))
+        pitched_symbols.sort(key=lambda item: item[0], reverse=True)
+        staff_positions = staff_position_by_group_index or {}
+        ordered_groups = sorted(
+            group_indices,
+            key=lambda index: staff_positions.get(
+                index, visual_groups[index].staff_position
+            ),
+            reverse=True,
+        )
+        mappings: list[dict[int, EncodedSymbol]] = []
+        for symbol_subset in itertools.combinations(
+            pitched_symbols, len(ordered_groups)
+        ):
+            offsets = [
+                staff_positions.get(
+                    group_index, visual_groups[group_index].staff_position
+                )
+                - pitch_index
+                for group_index, (pitch_index, _symbol) in zip(
+                    ordered_groups, symbol_subset, strict=True
+                )
+            ]
+            if max(offsets) - min(offsets) > 1:
+                continue
+            mappings.append(
+                {
+                    group_index: symbol
+                    for group_index, (_pitch_index, symbol) in zip(
+                        ordered_groups, symbol_subset, strict=True
+                    )
+                }
+            )
+        if len(mappings) != 1:
+            return None
+        return mappings[0]
 
     @staticmethod
     def _attention_selected_group_subset(
