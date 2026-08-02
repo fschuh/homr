@@ -897,6 +897,59 @@ class VisualSidecar:
         self._discard_visual_groups_near_clefs(symbols, staff_index)
         self._consolidate_exact_duplicate_noteheads(staff_index)
         self._discard_duplicate_notehead_fragments(staff_index)
+        self._consolidate_split_hollow_noteheads(staff_index)
+
+    def _consolidate_split_hollow_noteheads(self, staff_index: int) -> None:
+        """Merge touching halves before they make a complete chord look surplus.
+
+        A staff line can split a hollow head into two adjacent segmentation
+        candidates. Waiting until after matching to rejoin them only works when
+        attention happens to select one half. Consolidate unambiguous pairs first
+        so structural matching sees one physical head at each staff position.
+        """
+        groups = [
+            group
+            for group in self.visual_groups.values()
+            if (
+                group.staff_index == staff_index
+                and group.visual_status != "diagnostic"
+                and group.is_hollow_notehead
+            )
+        ]
+        possible_pairs = [
+            (first, second)
+            for first_index, first in enumerate(groups)
+            for second in groups[first_index + 1 :]
+            if (
+                first.stave_index == second.stave_index
+                and first.staff_position == second.staff_position
+                and self._looks_like_horizontal_notehead_fragment(first, second)
+            )
+        ]
+        possible_pairs.sort(
+            key=lambda pair: (
+                abs(pair[0].prediction_center[0] - pair[1].prediction_center[0]),
+                pair[0].visual_id,
+                pair[1].visual_id,
+            )
+        )
+        merged_visual_ids: set[str] = set()
+        for first, second in possible_pairs:
+            if (
+                first.visual_id in merged_visual_ids
+                or second.visual_id in merged_visual_ids
+            ):
+                continue
+            primary, fragment = sorted(
+                (first, second), key=lambda group: group.visual_id
+            )
+            self._merge_notehead_fragment(primary, fragment)
+            primary.provenance = "merged_fragments"
+            if "merged_split_notehead_before_matching" not in primary.repair_actions:
+                primary.repair_actions.append("merged_split_notehead_before_matching")
+            fragment.visual_status = "diagnostic"
+            fragment.repair_actions.append(f"merged_into:{primary.visual_id}")
+            merged_visual_ids.update((primary.visual_id, fragment.visual_id))
 
     def _consolidate_exact_duplicate_noteheads(self, staff_index: int) -> None:
         """Keep one physical head when overlapping stave zones emitted it twice.
@@ -1091,6 +1144,8 @@ class VisualSidecar:
                 and group.duration.rstrip(".") == "note_1"
                 and group.is_hollow_notehead
                 and not group.stem_contours
+                and "merged_split_notehead_before_matching"
+                not in group.repair_actions
             )
         ]
         for group in matched_groups:

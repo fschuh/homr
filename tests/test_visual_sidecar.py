@@ -632,16 +632,16 @@ class TestVisualSidecar(unittest.TestCase):
             },
         )
         self.assertEqual(
-            sidecar["unmatched_visual_notes"], ["bottom-right", "top-left"]
+            sidecar["unmatched_visual_notes"], ["bottom-right", "top-right"]
         )
-        self.assertEqual(groups["top-left"]["visual_status"], "diagnostic")
+        self.assertEqual(groups["top-right"]["visual_status"], "diagnostic")
         self.assertEqual(groups["bottom-right"]["visual_status"], "diagnostic")
         self.assertEqual(groups["bottom-left"]["provenance"], "merged_fragments")
-        self.assertEqual(groups["top-right"]["provenance"], "merged_fragments")
+        self.assertEqual(groups["top-left"]["provenance"], "merged_fragments")
         self.assertAlmostEqual(groups["bottom-left"]["center"][0], 50, delta=0.5)
-        self.assertAlmostEqual(groups["top-right"]["center"][0], 50, delta=0.5)
+        self.assertAlmostEqual(groups["top-left"]["center"][0], 50, delta=0.5)
         self.assertGreater(groups["bottom-left"]["notehead_ellipses"][0]["rx"], 10)
-        self.assertGreater(groups["top-right"]["notehead_ellipses"][0]["rx"], 10)
+        self.assertGreater(groups["top-left"]["notehead_ellipses"][0]["rx"], 10)
         self.assertEqual(
             collector.matches_by_symbol_id[sequence_a.visual_match_id].visual_id,
             "sequence-a",
@@ -649,6 +649,116 @@ class TestVisualSidecar(unittest.TestCase):
         self.assertEqual(
             collector.matches_by_symbol_id[sequence_g.visual_match_id].visual_id,
             "sequence-g",
+        )
+
+    def test_split_hollow_heads_are_consolidated_before_cross_stave_matching(
+        self,
+    ) -> None:
+        metadata = PreprocessingMetadata(
+            source_image_size=(160, 190),
+            autocrop_box=(0, 0, 160, 190),
+            cropped_size=(160, 190),
+            resized_size=(160, 190),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(160, 190),
+        )
+        image = np.full((190, 160), 255, dtype=np.uint8)
+        for center in ((80, 35), (80, 65), (80, 90), (80, 135), (80, 175)):
+            cv2.ellipse(image, center, (13, 9), 0, 0, 360, 2)
+
+        def fragment(
+            visual_id: str,
+            center_x: int,
+            center_y: int,
+            position: int,
+            stem: RotatedBoundingBox | None = None,
+        ) -> Note:
+            contour = np.array(
+                [
+                    [[center_x - 6, center_y - 9]],
+                    [[center_x + 6, center_y - 9]],
+                    [[center_x + 6, center_y + 9]],
+                    [[center_x - 6, center_y + 9]],
+                ],
+                dtype=np.int32,
+            )
+            return Note(
+                BoundingEllipse(((center_x, center_y), (12, 18), 0), contour),
+                position=position,
+                stem=stem,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        def whole(visual_id: str, center_y: int, position: int) -> Note:
+            contour = cv2.ellipse2Poly(
+                (80, center_y), (13, 9), 0, 0, 360, 5
+            ).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((80, center_y), (26, 18), 0), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        tiny_stem = RotatedBoundingBox(
+            ((94, 135), (2, 6), 0),
+            np.array([[94, 132], [94, 138]]),
+        )
+        notes = [
+            fragment("upper-left", 74, 35, 6),
+            fragment("upper-right", 86, 35, 6),
+            whole("upper-middle", 65, 3),
+            whole("upper-bottom", 90, 1),
+            fragment("lower-left", 74, 135, 4, tiny_stem),
+            fragment("lower-right", 86, 135, 4, tiny_stem),
+            whole("lower-bass", 175, -3),
+        ]
+        collector = VisualSidecar(metadata, source_image=image)
+        collector.add_staff_visual_notes(
+            0, notes, [note.copy() for note in notes]
+        )
+        for visual_id in ("lower-left", "lower-right", "lower-bass"):
+            collector.visual_groups[visual_id].stave_index = 1
+
+        symbols = [
+            EncodedSymbol("note_1", "C5", position="upper", coordinates=(80, 35)),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "G4", position="upper", coordinates=(80, 65)),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "E4", position="upper", coordinates=(80, 90)),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "C3", position="lower", coordinates=(80, 135)),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "C2", position="lower", coordinates=(80, 175)),
+        ]
+
+        collector.add_staff_matches(symbols, 0)
+
+        note_symbols = [
+            symbol for symbol in symbols if symbol.rhythm.startswith("note")
+        ]
+        matches = [
+            collector.matches_by_symbol_id[symbol.visual_match_id]
+            for symbol in note_symbols
+        ]
+        self.assertTrue(all(match.visual_id is not None for match in matches))
+        self.assertEqual(
+            {match.alignment_method for match in matches}, {"structural"}
+        )
+        matched_groups = [
+            collector.visual_groups[str(match.visual_id)] for match in matches
+        ]
+        self.assertEqual(len({group.moment_id for group in matched_groups}), 1)
+        self.assertEqual(len({group.chord_id for group in matched_groups}), 2)
+        self.assertEqual(
+            collector.visual_groups["upper-left"].provenance,
+            "merged_fragments",
+        )
+        self.assertEqual(
+            collector.visual_groups["lower-left"].provenance,
+            "merged_fragments",
         )
 
     def test_displaced_second_stays_in_stemless_whole_note_chord_moment(self) -> None:
