@@ -42,7 +42,11 @@ from homr.staff_position_save_load import load_staff_positions, save_staff_posit
 from homr.title_detection import detect_title, download_ocr_weights
 from homr.transformer.configs import Config, default_config
 from homr.type_definitions import NDArray
-from homr.visual_sidecar import PreprocessingMetadata, VisualSidecar, write_visual_sidecar
+from homr.visual_sidecar import (
+    PredictionCoordinateTransform,
+    VisualSidecarBuilder,
+    write_visual_sidecar,
+)
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
@@ -106,7 +110,7 @@ def replace_extension(path: str, new_extension: str) -> str:
 
 def load_and_preprocess_predictions(
     image_path: str, enable_debug: bool, enable_cache: bool, segnet_use_gpu: bool
-) -> tuple[InputPredictions, Debug, PreprocessingMetadata]:
+) -> tuple[InputPredictions, Debug, PredictionCoordinateTransform]:
     image = cv2.imread(image_path)
     if image is None:
         raise InvalidProgramArgumentException(
@@ -118,7 +122,7 @@ def load_and_preprocess_predictions(
     image = resize_result.image
     preprocessed = color_adjust.apply_clahe(image)
     predictions = get_predictions(image, preprocessed, image_path, enable_cache, segnet_use_gpu)
-    preprocessing = PreprocessingMetadata(
+    coordinate_transform = PredictionCoordinateTransform(
         source_image_size=autocrop_result.original_size,
         autocrop_box=autocrop_result.crop_box,
         cropped_size=resize_result.original_size,
@@ -137,7 +141,7 @@ def load_and_preprocess_predictions(
     debug.write_threshold_image("stems_rest", predictions.stems_rest)
     debug.write_threshold_image("notehead", predictions.notehead)
     debug.write_threshold_image("clefs_keys", predictions.clefs_keys)
-    return predictions, debug, preprocessing
+    return predictions, debug, coordinate_transform
 
 
 def predict_symbols(debug: Debug, predictions: InputPredictions) -> PredictedSymbols:
@@ -196,7 +200,7 @@ def process_image(
             source_size = (image.shape[1], image.shape[0])
             resize_result = resize_image_with_metadata(image)
             image = resize_result.image
-            preprocessing = PreprocessingMetadata(
+            coordinate_transform = PredictionCoordinateTransform(
                 source_image_size=source_size,
                 autocrop_box=(0, 0, source_size[0], source_size[1]),
                 cropped_size=resize_result.original_size,
@@ -220,7 +224,7 @@ def process_image(
                 image,
                 debug,
                 title_future,
-                preprocessing,
+                coordinate_transform,
                 stem_fragments,
                 notehead_mask,
                 notehead_candidates,
@@ -232,8 +236,8 @@ def process_image(
         transformer_config.use_coreml_encoder = config.coreml_encoder
 
         visual_sidecar = (
-            VisualSidecar(
-                preprocessing,
+            VisualSidecarBuilder(
+                coordinate_transform,
                 stem_fragments,
                 notehead_mask,
                 notehead_candidates,
@@ -279,19 +283,17 @@ def process_image(
             debug_cleanup.clean_debug_files_from_previous_runs()
 
 
-def detect_staffs_in_image(
-    image_path: str, config: ProcessingConfig
-) -> tuple[
+def detect_staffs_in_image(image_path: str, config: ProcessingConfig) -> tuple[
     list[MultiStaff],
     NDArray,
     Debug,
     Future[str],
-    PreprocessingMetadata,
+    PredictionCoordinateTransform,
     list[RotatedBoundingBox],
     NDArray,
     list[NoteheadWithStem],
 ]:
-    predictions, debug, preprocessing = load_and_preprocess_predictions(
+    predictions, debug, coordinate_transform = load_and_preprocess_predictions(
         image_path, config.enable_debug, config.enable_cache, config.segnet_use_gpu
     )
     symbols = predict_symbols(debug, predictions)
@@ -357,7 +359,7 @@ def detect_staffs_in_image(
         predictions.preprocessed,
         debug,
         title_future,
-        preprocessing,
+        coordinate_transform,
         symbols.stems_rest,
         predictions.notehead,
         noteheads_with_stems,

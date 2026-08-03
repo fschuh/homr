@@ -14,7 +14,7 @@ from homr.staff_regions import StaffRegions
 from homr.transformer.configs import Config, default_config
 from homr.transformer.vocabulary import EncodedSymbol, remove_duplicated_symbols
 from homr.type_definitions import NDArray
-from homr.visual_sidecar import VisualSidecar
+from homr.visual_sidecar import VisualSidecarBuilder
 
 
 def _have_all_the_same_number_of_staffs(staffs: list[MultiStaff]) -> bool:
@@ -290,13 +290,11 @@ def parse_staff_image(
     image: NDArray,
     regions: StaffRegions,
     config: Config,
-    visual_sidecar: VisualSidecar | None = None,
+    visual_sidecar: VisualSidecarBuilder | None = None,
 ) -> list[EncodedSymbol]:
     original_notes = [symbol for symbol in staff.symbols if isinstance(symbol, Note)]
     sidecar_notes = (
-        visual_sidecar.recovery_notes_for_staff(staff)
-        if visual_sidecar is not None
-        else []
+        visual_sidecar.recovery_notes_for_staff(staff) if visual_sidecar is not None else []
     )
     (
         staff_image,
@@ -350,7 +348,7 @@ def parse_staffs(
     image: NDArray,
     config: Config,
     selected_staff: int = -1,
-    visual_sidecar: VisualSidecar | None = None,
+    visual_sidecar: VisualSidecarBuilder | None = None,
 ) -> list[list[EncodedSymbol]]:
     """
     Dewarps each staff and then runs it through an algorithm which extracts

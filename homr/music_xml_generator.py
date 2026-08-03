@@ -18,7 +18,7 @@ from homr.transformer.vocabulary import (
 )
 
 if TYPE_CHECKING:
-    from homr.visual_sidecar import VisualSidecar
+    from homr.visual_sidecar import VisualSidecarBuilder
 
 
 class ConversionState:
@@ -115,7 +115,7 @@ def generate_xml(
     args: XmlGeneratorArguments,
     staffs: list[list[EncodedSymbol]],
     title: str,
-    visual_sidecar: "VisualSidecar | None" = None,
+    visual_sidecar: "VisualSidecarBuilder | None" = None,
 ) -> mxl.XMLElement:
     root = mxl.XMLScorePartwise(version="4.0")
     root.add_child(build_work(title))
@@ -140,7 +140,7 @@ def build_part(
     voice: list[EncodedSymbol],
     index: int,
     has_two_staves: bool,
-    visual_sidecar: "VisualSidecar | None" = None,
+    visual_sidecar: "VisualSidecarBuilder | None" = None,
 ) -> mxl.XMLPart:
     part = mxl.XMLPart(id=get_part_id(index))
     is_first_part = index == 0
@@ -156,7 +156,7 @@ def build_measures(
     is_first_part: bool,
     has_two_staves: bool = False,
     part_number: int = 1,
-    visual_sidecar: "VisualSidecar | None" = None,
+    visual_sidecar: "VisualSidecarBuilder | None" = None,
 ) -> list[mxl.XMLMeasure]:
     def close_current_measure() -> None:
         rebalance_measure_voices(current_measure)
@@ -453,7 +453,7 @@ def record_visual_sidecar_note_ids(
     measure: mxl.XMLMeasure,
     part_number: int,
     measure_number: int,
-    visual_sidecar: "VisualSidecar | None",
+    visual_sidecar: "VisualSidecarBuilder | None",
 ) -> None:
     if visual_sidecar is None:
         return
@@ -469,7 +469,12 @@ def record_visual_sidecar_note_ids(
         staff = int(staff_nodes[0].value_) if staff_nodes else 1
         voice = int(voice_nodes[0].value_) if voice_nodes else 1
         visual_sidecar.record_musicxml_note(
-            musicxml_id, part_number, measure_number, staff, voice, symbol
+            musicxml_id,
+            symbol,
+            part=part_number,
+            measure=measure_number,
+            staff=staff,
+            voice=voice,
         )
 
 
@@ -647,7 +652,7 @@ def build_note_or_rest(
     is_chord: bool,
     state: ConversionState,
     tuplet_mark: str,
-    visual_sidecar: "VisualSidecar | None" = None,
+    visual_sidecar: "VisualSidecarBuilder | None" = None,
 ) -> mxl.XMLNote:
     note = mxl.XMLNote()
     if is_chord:
@@ -730,7 +735,7 @@ def build_note_chord(
     note_chord: SymbolChord,
     state: ConversionState,
     chord_duration: Fraction,
-    visual_sidecar: "VisualSidecar | None" = None,
+    visual_sidecar: "VisualSidecarBuilder | None" = None,
 ) -> list[mxl.XMLElement]:
     by_duration = _group_notes(note_chord.symbols)
     result: list[mxl.XMLElement] = []
