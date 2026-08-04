@@ -15,6 +15,7 @@ API
 .. toctree::
    :maxdepth: 1
 
+   source/visual_sidecar.rst
    source/libs.rst
 
 

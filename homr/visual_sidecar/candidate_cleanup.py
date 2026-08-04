@@ -19,23 +19,25 @@ class CandidateCleaner:
         self.state = state
         self.coordinate_transform = coordinate_transform
         self.visual_groups = state.visual_groups
-        self.unmatched_visual_notes = state.unmatched_visual_notes
+        self.unmatched_visual_group_ids = state.unmatched_visual_group_ids
         self._duplicate_staff_positions_by_visual_id = state.duplicate_staff_positions_by_visual_id
 
-    def repair(self, symbols: list[EncodedSymbol], staff_index: int) -> None:
-        self._repair_candidate_geometry(symbols, staff_index)
+    def repair(self, symbols: list[EncodedSymbol], staff_group_index: int) -> None:
+        self._repair_candidate_geometry(symbols, staff_group_index)
 
-    def merge_split_whole_note_fragments(self, staff_index: int) -> None:
-        self._merge_split_whole_note_fragments(staff_index)
+    def merge_split_whole_note_fragments(self, staff_group_index: int) -> None:
+        self._merge_split_whole_note_fragments(staff_group_index)
 
-    def _repair_candidate_geometry(self, symbols: list[EncodedSymbol], staff_index: int) -> None:
+    def _repair_candidate_geometry(
+        self, symbols: list[EncodedSymbol], staff_group_index: int
+    ) -> None:
         """Stage 2: quarantine artifacts and repair mergeable segmentation."""
-        self._discard_visual_groups_near_clefs(symbols, staff_index)
-        self._consolidate_exact_duplicate_noteheads(staff_index)
-        self._discard_duplicate_notehead_fragments(staff_index)
-        self._consolidate_split_hollow_noteheads(staff_index)
+        self._discard_visual_groups_near_clefs(symbols, staff_group_index)
+        self._consolidate_exact_duplicate_noteheads(staff_group_index)
+        self._discard_duplicate_notehead_fragments(staff_group_index)
+        self._consolidate_split_hollow_noteheads(staff_group_index)
 
-    def _consolidate_split_hollow_noteheads(self, staff_index: int) -> None:
+    def _consolidate_split_hollow_noteheads(self, staff_group_index: int) -> None:
         """Merge touching halves before they make a complete chord look surplus.
 
         A staff line can split a hollow head into two adjacent segmentation
@@ -47,7 +49,7 @@ class CandidateCleaner:
             group
             for group in self.visual_groups.values()
             if (
-                group.staff_index == staff_index
+                group.staff_group_index == staff_group_index
                 and group.visual_status != "diagnostic"
                 and group.is_hollow_notehead
             )
@@ -57,7 +59,7 @@ class CandidateCleaner:
             for first_index, first in enumerate(groups)
             for second in groups[first_index + 1 :]
             if (
-                first.stave_index == second.stave_index
+                first.staff_index == second.staff_index
                 and first.staff_position == second.staff_position
                 and self._looks_like_horizontal_notehead_fragment(first, second)
             )
@@ -82,20 +84,20 @@ class CandidateCleaner:
             fragment.repair_actions.append(f"merged_into:{primary.visual_id}")
             merged_visual_ids.update((primary.visual_id, fragment.visual_id))
 
-    def _consolidate_exact_duplicate_noteheads(self, staff_index: int) -> None:
-        """Keep one physical head when overlapping stave zones emitted it twice.
+    def _consolidate_exact_duplicate_noteheads(self, staff_group_index: int) -> None:
+        """Keep one physical head when overlapping staff zones emitted it twice.
 
         ``add_notes_to_staffs`` deliberately permits ledger notes in each nearby
-        stave zone. In the overlap between a grand staff's staves, that can create
+        staff zone. In the overlap between a grand staff's physical staffs, that can create
         two Note objects backed by the exact same segmentation contour but with
         different staff positions. Retain one physical candidate, preserve the
-        rejected candidate for diagnostics, and remember both stave positions so a
+        rejected candidate for diagnostics, and remember both staff positions so a
         structurally complete transformer moment can resolve ownership later.
         """
         staff_groups = [
             group
             for group in self.visual_groups.values()
-            if group.staff_index == staff_index and group.visual_status != "diagnostic"
+            if group.staff_group_index == staff_group_index and group.visual_status != "diagnostic"
         ]
         visited: set[str] = set()
         for group_index, group in enumerate(staff_groups):
@@ -113,15 +115,15 @@ class CandidateCleaner:
             visited.update(candidate.visual_id for candidate in cluster)
             primary = min(cluster, key=lambda candidate: candidate.visual_id)
             staff_positions = {
-                candidate.stave_index: candidate.staff_position for candidate in cluster
+                candidate.staff_index: candidate.staff_position for candidate in cluster
             }
             self._duplicate_staff_positions_by_visual_id[primary.visual_id] = staff_positions
             if "duplicate_candidates_consolidated" not in primary.repair_actions:
                 primary.repair_actions.append("duplicate_candidates_consolidated")
             if len(staff_positions) > 1 and (
-                "cross_stave_duplicate_consolidated" not in primary.repair_actions
+                "cross_staff_duplicate_consolidated" not in primary.repair_actions
             ):
-                primary.repair_actions.append("cross_stave_duplicate_consolidated")
+                primary.repair_actions.append("cross_staff_duplicate_consolidated")
             for duplicate in cluster:
                 if duplicate is primary:
                     continue
@@ -148,7 +150,7 @@ class CandidateCleaner:
         )
 
     def _discard_visual_groups_near_clefs(
-        self, symbols: list[EncodedSymbol], staff_index: int
+        self, symbols: list[EncodedSymbol], staff_group_index: int
     ) -> None:
         """Quarantine notehead candidates sitting on recognized clef glyphs."""
         clef_centers = [
@@ -161,7 +163,7 @@ class CandidateCleaner:
         clef_artifact_ids = {
             group.visual_id
             for group in self.visual_groups.values()
-            if group.staff_index == staff_index
+            if group.staff_group_index == staff_group_index
             and group.transformer_center is not None
             and any(
                 np.linalg.norm(np.subtract(group.transformer_center, clef_center))
@@ -175,7 +177,7 @@ class CandidateCleaner:
             if "clef_artifact" not in group.repair_actions:
                 group.repair_actions.append("clef_artifact")
 
-    def _discard_duplicate_notehead_fragments(self, staff_index: int) -> None:
+    def _discard_duplicate_notehead_fragments(self, staff_group_index: int) -> None:
         """Quarantine weak horizontal fragments duplicated from a nearby notehead.
 
         Segmentation can emit a small, hollow-looking fragment beside a full
@@ -185,7 +187,9 @@ class CandidateCleaner:
         less detected ink and nearly the same vertical center as the full head.
         """
         staff_groups = [
-            group for group in self.visual_groups.values() if group.staff_index == staff_index
+            group
+            for group in self.visual_groups.values()
+            if group.staff_group_index == staff_group_index
         ]
         duplicate_ids: set[str] = set()
         for fragment in staff_groups:
@@ -198,7 +202,7 @@ class CandidateCleaner:
             for notehead in staff_groups:
                 if (
                     notehead.visual_id == fragment.visual_id
-                    or notehead.stave_index != fragment.stave_index
+                    or notehead.staff_index != fragment.staff_index
                     or notehead.detected_stem_contours != fragment.detected_stem_contours
                 ):
                     continue
@@ -237,7 +241,7 @@ class CandidateCleaner:
             if len(contour) >= 3
         )
 
-    def _merge_split_whole_note_fragments(self, staff_index: int) -> None:
+    def _merge_split_whole_note_fragments(self, staff_group_index: int) -> None:
         """Rejoin whole-note heads split into touching horizontal fragments.
 
         Staff lines can divide the outline of a vertically stacked whole-note chord
@@ -250,7 +254,7 @@ class CandidateCleaner:
             group
             for group in self.visual_groups.values()
             if (
-                group.staff_index == staff_index
+                group.staff_group_index == staff_group_index
                 and group.duration is not None
                 and group.duration.rstrip(".") == "note_1"
                 and group.is_hollow_notehead
@@ -263,9 +267,9 @@ class CandidateCleaner:
                 candidate
                 for candidate in self.visual_groups.values()
                 if (
-                    candidate.visual_id in self.unmatched_visual_notes
+                    candidate.visual_id in self.unmatched_visual_group_ids
+                    and candidate.staff_group_index == group.staff_group_index
                     and candidate.staff_index == group.staff_index
-                    and candidate.stave_index == group.stave_index
                     and candidate.staff_position == group.staff_position
                     and candidate.is_hollow_notehead
                     and not candidate.stem_contours

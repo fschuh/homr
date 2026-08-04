@@ -4,6 +4,8 @@ from typing import Any
 from homr.model import Note
 from homr.transformer.vocabulary import EncodedSymbol
 
+VISUAL_SIDECAR_VERSION = 3
+
 
 def sounding_pitch(symbol: EncodedSymbol) -> str | None:
     if symbol.pitch in ("_", "."):
@@ -16,8 +18,8 @@ def sounding_pitch(symbol: EncodedSymbol) -> str | None:
 @dataclass
 class VisualGroup:
     visual_id: str
+    staff_group_index: int
     staff_index: int
-    stave_index: int
     staff_position: int
     prediction_center: tuple[float, float]
     prediction_notehead_size: tuple[float, float]
@@ -37,7 +39,7 @@ class VisualGroup:
     chord_id: str | None = None
     repair_actions: list[str] = field(default_factory=list)
     duration: str | None = None
-    linked_musicxml_ids: list[str] = field(default_factory=list)
+    musicxml_id: str | None = None
 
     @property
     def bbox(self) -> list[float]:
@@ -56,7 +58,7 @@ class MusicXmlNoteRecord:
     musicxml_id: str
     part: int
     measure: int
-    staff: int
+    musicxml_staff_number: int
     voice: int
     pitch: str | None
     duration: str
@@ -82,7 +84,7 @@ class StructuralMatchPlan:
 
 @dataclass
 class StructuralMomentCompatibility:
-    stave_by_group_index: dict[int, int]
+    staff_by_group_index: dict[int, int]
     fallback_subset: bool = False
     symbol_by_group_index: dict[int, EncodedSymbol] = field(default_factory=dict)
 
@@ -96,13 +98,14 @@ class StemOwnershipCache:
 @dataclass
 class SidecarState:
     recovery_notes_by_staff_id: dict[int, list[Note]] = field(default_factory=dict)
-    stave_index_by_visual_id: dict[str, int] = field(default_factory=dict)
+    staff_index_by_visual_id: dict[str, int] = field(default_factory=dict)
+    staff_position_by_visual_id: dict[str, int] = field(default_factory=dict)
     duplicate_staff_positions_by_visual_id: dict[str, dict[int, int]] = field(default_factory=dict)
     stem_ownership_cache: StemOwnershipCache | None = None
     visual_groups: dict[str, VisualGroup] = field(default_factory=dict)
     matches_by_symbol_id: dict[int, VisualMatch] = field(default_factory=dict)
     musicxml_notes: list[MusicXmlNoteRecord] = field(default_factory=list)
-    unmatched_visual_notes: set[str] = field(default_factory=set)
+    unmatched_visual_group_ids: set[str] = field(default_factory=set)
     moment_id_by_symbol_id: dict[int, str] = field(default_factory=dict)
     next_musicxml_note_id: int = 1
     next_recovered_visual_id: int = 1

@@ -5,6 +5,7 @@ import sys
 from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -184,13 +185,20 @@ class ProcessingConfig:
     write_visual_sidecar: bool
 
 
+@dataclass(frozen=True)
+class ProcessingResult:
+    musicxml_path: Path
+    visual_sidecar_path: Path | None
+
+
 def process_image(
     image_path: str,
     config: ProcessingConfig,
     xml_generator_args: XmlGeneratorArguments,
-) -> None:
+) -> ProcessingResult:
     eprint("Processing " + image_path)
     xml_file = replace_extension(image_path, ".musicxml")
+    visual_sidecar_file: str | None = None
     debug_cleanup: Debug | None = None
     try:
         if config.read_staff_positions:
@@ -274,6 +282,12 @@ def process_image(
         debug.clean_debug_files_from_previous_runs()
 
         eprint("Result was written to", xml_file)
+        return ProcessingResult(
+            musicxml_path=Path(xml_file).resolve(),
+            visual_sidecar_path=(
+                Path(visual_sidecar_file).resolve() if visual_sidecar_file is not None else None
+            ),
+        )
     except:
         if os.path.exists(xml_file):
             os.remove(xml_file)

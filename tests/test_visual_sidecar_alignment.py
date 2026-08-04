@@ -7,6 +7,7 @@ from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note, Staff, StaffPoint
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder
+from tests.visual_sidecar_helpers import diagnostic_visual_group_ids
 
 
 class TestVisualSidecarBuilderAlignment(unittest.TestCase):
@@ -152,7 +153,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         group = builder.to_json_dict()["visual_groups"][0]
         self.assertEqual(group["visual_status"], "diagnostic")
         self.assertEqual(
-            builder.to_json_dict()["unmatched_visual_notes"],
+            diagnostic_visual_group_ids(builder.to_json_dict()),
             ["repeated-candidate"],
         )
 
@@ -315,7 +316,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
                 50,
             )
 
-    def test_complete_moments_override_repeated_note_attention_across_staves(self) -> None:
+    def test_complete_moments_override_repeated_note_attention_across_staffs(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
             source_image_size=(120, 120),
             autocrop_box=(0, 0, 120, 120),
@@ -344,7 +345,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
             [upper_first, lower_first, upper_second],
             [upper_first.copy(), lower_first.copy(), upper_second.copy()],
         )
-        builder.visual_groups["lower-first"].stave_index = 1
+        builder.visual_groups["lower-first"].staff_index = 1
         first_upper_symbol = EncodedSymbol("note_16", "Gb4", position="upper", coordinates=(60, 35))
         first_lower_symbol = EncodedSymbol("note_2", "Bb3", position="lower", coordinates=(20, 95))
         second_upper_symbol = EncodedSymbol(
@@ -379,7 +380,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         self.assertIsNone(first_upper_group.chord_id)
         self.assertIsNone(first_lower_group.chord_id)
 
-    def test_cross_stave_duplicate_at_ledger_boundary_is_consolidated(self) -> None:
+    def test_cross_staff_duplicate_at_ledger_boundary_is_consolidated(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
             source_image_size=(180, 180),
             autocrop_box=(0, 0, 180, 180),
@@ -456,14 +457,14 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         )
         repaired = builder.visual_groups["boundary-a-upper"]
         rejected = builder.visual_groups["boundary-b-lower"]
-        self.assertEqual(repaired.stave_index, 1)
+        self.assertEqual(repaired.staff_index, 1)
         self.assertEqual(repaired.staff_position, boundary_lower.position)
         self.assertEqual(repaired.visual_status, "canonical")
         self.assertIn("duplicate_candidates_consolidated", repaired.repair_actions)
-        self.assertIn("stave_membership_repaired", repaired.repair_actions)
+        self.assertIn("staff_membership_repaired", repaired.repair_actions)
         self.assertEqual(rejected.visual_status, "diagnostic")
         self.assertIn("suspected_duplicate", rejected.repair_actions)
-        self.assertEqual(builder.unmatched_visual_notes, {"boundary-b-lower"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"boundary-b-lower"})
         self.assertEqual(
             {
                 builder.visual_groups[
@@ -534,9 +535,9 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
             builder.matches_by_symbol_id[third_symbol.visual_match_id].visual_id,
             "third",
         )
-        self.assertEqual(builder.unmatched_visual_notes, {"surplus"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"surplus"})
 
-    def test_attention_anchor_repairs_exact_other_stave_beside_surplus_head(
+    def test_attention_anchor_repairs_exact_other_staff_beside_surplus_head(
         self,
     ) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -577,8 +578,8 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
             original_notes,
             transformed_notes,
         )
-        builder.visual_groups["lower-top"].stave_index = 1
-        builder.visual_groups["lower-bottom"].stave_index = 1
+        builder.visual_groups["lower-top"].staff_index = 1
+        builder.visual_groups["lower-bottom"].staff_index = 1
 
         upper_symbol = EncodedSymbol("note_16", "Eb6", position="upper", coordinates=(20, 30))
         lower_top_symbol = EncodedSymbol("note_8", "Bb4", position="lower")
@@ -611,7 +612,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
             {builder.visual_groups[visual_id].moment_id for visual_id in expected_matches.values()},
             {"moment-1-1"},
         )
-        self.assertEqual(builder.unmatched_visual_notes, {"surplus-upper"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"surplus-upper"})
         self.assertEqual(
             builder.visual_groups["surplus-upper"].visual_status,
             "diagnostic",

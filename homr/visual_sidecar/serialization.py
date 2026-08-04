@@ -7,7 +7,7 @@ import numpy as np
 from homr.bounding_boxes import RotatedBoundingBox
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
-from homr.visual_sidecar.models import SidecarState, VisualGroup
+from homr.visual_sidecar.models import VISUAL_SIDECAR_VERSION, SidecarState, VisualGroup
 
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 
@@ -26,7 +26,6 @@ class VisualSidecarSerializer:
         self.chords = chords
         self.visual_groups = state.visual_groups
         self.musicxml_notes = state.musicxml_notes
-        self.unmatched_visual_notes = state.unmatched_visual_notes
 
     def to_dict(self) -> dict[str, Any]:
         return self.to_json_dict()
@@ -41,8 +40,8 @@ class VisualSidecarSerializer:
             for stem in self.stem_fragments
         ]
 
-    def _typical_notehead_angles_by_staff(self) -> dict[int, float]:
-        angles_by_staff: dict[int, list[float]] = {}
+    def _typical_notehead_angles_by_staff_group(self) -> dict[int, float]:
+        angles_by_staff_group: dict[int, list[float]] = {}
         for group in self.visual_groups.values():
             for ellipse in group.notehead_ellipses:
                 if ellipse.get("_fit_source") == "fallback":
@@ -51,16 +50,18 @@ class VisualSidecarSerializer:
                     continue
                 if float(ellipse["rx"]) <= float(ellipse["ry"]):
                     continue
-                angles_by_staff.setdefault(group.staff_index, []).append(float(ellipse["angle"]))
+                angles_by_staff_group.setdefault(group.staff_group_index, []).append(
+                    float(ellipse["angle"])
+                )
 
-        all_angles = [angle for angles in angles_by_staff.values() for angle in angles]
+        all_angles = [angle for angles in angles_by_staff_group.values() for angle in angles]
         global_angle = float(np.median(all_angles)) if all_angles else None
         result = {}
-        for staff_index, angles in angles_by_staff.items():
-            result[staff_index] = float(np.median(angles))
+        for staff_group_index, angles in angles_by_staff_group.items():
+            result[staff_group_index] = float(np.median(angles))
         if global_angle is not None:
             for group in self.visual_groups.values():
-                result.setdefault(group.staff_index, global_angle)
+                result.setdefault(group.staff_group_index, global_angle)
         return result
 
     def _notehead_ellipses_for_output(
@@ -85,9 +86,9 @@ class VisualSidecarSerializer:
         return ellipses
 
     def to_json_dict(self) -> dict[str, Any]:
-        typical_angles_by_staff = self._typical_notehead_angles_by_staff()
+        typical_angles_by_staff_group = self._typical_notehead_angles_by_staff_group()
         return {
-            "version": 2,
+            "version": VISUAL_SIDECAR_VERSION,
             "source_image_size": list(self.coordinate_transform.source_image_size),
             "preprocessing": {
                 "autocrop_box": list(self.coordinate_transform.autocrop_box),
@@ -99,13 +100,27 @@ class VisualSidecarSerializer:
                 ],
                 "prediction_size": list(self.coordinate_transform.prediction_size),
             },
-            "notes": [record.__dict__ for record in self.musicxml_notes],
+            "notes": [
+                {
+                    "musicxml_id": record.musicxml_id,
+                    "part": record.part,
+                    "measure": record.measure,
+                    "musicxml_staff_number": record.musicxml_staff_number,
+                    "voice": record.voice,
+                    "pitch": record.pitch,
+                    "duration": record.duration,
+                    "match_confidence": record.match_confidence,
+                    "visual_group_id": record.visual_group_id,
+                    "alignment_method": record.alignment_method,
+                }
+                for record in self.musicxml_notes
+            ],
             "raw_stem_contours": self._raw_stem_contours_for_output(),
             "visual_groups": [
                 {
                     "visual_group_id": group.visual_id,
+                    "staff_group_index": group.staff_group_index,
                     "staff_index": group.staff_index,
-                    "stave_index": group.stave_index,
                     "staff_position": group.staff_position,
                     "center": [
                         round(
@@ -123,7 +138,7 @@ class VisualSidecarSerializer:
                     ],
                     "bbox": group.bbox,
                     "notehead_ellipses": self._notehead_ellipses_for_output(
-                        group, typical_angles_by_staff.get(group.staff_index)
+                        group, typical_angles_by_staff_group.get(group.staff_group_index)
                     ),
                     "notehead_contours": group.notehead_contours,
                     "detected_notehead_contours": group.detected_notehead_contours,
@@ -132,7 +147,7 @@ class VisualSidecarSerializer:
                     "stem_contours": group.stem_contours,
                     "stem_component_ids": self.chords.stem_component_ids_for_output(group),
                     "is_hollow_notehead": group.is_hollow_notehead,
-                    "musicxml_ids": group.linked_musicxml_ids,
+                    "musicxml_id": group.musicxml_id,
                     "visual_status": group.visual_status,
                     "provenance": group.provenance,
                     "moment_id": group.moment_id,
@@ -141,10 +156,6 @@ class VisualSidecarSerializer:
                 }
                 for group in sorted(self.visual_groups.values(), key=lambda g: g.visual_id)
             ],
-            "unmatched_musicxml_notes": [
-                note.musicxml_id for note in self.musicxml_notes if note.visual_group_id is None
-            ],
-            "unmatched_visual_notes": sorted(self.unmatched_visual_notes),
         }
 
 

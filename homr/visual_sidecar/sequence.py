@@ -51,7 +51,7 @@ class SequenceMatcher:
         assigned_symbols = {symbol_index for symbol_index, _ in assignments}
         assigned_groups = {group_index for _, group_index in assignments}
         assigned_groups.update(reserved_group_indices or set())
-        has_multiple_staves = any(group.stave_index == 1 for group in visual_groups)
+        has_multiple_staffs = any(group.staff_index == 1 for group in visual_groups)
         widths = [
             max(
                 (group.transformer_notehead_size or group.prediction_notehead_size)[0],
@@ -71,8 +71,8 @@ class SequenceMatcher:
             for group_index, group in enumerate(visual_groups):
                 if group_index in assigned_groups or group.transformer_center is None:
                     continue
-                expected_stave_index = 1 if symbol.position == "lower" else 0
-                if has_multiple_staves and group.stave_index != expected_stave_index:
+                expected_staff_index = 1 if symbol.position == "lower" else 0
+                if has_multiple_staffs and group.staff_index != expected_staff_index:
                     continue
                 if not bool(np.all(np.isfinite(group.transformer_center))):
                     continue
@@ -125,14 +125,14 @@ class SequenceMatcher:
         for _, symbol_index, group_index in candidates:
             if symbol_index in assigned_symbols or group_index in assigned_groups:
                 continue
-            expected_stave_index = 1 if note_symbols[symbol_index].position == "lower" else 0
+            expected_staff_index = 1 if note_symbols[symbol_index].position == "lower" else 0
             group_x = visual_groups[group_index].prediction_center[0]
             crosses = False
             for assigned_symbol_index, assigned_group_index in assignments:
-                assigned_stave_index = (
+                assigned_staff_index = (
                     1 if note_symbols[assigned_symbol_index].position == "lower" else 0
                 )
-                if assigned_stave_index != expected_stave_index:
+                if assigned_staff_index != expected_staff_index:
                     continue
                 assigned_x = visual_groups[assigned_group_index].prediction_center[0]
                 if (symbol_index - assigned_symbol_index) * (group_x - assigned_x) < 0:
@@ -164,10 +164,10 @@ class SequenceMatcher:
         if len(remaining_symbols) == 1 and len(remaining_groups) == 1:
             symbol_index = remaining_symbols[0]
             group_index = remaining_groups[0]
-            expected_stave_index = 1 if note_symbols[symbol_index].position == "lower" else 0
+            expected_staff_index = 1 if note_symbols[symbol_index].position == "lower" else 0
             if (
-                not has_multiple_staves
-                or visual_groups[group_index].stave_index == expected_stave_index
+                not has_multiple_staffs
+                or visual_groups[group_index].staff_index == expected_staff_index
             ):
                 assignments.append((symbol_index, group_index))
         return sorted(assignments)
@@ -201,18 +201,18 @@ class SequenceMatcher:
                     and symbol.visual_match_id in symbol_index_by_match_id
                 )
             ]
-            symbols_by_stave: dict[str, list[int]] = {}
+            symbols_by_staff: dict[str, list[int]] = {}
             for symbol_index in chord_symbol_indices:
                 position = note_symbols[symbol_index].position
-                symbols_by_stave.setdefault(position, []).append(symbol_index)
+                symbols_by_staff.setdefault(position, []).append(symbol_index)
 
-            for stave_symbol_indices in symbols_by_stave.values():
-                if len(stave_symbol_indices) < 2 or any(
-                    index not in group_by_symbol_index for index in stave_symbol_indices
+            for staff_symbol_indices in symbols_by_staff.values():
+                if len(staff_symbol_indices) < 2 or any(
+                    index not in group_by_symbol_index for index in staff_symbol_indices
                 ):
                     continue
                 current_group_indices = [
-                    group_by_symbol_index[index] for index in stave_symbol_indices
+                    group_by_symbol_index[index] for index in staff_symbol_indices
                 ]
                 component_candidates: list[list[int]] = []
                 for current_group_index in current_group_indices:
@@ -222,11 +222,11 @@ class SequenceMatcher:
                             group_index
                             for group_index, group in enumerate(visual_groups)
                             if (
-                                group.stave_index == current_group.stave_index
+                                group.staff_index == current_group.staff_index
                                 and component_id in group.owned_stem_component_ids
                             )
                         ]
-                        if len(candidates) == len(stave_symbol_indices):
+                        if len(candidates) == len(staff_symbol_indices):
                             component_candidates.append(candidates)
                 if not component_candidates:
                     continue
@@ -240,7 +240,7 @@ class SequenceMatcher:
                     return pitch_index if pitch_index is not None else -1
 
                 symbol_order = sorted(
-                    stave_symbol_indices,
+                    staff_symbol_indices,
                     key=pitch_height,
                     reverse=True,
                 )
@@ -299,7 +299,7 @@ class SequenceMatcher:
         visual_groups: list[VisualGroup],
         assignments: list[tuple[int, int]],
     ) -> list[tuple[int, int]]:
-        """Undo crossed attention matches between adjacent same-stave notes.
+        """Undo crossed attention matches between adjacent same-staff notes.
 
         Attention occasionally exchanges two neighboring notes in a scalar run.
         Musical order then points right-to-left while the assigned staff positions
@@ -352,7 +352,7 @@ class SequenceMatcher:
                     second_group_index = group_by_symbol_index[second_symbol_index]
                     first_group = visual_groups[first_group_index]
                     second_group = visual_groups[second_group_index]
-                    if first_group.stave_index != second_group.stave_index:
+                    if first_group.staff_index != second_group.staff_index:
                         continue
                     if (
                         first_group.prediction_center[0]

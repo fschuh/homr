@@ -31,12 +31,20 @@ class RecoveryManager:
         self.state.recovery_notes_by_staff_id = value
 
     @property
-    def _stave_index_by_visual_id(self) -> dict[str, int]:
-        return self.state.stave_index_by_visual_id
+    def _staff_index_by_visual_id(self) -> dict[str, int]:
+        return self.state.staff_index_by_visual_id
 
-    @_stave_index_by_visual_id.setter
-    def _stave_index_by_visual_id(self, value: dict[str, int]) -> None:
-        self.state.stave_index_by_visual_id = value
+    @_staff_index_by_visual_id.setter
+    def _staff_index_by_visual_id(self, value: dict[str, int]) -> None:
+        self.state.staff_index_by_visual_id = value
+
+    @property
+    def _staff_position_by_visual_id(self) -> dict[str, int]:
+        return self.state.staff_position_by_visual_id
+
+    @_staff_position_by_visual_id.setter
+    def _staff_position_by_visual_id(self, value: dict[str, int]) -> None:
+        self.state.staff_position_by_visual_id = value
 
     @property
     def _stem_ownership_cache(self) -> StemOwnershipCache | None:
@@ -67,12 +75,17 @@ class RecoveryManager:
         ``staff.symbols`` and therefore cannot affect TrOMR inference or MusicXML output.
         """
         self._recovery_notes_by_staff_id = {id(staff): [] for staff in staffs}
-        self._stave_index_by_visual_id = {
-            note.visual_id: self._stave_index_for_note(staff, note)
-            for staff in staffs
-            for note in staff.get_notes()
-            if note.visual_id is not None
-        }
+        self._staff_index_by_visual_id = {}
+        self._staff_position_by_visual_id = {}
+        for staff in staffs:
+            for note in staff.get_notes():
+                if note.visual_id is None:
+                    continue
+                staff_index = self._staff_index_for_note(staff, note)
+                self._staff_index_by_visual_id[note.visual_id] = staff_index
+                self._staff_position_by_visual_id[note.visual_id] = self._staff_position_for_center(
+                    staff, note.center, staff_index
+                )
         existing_notes = [note for staff in staffs for note in staff.get_notes()]
         for candidate in self.notehead_candidates:
             notehead = candidate.notehead
@@ -125,18 +138,14 @@ class RecoveryManager:
                     or split_notehead.size[1] > 2 * unit_size
                 ):
                     continue
-                if point is not None:
-                    position = point.find_position_in_unit_sizes(split_notehead)
-                else:
-                    nearest_point = min(
-                        staff.grid, key=lambda item: abs(item.x - split_notehead.center[0])
-                    )
-                    position = nearest_point.find_position_in_unit_sizes(split_notehead)
                 visual_id = f"vnote-recovered-{self._next_recovered_visual_id}"
                 self._next_recovered_visual_id += 1
-                self._stave_index_by_visual_id[visual_id] = self._stave_index_for_center(
-                    staff, split_notehead.center
+                staff_index = self._staff_index_for_center(staff, split_notehead.center)
+                position = self._staff_position_for_center(
+                    staff, split_notehead.center, staff_index
                 )
+                self._staff_index_by_visual_id[visual_id] = staff_index
+                self._staff_position_by_visual_id[visual_id] = position
                 self._recovery_notes_by_staff_id[id(staff)].append(
                     Note(
                         split_notehead,
@@ -156,14 +165,14 @@ class RecoveryManager:
         return self._recovery_notes_by_staff_id.get(id(staff), [])
 
     @staticmethod
-    def _stave_index_for_center(staff: Staff, center: tuple[float, float]) -> int:
+    def _staff_index_for_center(staff: Staff, center: tuple[float, float]) -> int:
         point = staff.get_at(center[0])
         if point is None:
             point = min(staff.grid, key=lambda candidate: abs(candidate.x - center[0]))
-        lines_per_stave = constants.number_of_lines_on_a_staff
+        lines_per_staff = constants.number_of_lines_on_a_staff
         line_groups = [
-            point.y[index : index + lines_per_stave]
-            for index in range(0, len(point.y), lines_per_stave)
+            point.y[index : index + lines_per_staff]
+            for index in range(0, len(point.y), lines_per_staff)
         ]
         return min(
             range(len(line_groups)),
@@ -171,27 +180,27 @@ class RecoveryManager:
         )
 
     @classmethod
-    def _stave_index_for_note(cls, staff: Staff, note: Note) -> int:
-        """Recover the stave that originally supplied a grand-staff note.
+    def _staff_index_for_note(cls, staff: Staff, note: Note) -> int:
+        """Recover the physical staff that originally supplied a grand-staff note.
 
         Ledger zones between two staves overlap, so the same segmentation candidate
         can be admitted by both source staves. Its ``position`` was calculated on
-        the source stave before the staves were merged and therefore preserves
-        ownership even when the notehead center is closer to the other stave.
+        the source staff before the staffs were merged and therefore preserves
+        ownership even when the notehead center is closer to the other staff.
         """
         point = staff.get_at(note.center[0])
         if point is None:
             point = min(staff.grid, key=lambda candidate: abs(candidate.x - note.center[0]))
-        lines_per_stave = constants.number_of_lines_on_a_staff
+        lines_per_staff = constants.number_of_lines_on_a_staff
         line_groups = [
-            point.y[index : index + lines_per_stave]
-            for index in range(0, len(point.y), lines_per_stave)
+            point.y[index : index + lines_per_staff]
+            for index in range(0, len(point.y), lines_per_staff)
         ]
         if len(line_groups) <= 1:
             return 0
 
-        def position_error(stave_index: int) -> tuple[int, float]:
-            lines = line_groups[stave_index]
+        def position_error(staff_index: int) -> tuple[int, float]:
+            lines = line_groups[staff_index]
             closest_line_index = int(np.argmin(np.abs(np.subtract(lines, note.center[1]))))
             unit_size = float(np.mean(np.diff(lines)))
             if unit_size <= 0:
@@ -204,3 +213,23 @@ class RecoveryManager:
             return (abs(expected_position - note.position), geometric_distance)
 
         return min(range(len(line_groups)), key=position_error)
+
+    @staticmethod
+    def _staff_position_for_center(
+        staff: Staff, center: tuple[float, float], staff_index: int
+    ) -> int:
+        """Return a line/space position local to one physical five-line staff."""
+        point = staff.get_at(center[0])
+        if point is None:
+            point = min(staff.grid, key=lambda candidate: abs(candidate.x - center[0]))
+        lines_per_staff = constants.number_of_lines_on_a_staff
+        start = staff_index * lines_per_staff
+        lines = point.y[start : start + lines_per_staff]
+        if len(lines) != lines_per_staff:
+            raise ValueError(f"Physical staff {staff_index} has {len(lines)} lines")
+        closest_line_index = int(np.argmin(np.abs(np.subtract(lines, center[1]))))
+        unit_size = float(np.mean(np.diff(lines)))
+        if unit_size <= 0:
+            raise ValueError("Staff lines must be ordered from top to bottom")
+        distance = lines[closest_line_index] - center[1]
+        return 2 * (len(lines) - closest_line_index) + round(2 * distance / unit_size) - 1

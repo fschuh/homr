@@ -46,7 +46,7 @@ class VisualSidecarBuilder:
         self.visual_groups = self.state.visual_groups
         self.matches_by_symbol_id = self.state.matches_by_symbol_id
         self.musicxml_notes = self.state.musicxml_notes
-        self.unmatched_visual_notes = self.state.unmatched_visual_notes
+        self.unmatched_visual_group_ids = self.state.unmatched_visual_group_ids
 
         self.stems = StemGeometry(self.stem_fragments)
         self.noteheads = NoteheadGeometry(coordinate_transform, notehead_mask, source_image)
@@ -80,7 +80,7 @@ class VisualSidecarBuilder:
         return self.recovery.for_staff(staff)
 
     def add_staff_visual_notes(
-        self, staff_index: int, original_notes: list[Note], transformed_notes: list[Note]
+        self, staff_group_index: int, original_notes: list[Note], transformed_notes: list[Note]
     ) -> None:
         stem_ownership = self.state.stem_ownership_cache or self.stems.build_ownership_cache(
             original_notes
@@ -132,15 +132,17 @@ class VisualSidecarBuilder:
                 else "segmentation"
             )
             owned_stem_component_ids = sorted(
-                f"staff-{staff_index}-stem-{component}"
+                f"staff-{staff_group_index}-stem-{component}"
                 for component, owner_note_ids in stem_ownership.owner_note_ids_by_component.items()
                 if id(original) in owner_note_ids and len(owner_note_ids) > 1
             )
             self.visual_groups[original.visual_id] = VisualGroup(
                 visual_id=original.visual_id,
-                staff_index=staff_index,
-                stave_index=self.state.stave_index_by_visual_id.get(original.visual_id, 0),
-                staff_position=original.position,
+                staff_group_index=staff_group_index,
+                staff_index=self.state.staff_index_by_visual_id.get(original.visual_id, 0),
+                staff_position=self.state.staff_position_by_visual_id.get(
+                    original.visual_id, original.position
+                ),
                 prediction_center=original.center,
                 prediction_notehead_size=(
                     float(original.box.size[0]),
@@ -165,12 +167,12 @@ class VisualSidecarBuilder:
                 provenance=provenance,
                 repair_actions=repair_actions,
             )
-            self.unmatched_visual_notes.add(original.visual_id)
+            self.unmatched_visual_group_ids.add(original.visual_id)
 
     def add_staff_matches(
         self,
         symbols: list[EncodedSymbol],
-        staff_index: int,
+        staff_group_index: int,
         source_staff: Staff | None = None,
     ) -> None:
         """Repair, organize, and align one staff without changing recognition.
@@ -181,13 +183,13 @@ class VisualSidecarBuilder:
         """
         # Match the same cleaned symbol identities that MusicXML generation retains.
         symbols = remove_duplicated_symbols(symbols, cleanup_tuplets=False)
-        self.candidate_cleaner.repair(symbols, staff_index)
+        self.candidate_cleaner.repair(symbols, staff_group_index)
         # Stage 3 constructs physical chord units and normalized visual moments;
         # stage 4 performs the order-preserving global sequence alignment.
         visual_groups = [
             group
             for group in self.visual_groups.values()
-            if group.staff_index == staff_index and group.visual_status != "diagnostic"
+            if group.staff_group_index == staff_group_index and group.visual_status != "diagnostic"
         ]
         note_symbols = [
             symbol
@@ -248,7 +250,7 @@ class VisualSidecarBuilder:
                 confidence=confidence,
                 alignment_method=alignment_method,
             )
-            self.unmatched_visual_notes.discard(visual_group.visual_id)
+            self.unmatched_visual_group_ids.discard(visual_group.visual_id)
 
         token_moment_by_symbol_id = {
             symbol.visual_match_id: moment
@@ -278,7 +280,7 @@ class VisualSidecarBuilder:
                 ]
                 recovered_group = self.chords.recover_transformer_notehead(
                     symbol,
-                    staff_index,
+                    staff_group_index,
                     source_staff=source_staff,
                     neighboring_groups=visual_groups,
                     chord_mates=chord_mates,
@@ -304,7 +306,7 @@ class VisualSidecarBuilder:
                         recovered_group.repair_actions.append(
                             "transformer_chord_candidate_recovered"
                         )
-                    self.unmatched_visual_notes.discard(recovered_group.visual_id)
+                    self.unmatched_visual_group_ids.discard(recovered_group.visual_id)
                 self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                     symbol=symbol,
                     visual_id=recovered_group.visual_id,
@@ -329,14 +331,14 @@ class VisualSidecarBuilder:
                 alignment_method="none",
             )
 
-        self.candidate_cleaner.merge_split_whole_note_fragments(staff_index)
-        self.chords.assign_physical_chord_ids(symbols, staff_index)
-        self._finalize_unmatched_groups(staff_index)
+        self.candidate_cleaner.merge_split_whole_note_fragments(staff_group_index)
+        self.chords.assign_physical_chord_ids(symbols, staff_group_index)
+        self._finalize_unmatched_groups(staff_group_index)
 
-    def _finalize_unmatched_groups(self, staff_index: int) -> None:
-        for visual_id in sorted(self.unmatched_visual_notes):
+    def _finalize_unmatched_groups(self, staff_group_index: int) -> None:
+        for visual_id in sorted(self.unmatched_visual_group_ids):
             group = self.visual_groups.get(visual_id)
-            if group is None or group.staff_index != staff_index:
+            if group is None or group.staff_group_index != staff_group_index:
                 continue
             group.visual_status = "diagnostic"
             if not any(
@@ -358,7 +360,7 @@ class VisualSidecarBuilder:
         *,
         part: int,
         measure: int,
-        staff: int,
+        musicxml_staff_number: int,
         voice: int,
     ) -> None:
         match = self.matches_by_symbol_id.get(symbol.visual_match_id)
@@ -367,13 +369,24 @@ class VisualSidecarBuilder:
         alignment_method = match.alignment_method if match is not None else "none"
         pitch = sounding_pitch(symbol)
         if visual_id is not None and visual_id in self.visual_groups:
-            self.visual_groups[visual_id].linked_musicxml_ids.append(musicxml_id)
+            visual_group = self.visual_groups[visual_id]
+            if visual_group.musicxml_id is not None:
+                raise ValueError(
+                    f"Visual group {visual_id} is already linked to {visual_group.musicxml_id}"
+                )
+            expected_staff_index = musicxml_staff_number - 1
+            if visual_group.staff_index != expected_staff_index:
+                raise ValueError(
+                    f"Visual group {visual_id} belongs to physical staff "
+                    f"{visual_group.staff_index}, expected {expected_staff_index}"
+                )
+            visual_group.musicxml_id = musicxml_id
         self.musicxml_notes.append(
             MusicXmlNoteRecord(
                 musicxml_id=musicxml_id,
                 part=part,
                 measure=measure,
-                staff=staff,
+                musicxml_staff_number=musicxml_staff_number,
                 voice=voice,
                 pitch=pitch,
                 duration=symbol.rhythm,
@@ -382,9 +395,6 @@ class VisualSidecarBuilder:
                 alignment_method=alignment_method,
             )
         )
-
-    def unmatched_musicxml_notes(self) -> list[str]:
-        return [note.musicxml_id for note in self.musicxml_notes if note.visual_group_id is None]
 
     def to_json_dict(self) -> dict[str, Any]:
         return self.serializer.to_dict()

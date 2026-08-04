@@ -22,6 +22,14 @@ class PredictionCoordinateTransform:
         y = point[1] * resized_h / pred_h
         return (x / self.resize_scale[0] + crop_x, y / self.resize_scale[1] + crop_y)
 
+    def source_point_to_prediction(self, point: tuple[float, float]) -> tuple[float, float]:
+        pred_w, pred_h = self.prediction_size
+        resized_w, resized_h = self.resized_size
+        crop_x, crop_y, _crop_w, _crop_h = self.autocrop_box
+        x = (point[0] - crop_x) * self.resize_scale[0]
+        y = (point[1] - crop_y) * self.resize_scale[1]
+        return (x * pred_w / resized_w, y * pred_h / resized_h)
+
     def prediction_contour_to_source(self, contour: Any) -> list[list[float]]:
         points = np.asarray(contour).reshape(-1, 2)
         return [

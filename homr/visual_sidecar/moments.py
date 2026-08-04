@@ -50,7 +50,7 @@ class MomentMatcher:
 
         Token chords preserve left-to-right musical moments, while visual x clusters
         preserve their page order. A weighted sequence alignment locks every complete
-        per-stave moment it can prove, while skipping isolated missing or surplus
+        per-staff moment it can prove, while skipping isolated missing or surplus
         moments. This is more reliable than individual transformer attention for
         repeated pitches and prevents one detection defect from shifting the rest of
         a system.
@@ -76,7 +76,7 @@ class MomentMatcher:
         reserved_group_indices: set[int] = set()
         fallback_assignments: set[tuple[int, int]] = set()
         for moment_index, symbol_moment in enumerate(symbol_moments):
-            moment_id = f"moment-{visual_groups[0].staff_index + 1}-{moment_index + 1}"
+            moment_id = f"moment-{visual_groups[0].staff_group_index + 1}-{moment_index + 1}"
             for symbol in symbol_moment:
                 self._moment_id_by_symbol_id[symbol.visual_match_id] = moment_id
         for symbol_moment_index, visual_moment_index in self._align_structural_moments(
@@ -84,27 +84,27 @@ class MomentMatcher:
         ):
             symbol_moment = symbol_moments[symbol_moment_index]
             visual_moment = visual_moments[visual_moment_index]
-            self._repair_aligned_visual_moment_staves(symbol_moment, visual_moment, visual_groups)
+            self._repair_aligned_visual_moment_staffs(symbol_moment, visual_moment, visual_groups)
             compatibility = self._compatible_visual_moment(
                 symbol_moment, visual_moment, visual_groups
             )
             if compatibility is None:
                 continue
-            self._apply_visual_moment_staves(compatibility.stave_by_group_index, visual_groups)
-            moment_id = f"moment-{visual_groups[0].staff_index + 1}-{symbol_moment_index + 1}"
-            symbols_by_stave: dict[int, list[EncodedSymbol]] = {}
+            self._apply_visual_moment_staffs(compatibility.staff_by_group_index, visual_groups)
+            moment_id = f"moment-{visual_groups[0].staff_group_index + 1}-{symbol_moment_index + 1}"
+            symbols_by_staff: dict[int, list[EncodedSymbol]] = {}
             for symbol in symbol_moment:
                 position = symbol.position
-                stave_index = 1 if position == "lower" else 0
-                symbols_by_stave.setdefault(stave_index, []).append(symbol)
-            groups_by_stave: dict[int, list[int]] = {}
-            for group_index, stave_index in compatibility.stave_by_group_index.items():
-                groups_by_stave.setdefault(stave_index, []).append(group_index)
-            for stave_index, stave_symbols in symbols_by_stave.items():
-                stave_group_indices = groups_by_stave.get(stave_index, [])
+                staff_index = 1 if position == "lower" else 0
+                symbols_by_staff.setdefault(staff_index, []).append(symbol)
+            groups_by_staff: dict[int, list[int]] = {}
+            for group_index, staff_index in compatibility.staff_by_group_index.items():
+                groups_by_staff.setdefault(staff_index, []).append(group_index)
+            for staff_index, staff_symbols in symbols_by_staff.items():
+                staff_group_indices = groups_by_staff.get(staff_index, [])
                 partial_symbols = {
                     group_index: compatibility.symbol_by_group_index[group_index]
-                    for group_index in stave_group_indices
+                    for group_index in staff_group_indices
                     if group_index in compatibility.symbol_by_group_index
                 }
                 if partial_symbols:
@@ -120,21 +120,21 @@ class MomentMatcher:
                         assignments.append(assignment)
                         fallback_assignments.add(assignment)
                     continue
-                if len(stave_group_indices) != len(stave_symbols):
+                if len(staff_group_indices) != len(staff_symbols):
                     continue
                 placeholder_symbols = [
                     symbol
-                    for symbol in stave_symbols
+                    for symbol in staff_symbols
                     if symbol.visual_match_id not in symbol_index_by_match_id
                 ]
                 group_order = sorted(
-                    stave_group_indices,
+                    staff_group_indices,
                     key=lambda index: visual_groups[index].prediction_center[1],
                 )
                 # Transformer chord token order is the stable member order. Pitch
                 # values are recognition output, not visual evidence, so they must
                 # never be allowed to exchange two noteheads.
-                for symbol, group_index in zip(stave_symbols, group_order, strict=True):
+                for symbol, group_index in zip(staff_symbols, group_order, strict=True):
                     visual_groups[group_index].moment_id = moment_id
                     if symbol in placeholder_symbols:
                         reserved_group_indices.add(group_index)
@@ -155,34 +155,34 @@ class MomentMatcher:
             fallback_assignments,
         )
 
-    def _repair_aligned_visual_moment_staves(
+    def _repair_aligned_visual_moment_staffs(
         self,
         symbol_moment: list[EncodedSymbol],
         visual_moment: list[int],
         visual_groups: list[VisualGroup],
     ) -> None:
-        repaired_staves = self._repairable_visual_moment_staves(
+        repaired_staffs = self._repairable_visual_moment_staffs(
             symbol_moment, visual_moment, visual_groups
         )
-        if repaired_staves is None:
+        if repaired_staffs is None:
             return
-        self._apply_visual_moment_staves(repaired_staves, visual_groups)
+        self._apply_visual_moment_staffs(repaired_staffs, visual_groups)
 
-    def _apply_visual_moment_staves(
+    def _apply_visual_moment_staffs(
         self,
-        repaired_staves: dict[int, int],
+        repaired_staffs: dict[int, int],
         visual_groups: list[VisualGroup],
     ) -> None:
-        for group_index, stave_index in repaired_staves.items():
+        for group_index, staff_index in repaired_staffs.items():
             group = visual_groups[group_index]
-            if group.stave_index == stave_index:
+            if group.staff_index == staff_index:
                 continue
-            group.stave_index = stave_index
+            group.staff_index = staff_index
             staff_positions = self._duplicate_staff_positions_by_visual_id.get(group.visual_id, {})
-            if stave_index in staff_positions:
-                group.staff_position = staff_positions[stave_index]
-            if "stave_membership_repaired" not in group.repair_actions:
-                group.repair_actions.append("stave_membership_repaired")
+            if staff_index in staff_positions:
+                group.staff_position = staff_positions[staff_index]
+            if "staff_membership_repaired" not in group.repair_actions:
+                group.repair_actions.append("staff_membership_repaired")
 
     @classmethod
     def _construct_visual_moments(cls, visual_groups: list[VisualGroup]) -> list[list[int]]:
@@ -210,7 +210,7 @@ class MomentMatcher:
                 current_group = visual_groups[current]
                 for candidate in list(remaining):
                     candidate_group = visual_groups[candidate]
-                    if current_group.stave_index != candidate_group.stave_index:
+                    if current_group.staff_index != candidate_group.staff_index:
                         continue
                     shared_components = set(current_group.owned_stem_component_ids).intersection(
                         candidate_group.owned_stem_component_ids
@@ -268,27 +268,27 @@ class MomentMatcher:
         second_moment: list[int],
         visual_groups: list[VisualGroup],
     ) -> bool:
-        for stave_index in (0, 1):
-            first_stave = [
-                index for index in first_moment if visual_groups[index].stave_index == stave_index
+        for staff_index in (0, 1):
+            first_staff = [
+                index for index in first_moment if visual_groups[index].staff_index == staff_index
             ]
-            second_stave = [
-                index for index in second_moment if visual_groups[index].stave_index == stave_index
+            second_staff = [
+                index for index in second_moment if visual_groups[index].staff_index == staff_index
             ]
-            if len(first_stave) == 1 and len(second_stave) > 1:
-                singleton_index = first_stave[0]
-                chord_indices = second_stave
-            elif len(second_stave) == 1 and len(first_stave) > 1:
-                singleton_index = second_stave[0]
-                chord_indices = first_stave
+            if len(first_staff) == 1 and len(second_staff) > 1:
+                singleton_index = first_staff[0]
+                chord_indices = second_staff
+            elif len(second_staff) == 1 and len(first_staff) > 1:
+                singleton_index = second_staff[0]
+                chord_indices = first_staff
             else:
                 continue
 
-            other_stave_index = 1 - stave_index
+            other_staff_index = 1 - staff_index
             if any(
-                visual_groups[index].stave_index == other_stave_index for index in first_moment
+                visual_groups[index].staff_index == other_staff_index for index in first_moment
             ) and any(
-                visual_groups[index].stave_index == other_stave_index for index in second_moment
+                visual_groups[index].staff_index == other_staff_index for index in second_moment
             ):
                 continue
 
@@ -333,8 +333,8 @@ class MomentMatcher:
 
         def visual_shape(moment: list[int]) -> tuple[int, int]:
             return (
-                sum(visual_groups[index].stave_index == 0 for index in moment),
-                sum(visual_groups[index].stave_index == 1 for index in moment),
+                sum(visual_groups[index].staff_index == 0 for index in moment),
+                sum(visual_groups[index].staff_index == 1 for index in moment),
             )
 
         visual_shapes = [visual_shape(moment) for moment in visual_moments]
@@ -367,7 +367,7 @@ class MomentMatcher:
         typical_width = float(np.median(widths)) if widths else 10.0
         # A staff line can split every head of a hollow chord into matching left
         # and right fragment columns. Neither column is a complete musical moment,
-        # even though each has the expected per-stave count. Leave this distinctive
+        # even though each has the expected per-staff count. Leave this distinctive
         # close duplicate pattern to attention matching and fragment rejoining.
         split_hollow_fragment_moments = {
             visual_index
@@ -397,29 +397,29 @@ class MomentMatcher:
             compatibility: StructuralMomentCompatibility,
         ) -> float:
             distances: list[float] = []
-            for stave_index in (0, 1):
-                stave_symbols = [
+            for staff_index in (0, 1):
+                staff_symbols = [
                     symbol
                     for symbol in symbol_moment
-                    if (1 if symbol.position == "lower" else 0) == stave_index
+                    if (1 if symbol.position == "lower" else 0) == staff_index
                 ]
-                stave_groups = sorted(
+                staff_groups = sorted(
                     [
                         index
-                        for index, assigned_stave in compatibility.stave_by_group_index.items()
-                        if assigned_stave == stave_index
+                        for index, assigned_staff in compatibility.staff_by_group_index.items()
+                        if assigned_staff == staff_index
                     ],
                     key=lambda index: visual_groups[index].prediction_center[1],
                 )
                 partial_pairs = [
                     (compatibility.symbol_by_group_index[group_index], group_index)
-                    for group_index in stave_groups
+                    for group_index in staff_groups
                     if group_index in compatibility.symbol_by_group_index
                 ]
                 symbol_group_pairs = (
                     partial_pairs
                     if partial_pairs
-                    else list(zip(stave_symbols, stave_groups, strict=True))
+                    else list(zip(staff_symbols, staff_groups, strict=True))
                 )
                 for symbol, group_index in symbol_group_pairs:
                     group = visual_groups[group_index]
@@ -504,45 +504,45 @@ class MomentMatcher:
     ) -> StructuralMomentCompatibility | None:
         """Select a structurally safe visual subset for one musical moment.
 
-        An otherwise complete cross-stave moment can contain surplus candidates or
-        be missing a chord head on one stave. Retain a subset only when attention,
+        An otherwise complete cross-staff moment can contain surplus candidates or
+        be missing a chord head on one staff. Retain a subset only when attention,
         physical stems, or diatonic staff-position intervals uniquely prove it.
         The resulting links remain fallback evidence because the whole moment was
         not independently complete.
         """
-        repaired_staves = self._repairable_visual_moment_staves(
+        repaired_staffs = self._repairable_visual_moment_staffs(
             symbol_moment, visual_moment, visual_groups
         )
-        if repaired_staves is not None:
-            return StructuralMomentCompatibility(repaired_staves)
+        if repaired_staffs is not None:
+            return StructuralMomentCompatibility(repaired_staffs)
 
-        stave_options: list[list[tuple[int, int]]] = []
+        staff_options: list[list[tuple[int, int]]] = []
         for group_index in visual_moment:
             group = visual_groups[group_index]
             positions = {
-                group.stave_index: group.staff_position,
+                group.staff_index: group.staff_position,
                 **self._duplicate_staff_positions_by_visual_id.get(group.visual_id, {}),
             }
-            stave_options.append(sorted(positions.items()))
+            staff_options.append(sorted(positions.items()))
         compatibilities: list[StructuralMomentCompatibility] = []
-        for stave_choices in itertools.product(*stave_options):
-            stave_by_group_index = {
-                group_index: stave_index
-                for group_index, (stave_index, _staff_position) in zip(
-                    visual_moment, stave_choices, strict=True
+        for staff_choices in itertools.product(*staff_options):
+            staff_by_group_index = {
+                group_index: staff_index
+                for group_index, (staff_index, _staff_position) in zip(
+                    visual_moment, staff_choices, strict=True
                 )
             }
             staff_position_by_group_index = {
                 group_index: staff_position
-                for group_index, (_stave_index, staff_position) in zip(
-                    visual_moment, stave_choices, strict=True
+                for group_index, (_staff_index, staff_position) in zip(
+                    visual_moment, staff_choices, strict=True
                 )
             }
-            compatibility = self._compatible_visual_moment_for_staves(
+            compatibility = self._compatible_visual_moment_for_staffs(
                 symbol_moment,
                 visual_moment,
                 visual_groups,
-                stave_by_group_index,
+                staff_by_group_index,
                 staff_position_by_group_index,
             )
             if compatibility is not None:
@@ -552,66 +552,66 @@ class MomentMatcher:
         return compatibilities[0]
 
     @classmethod
-    def _compatible_visual_moment_for_staves(
+    def _compatible_visual_moment_for_staffs(
         cls,
         symbol_moment: list[EncodedSymbol],
         visual_moment: list[int],
         visual_groups: list[VisualGroup],
-        stave_by_group_index: dict[int, int],
+        staff_by_group_index: dict[int, int],
         staff_position_by_group_index: dict[int, int],
     ) -> StructuralMomentCompatibility | None:
-        selected_staves: dict[int, int] = {}
+        selected_staffs: dict[int, int] = {}
         symbol_by_group_index: dict[int, EncodedSymbol] = {}
         pruned_any = False
-        for stave_index in (0, 1):
-            stave_symbols = [
+        for staff_index in (0, 1):
+            staff_symbols = [
                 symbol
                 for symbol in symbol_moment
-                if (1 if symbol.position == "lower" else 0) == stave_index
+                if (1 if symbol.position == "lower" else 0) == staff_index
             ]
-            stave_group_indices = [
+            staff_group_indices = [
                 group_index
                 for group_index in visual_moment
-                if stave_by_group_index[group_index] == stave_index
+                if staff_by_group_index[group_index] == staff_index
             ]
-            if len(stave_group_indices) < len(stave_symbols):
-                partial_mapping = cls._partial_stave_symbol_group_mapping(
-                    stave_symbols,
-                    stave_group_indices,
+            if len(staff_group_indices) < len(staff_symbols):
+                partial_mapping = cls._partial_staff_symbol_group_mapping(
+                    staff_symbols,
+                    staff_group_indices,
                     visual_groups,
                     staff_position_by_group_index,
                 )
                 if partial_mapping is None:
                     return None
-                selected_staves.update(dict.fromkeys(partial_mapping, stave_index))
+                selected_staffs.update(dict.fromkeys(partial_mapping, staff_index))
                 symbol_by_group_index.update(partial_mapping)
                 pruned_any = True
                 continue
-            if len(stave_group_indices) == len(stave_symbols):
-                selected_staves.update(dict.fromkeys(stave_group_indices, stave_index))
+            if len(staff_group_indices) == len(staff_symbols):
+                selected_staffs.update(dict.fromkeys(staff_group_indices, staff_index))
                 continue
-            if not stave_symbols:
+            if not staff_symbols:
                 return None
             selected_group_indices = cls._attention_selected_group_subset(
-                stave_symbols, stave_group_indices, visual_groups
+                staff_symbols, staff_group_indices, visual_groups
             )
             if selected_group_indices is None:
                 selected_group_indices = cls._shared_stem_ordered_group_subset(
-                    stave_symbols, stave_group_indices, visual_groups
+                    staff_symbols, staff_group_indices, visual_groups
                 )
             if selected_group_indices is None:
                 return None
-            selected_staves.update(dict.fromkeys(selected_group_indices, stave_index))
+            selected_staffs.update(dict.fromkeys(selected_group_indices, staff_index))
             pruned_any = True
 
         return StructuralMomentCompatibility(
-            selected_staves,
+            selected_staffs,
             pruned_any,
             symbol_by_group_index,
         )
 
     @classmethod
-    def _partial_stave_symbol_group_mapping(
+    def _partial_staff_symbol_group_mapping(
         cls,
         symbols: list[EncodedSymbol],
         group_indices: list[int],
@@ -777,22 +777,22 @@ class MomentMatcher:
         return list(exact_count_subsets[0])
 
     @staticmethod
-    def _repairable_visual_moment_staves(
+    def _repairable_visual_moment_staffs(
         symbol_moment: list[EncodedSymbol],
         visual_moment: list[int],
         visual_groups: list[VisualGroup],
     ) -> dict[int, int] | None:
-        """Return a safe stave assignment for an exact-duplicate boundary head."""
+        """Return a safe staff assignment for an exact-duplicate boundary head."""
         upper_count = sum(symbol.position != "lower" for symbol in symbol_moment)
         lower_count = len(symbol_moment) - upper_count
         if len(visual_moment) != upper_count + lower_count:
             return None
         current = {
-            group_index: visual_groups[group_index].stave_index for group_index in visual_moment
+            group_index: visual_groups[group_index].staff_index for group_index in visual_moment
         }
         if (
-            sum(stave_index == 0 for stave_index in current.values()) == upper_count
-            and sum(stave_index == 1 for stave_index in current.values()) == lower_count
+            sum(staff_index == 0 for staff_index in current.values()) == upper_count
+            and sum(staff_index == 1 for staff_index in current.values()) == lower_count
         ):
             return current
 
@@ -810,7 +810,7 @@ class MomentMatcher:
             if current[group_index] != repaired[group_index]
         ]
         if not changed_groups or any(
-            "cross_stave_duplicate_consolidated" not in group.repair_actions
+            "cross_staff_duplicate_consolidated" not in group.repair_actions
             for group in changed_groups
         ):
             return None

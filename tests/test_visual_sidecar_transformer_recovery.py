@@ -67,7 +67,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
             "transformer_chord_candidate_recovered",
             builder.visual_groups["displaced"].repair_actions,
         )
-        self.assertEqual(builder.unmatched_visual_notes, {"stray"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"stray"})
 
     def test_incomplete_lower_chord_uses_interval_anchors_to_recover_middle_head(
         self,
@@ -111,8 +111,8 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         notes = [upper, upper_duplicate, lower_top, lower_bottom]
         builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
         builder.add_staff_visual_notes(0, notes, [candidate.copy() for candidate in notes])
-        builder.visual_groups["f4-z-lower"].stave_index = 1
-        builder.visual_groups["lower-g3"].stave_index = 1
+        builder.visual_groups["f4-z-lower"].staff_index = 1
+        builder.visual_groups["lower-g3"].staff_index = 1
 
         upper_symbol = EncodedSymbol("note_8", "G5", position="upper", coordinates=(80, 30))
         top_symbol = EncodedSymbol("note_4", "F4", position="lower", coordinates=(80, 100))
@@ -144,12 +144,12 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         ]
         self.assertEqual(len({group.moment_id for group in groups}), 1)
         lower_groups = groups[1:]
-        self.assertEqual(lower_groups[0].stave_index, 1)
+        self.assertEqual(lower_groups[0].staff_index, 1)
         self.assertEqual(lower_groups[0].staff_position, 14)
-        self.assertIn("stave_membership_repaired", lower_groups[0].repair_actions)
+        self.assertIn("staff_membership_repaired", lower_groups[0].repair_actions)
         self.assertEqual(len({group.chord_id for group in lower_groups}), 1)
         self.assertIsNotNone(lower_groups[0].chord_id)
-        self.assertEqual(builder.unmatched_visual_notes, {"f4-z-lower"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"f4-z-lower"})
 
     def test_recovers_missing_head_at_the_edge_of_a_dense_hollow_chord(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -239,7 +239,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         builder.add_staff_visual_notes(0, [lower], [lower.copy()])
         lower_symbol = EncodedSymbol("note_2.", "G4", position="upper", coordinates=(60, 50))
         # Attention is deliberately offset. Chord pitch and the matched lower head
-        # provide the exact same-stave position in the grand-staff source grid.
+        # provide the exact same-staff position in the grand-staff source grid.
         upper_symbol = EncodedSymbol("note_2.", "E5", position="upper", coordinates=(68, 10))
 
         builder.add_staff_matches(
@@ -257,11 +257,13 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         self.assertEqual(recovered.staff_position, 8)
         self.assertEqual(recovered.visual_status, "fallback")
         self.assertEqual(recovered.provenance, "transformer_recovered")
+        self.assertEqual(recovered.stem_contours, [])
+        self.assertEqual(recovered.owned_stem_component_ids, [])
         self.assertEqual(recovered.chord_id, builder.visual_groups["vnote-lower"].chord_id)
         self.assertIsNotNone(recovered.chord_id)
         self.assertIn("transformer_chord_recovered", recovered.repair_actions)
 
-    def test_transformer_recovered_ledger_head_inherits_its_chord_mates_stave(
+    def test_transformer_recovered_ledger_head_inherits_its_chord_mates_staff(
         self,
     ) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -300,8 +302,8 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
             [treble, bass_bottom],
             [treble.copy(), bass_bottom.copy()],
         )
-        builder.visual_groups["treble"].stave_index = 0
-        builder.visual_groups["bass-bottom"].stave_index = 1
+        builder.visual_groups["treble"].staff_index = 0
+        builder.visual_groups["bass-bottom"].staff_index = 1
         treble_symbol = EncodedSymbol("note_2", "C6", position="upper", coordinates=(60, 30))
         bass_top_symbol = EncodedSymbol("note_2", "D5", position="lower", coordinates=(68, 70))
         bass_bottom_symbol = EncodedSymbol("note_2", "C4", position="lower", coordinates=(60, 110))
@@ -321,7 +323,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         recovered_id = builder.matches_by_symbol_id[bass_top_symbol.visual_match_id].visual_id
         self.assertIsNotNone(recovered_id)
         recovered = builder.visual_groups[str(recovered_id)]
-        self.assertEqual(recovered.stave_index, 1)
+        self.assertEqual(recovered.staff_index, 1)
         self.assertEqual(
             recovered.chord_id,
             builder.visual_groups["bass-bottom"].chord_id,
@@ -356,3 +358,48 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
 
         self.assertIsNone(builder.matches_by_symbol_id[id(symbol)].visual_id)
         self.assertEqual(builder.visual_groups, {})
+
+    def test_recovered_staff_position_comes_from_fitted_pixels(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        image = np.full((120, 120), 255, dtype=np.uint8)
+        cv2.ellipse(image, (60, 50), (7, 5), -20, 0, 360, 0, -1)
+        # The transformer interval predicts y=45, but the only supporting
+        # notehead pixels are one full staff position higher at y=40.
+        cv2.ellipse(image, (60, 40), (7, 5), -20, 0, 360, 0, -1)
+        staff = Staff(
+            [
+                StaffPoint(0, [30, 40, 50, 60, 70], 0),
+                StaffPoint(120, [30, 40, 50, 60, 70], 0),
+            ]
+        )
+        anchor_contour = cv2.ellipse2Poly((60, 50), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+        anchor = Note(
+            BoundingEllipse(((60, 50), (14, 10), -20), anchor_contour),
+            position=5,
+            stem=None,
+            stem_direction=None,
+            visual_id="anchor",
+        )
+        builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
+        builder.add_staff_visual_notes(0, [anchor], [anchor.copy()])
+        anchor_symbol = EncodedSymbol("note_4", "G4", position="upper", coordinates=(60, 50))
+        recovered_symbol = EncodedSymbol("note_4", "A4", position="upper", coordinates=(60, 45))
+
+        builder.add_staff_matches(
+            [anchor_symbol, EncodedSymbol("chord"), recovered_symbol],
+            0,
+            source_staff=staff,
+        )
+
+        recovered_id = builder.matches_by_symbol_id[recovered_symbol.visual_match_id].visual_id
+        self.assertIsNotNone(recovered_id)
+        recovered = builder.visual_groups[str(recovered_id)]
+        self.assertAlmostEqual(recovered.prediction_center[1], 40, delta=2)
+        self.assertEqual(recovered.staff_position, 7)

@@ -7,6 +7,7 @@ from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder
+from tests.visual_sidecar_helpers import diagnostic_visual_group_ids
 
 
 class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
@@ -249,6 +250,9 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         }
         self.assertEqual(groups["first"]["stem_component_ids"], [])
         self.assertEqual(groups["second"]["stem_component_ids"], [])
+        self.assertNotEqual(groups["first"]["moment_id"], groups["second"]["moment_id"])
+        self.assertIsNone(groups["first"]["chord_id"])
+        self.assertIsNone(groups["second"]["chord_id"])
 
     def test_rejoins_horizontally_split_whole_note_chord_heads(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -328,7 +332,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
                 "sequence-g",
             },
         )
-        self.assertEqual(sidecar["unmatched_visual_notes"], ["bottom-right", "top-right"])
+        self.assertEqual(diagnostic_visual_group_ids(sidecar), ["bottom-right", "top-right"])
         self.assertEqual(groups["top-right"]["visual_status"], "diagnostic")
         self.assertEqual(groups["bottom-right"]["visual_status"], "diagnostic")
         self.assertEqual(groups["bottom-left"]["provenance"], "merged_fragments")
@@ -346,7 +350,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
             "sequence-g",
         )
 
-    def test_split_hollow_heads_are_consolidated_before_cross_stave_matching(
+    def test_split_hollow_heads_are_consolidated_before_cross_staff_matching(
         self,
     ) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -411,7 +415,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
         builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
         for visual_id in ("lower-left", "lower-right", "lower-bass"):
-            builder.visual_groups[visual_id].stave_index = 1
+            builder.visual_groups[visual_id].staff_index = 1
 
         symbols = [
             EncodedSymbol("note_1", "C5", position="upper", coordinates=(80, 35)),
@@ -533,7 +537,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         ]
         builder = VisualSidecarBuilder(coordinate_transform)
         builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
-        builder.visual_groups["bass-anchor"].stave_index = 1
+        builder.visual_groups["bass-anchor"].staff_index = 1
         symbols = [
             EncodedSymbol("note_2", "D5", position="upper"),
             EncodedSymbol("chord"),
@@ -565,7 +569,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
         self.assertEqual(len({group.moment_id for group in matched_groups}), 1)
         self.assertIsNotNone(matched_groups[0].moment_id)
-        self.assertEqual(builder.unmatched_visual_notes, set())
+        self.assertEqual(builder.unmatched_visual_group_ids, set())
 
     def test_dense_filled_chords_are_not_treated_as_split_whole_note_fragments(
         self,
@@ -616,7 +620,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
             ],
             ["first-top", "first-bottom", "second-top", "second-bottom"],
         )
-        self.assertEqual(builder.unmatched_visual_notes, set())
+        self.assertEqual(builder.unmatched_visual_group_ids, set())
 
     def test_discards_small_notehead_fragment_that_duplicates_a_detected_stem(
         self,
@@ -679,7 +683,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         self.assertEqual(set(groups), {"full-first", "fragment", "full-second"})
         self.assertEqual(groups["fragment"]["visual_status"], "diagnostic")
         self.assertIn("suspected_duplicate", groups["fragment"]["repair_actions"])
-        self.assertEqual(sidecar["unmatched_visual_notes"], ["fragment"])
+        self.assertEqual(diagnostic_visual_group_ids(sidecar), ["fragment"])
         self.assertEqual(
             builder.matches_by_symbol_id[first_symbol.visual_match_id].visual_id,
             "full-first",

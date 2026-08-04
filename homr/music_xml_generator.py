@@ -473,7 +473,7 @@ def record_visual_sidecar_note_ids(
             symbol,
             part=part_number,
             measure=measure_number,
-            staff=staff,
+            musicxml_staff_number=staff,
             voice=voice,
         )
 

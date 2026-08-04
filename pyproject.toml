@@ -156,3 +156,4 @@ testpaths = ["tests"]
 
 [tool.poetry.scripts]
 homr = "homr.main:main"
+homr-visual-eval = "homr.visual_sidecar.evaluation_cli:main"

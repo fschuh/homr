@@ -51,8 +51,8 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
             notes,
             [note.copy() for note in notes],
         )
-        builder.visual_groups["lower-top"].stave_index = 1
-        builder.visual_groups["lower-bottom"].stave_index = 1
+        builder.visual_groups["lower-top"].staff_index = 1
+        builder.visual_groups["lower-bottom"].staff_index = 1
 
         upper_symbol = EncodedSymbol("note_16", "Eb6", position="upper")
         lower_top_symbol = EncodedSymbol("note_8", "Db4", position="lower")
@@ -86,7 +86,7 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
             {"moment-1-1"},
         )
         self.assertEqual(
-            builder.unmatched_visual_notes,
+            builder.unmatched_visual_group_ids,
             {"surplus-upper-bottom"},
         )
         self.assertEqual(
@@ -142,7 +142,7 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
             "lower-middle",
             "lower-bottom",
         ):
-            builder.visual_groups[visual_id].stave_index = 1
+            builder.visual_groups[visual_id].staff_index = 1
         for visual_id in ("lower-top", "lower-middle", "lower-bottom"):
             builder.visual_groups[visual_id].owned_stem_component_ids = ["shared-lower-stem"]
 
@@ -181,7 +181,7 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
             {builder.visual_groups[visual_id].moment_id for visual_id in expected_matches.values()},
             {"moment-1-1"},
         )
-        self.assertEqual(builder.unmatched_visual_notes, {"surplus-lower"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"surplus-lower"})
         self.assertEqual(
             builder.visual_groups["surplus-lower"].visual_status,
             "diagnostic",
@@ -218,7 +218,7 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
             notes,
             [note.copy() for note in notes],
         )
-        builder.visual_groups["surplus"].stave_index = 1
+        builder.visual_groups["surplus"].staff_index = 1
         first_symbol = EncodedSymbol("note_16", "C5", position="upper", coordinates=(80, 35))
         second_symbol = EncodedSymbol("note_16", "D5", position="upper", coordinates=(20, 35))
         third_symbol = EncodedSymbol("note_16", "E5", position="upper", coordinates=(50, 90))
@@ -240,7 +240,7 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
             builder.matches_by_symbol_id[third_symbol.visual_match_id].visual_id,
             "third",
         )
-        self.assertEqual(builder.unmatched_visual_notes, {"surplus"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"surplus"})
 
     def test_unpitched_note_reserves_its_visual_moment_before_final_chord(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -310,7 +310,7 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
             "chord-bottom",
         )
         self.assertNotIn(unknown_symbol.visual_match_id, builder.matches_by_symbol_id)
-        self.assertEqual(builder.unmatched_visual_notes, {"placeholder"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"placeholder"})
 
     def test_duplicate_predicted_pitch_does_not_steal_the_next_visual_moment(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -404,7 +404,7 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
             notes,
             [note.copy() for note in notes],
         )
-        builder.visual_groups["previous"].stave_index = 1
+        builder.visual_groups["previous"].staff_index = 1
         previous_symbol = EncodedSymbol("note_16", "C3", position="lower", coordinates=(60, 40))
         chord_top_symbol = EncodedSymbol("note_2", "E5", position="upper", coordinates=(100, 25))
         chord_bottom_symbol = EncodedSymbol("note_2", "G4", position="upper", coordinates=(20, 50))
@@ -435,4 +435,4 @@ class TestVisualSidecarBuilderSequenceRepair(unittest.TestCase):
         self.assertIsNotNone(recovered.chord_id)
         self.assertEqual(recovered.visual_status, "fallback")
         self.assertIn("transformer_chord_recovered", recovered.repair_actions)
-        self.assertEqual(builder.unmatched_visual_notes, {"stray"})
+        self.assertEqual(builder.unmatched_visual_group_ids, {"stray"})

@@ -9,7 +9,11 @@ from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
 from homr.note_detection import NoteheadWithStem
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder, sounding_pitch
-from tests.visual_sidecar_helpers import musicxml_note_ids
+from tests.visual_sidecar_helpers import (
+    diagnostic_visual_group_ids,
+    musicxml_note_ids,
+    unmatched_musicxml_note_ids,
+)
 
 
 class TestVisualSidecarBuilderCore(unittest.TestCase):
@@ -27,7 +31,7 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
             "C4",
         )
 
-    def test_exports_distinct_stave_indices_for_a_grand_staff(self) -> None:
+    def test_exports_distinct_staff_indices_for_a_grand_staff(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
             source_image_size=(100, 160),
             autocrop_box=(0, 0, 100, 160),
@@ -69,8 +73,12 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
             group["visual_group_id"]: group for group in builder.to_json_dict()["visual_groups"]
         }
 
-        self.assertEqual(groups["vnote-upper"]["stave_index"], 0)
-        self.assertEqual(groups["vnote-lower"]["stave_index"], 1)
+        self.assertEqual(groups["vnote-upper"]["staff_group_index"], 0)
+        self.assertEqual(groups["vnote-lower"]["staff_group_index"], 0)
+        self.assertEqual(groups["vnote-upper"]["staff_index"], 0)
+        self.assertEqual(groups["vnote-lower"]["staff_index"], 1)
+        self.assertEqual(groups["vnote-upper"]["staff_position"], 5)
+        self.assertEqual(groups["vnote-lower"]["staff_position"], 5)
 
     def test_recovers_real_fifth_ledger_line_candidate_for_sidecar_only(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -150,7 +158,7 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         self.assertEqual(groups["clef-fragment"]["visual_status"], "diagnostic")
         self.assertIn("clef_artifact", groups["clef-fragment"]["repair_actions"])
         self.assertEqual(groups["real-note"]["visual_status"], "canonical")
-        self.assertEqual(sidecar["unmatched_visual_notes"], ["clef-fragment"])
+        self.assertEqual(diagnostic_visual_group_ids(sidecar), ["clef-fragment"])
         self.assertEqual(
             builder.matches_by_symbol_id[musicxml_note.visual_match_id].visual_id,
             "real-note",
@@ -167,8 +175,9 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         )
 
         self.assertEqual(coordinate_transform.prediction_point_to_source((200, 150)), (300, 200))
+        self.assertEqual(coordinate_transform.source_point_to_prediction((300, 200)), (200, 150))
 
-    def test_musicxml_ids_are_recorded_in_visual_sidecar(self) -> None:
+    def test_musicxml_id_is_recorded_in_visual_sidecar(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
             source_image_size=(100, 100),
             autocrop_box=(0, 0, 100, 100),
@@ -196,17 +205,58 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         xml_ids = musicxml_note_ids(xml)
         visual_sidecar = builder.to_json_dict()
         visual_sidecar_ids = [note["musicxml_id"] for note in visual_sidecar["notes"]]
-        linked_ids = visual_sidecar["visual_groups"][0]["musicxml_ids"]
+        linked_id = visual_sidecar["visual_groups"][0]["musicxml_id"]
 
-        self.assertEqual(visual_sidecar["version"], 2)
+        self.assertEqual(visual_sidecar["version"], 3)
         self.assertEqual(visual_sidecar["notes"][0]["alignment_method"], "structural")
         self.assertEqual(visual_sidecar["visual_groups"][0]["visual_status"], "canonical")
         self.assertEqual(xml_ids, visual_sidecar_ids)
-        self.assertEqual(xml_ids, linked_ids)
-        self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
-        self.assertEqual(visual_sidecar["unmatched_visual_notes"], [])
+        self.assertEqual(xml_ids, [linked_id])
+        self.assertEqual(unmatched_musicxml_note_ids(visual_sidecar), [])
+        self.assertEqual(diagnostic_visual_group_ids(visual_sidecar), [])
+        self.assertNotIn("unmatched_musicxml_notes", visual_sidecar)
+        self.assertNotIn("unmatched_visual_notes", visual_sidecar)
 
-    def test_musicxml_ids_survive_tuplet_cleanup_copy(self) -> None:
+    def test_builder_rejects_linking_one_visual_group_twice(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        builder = VisualSidecarBuilder(coordinate_transform)
+        note = Note(
+            BoundingEllipse(((10, 20), (8, 6), 0), np.array([[6, 17], [14, 23]]), 1),
+            position=4,
+            stem=None,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+        symbol = EncodedSymbol("note_4", "C4", "_", "_", "_", "upper")
+        builder.add_staff_visual_notes(0, [note], [note.copy()])
+        builder.add_staff_matches([symbol], 0)
+        builder.record_musicxml_note(
+            "homr-note-1",
+            symbol,
+            part=1,
+            measure=1,
+            musicxml_staff_number=1,
+            voice=1,
+        )
+
+        with self.assertRaisesRegex(ValueError, "already linked"):
+            builder.record_musicxml_note(
+                "homr-note-2",
+                symbol,
+                part=1,
+                measure=1,
+                musicxml_staff_number=1,
+                voice=2,
+            )
+
+    def test_musicxml_id_survives_tuplet_cleanup_copy(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
             source_image_size=(100, 100),
             autocrop_box=(0, 0, 100, 100),
@@ -236,9 +286,9 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         xml_ids = musicxml_note_ids(xml)
         visual_sidecar = builder.to_json_dict()
 
-        self.assertEqual(xml_ids, visual_sidecar["visual_groups"][0]["musicxml_ids"])
-        self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
-        self.assertEqual(visual_sidecar["unmatched_visual_notes"], [])
+        self.assertEqual(xml_ids, [visual_sidecar["visual_groups"][0]["musicxml_id"]])
+        self.assertEqual(unmatched_musicxml_note_ids(visual_sidecar), [])
+        self.assertEqual(diagnostic_visual_group_ids(visual_sidecar), [])
 
     def test_pitched_rest_rhythm_is_linked_as_the_musicxml_note_it_generates(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
@@ -259,13 +309,13 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         )
         builder.add_staff_visual_notes(0, [original], [original.copy()])
 
-        pitched_rest = EncodedSymbol("rest_8", "C4", "_", "_", "_", "lower")
+        pitched_rest = EncodedSymbol("rest_8", "C4", "_", "_", "_", "upper")
         builder.add_staff_matches([pitched_rest], 0)
         xml = generate_xml(XmlGeneratorArguments(), [[pitched_rest]], "", visual_sidecar=builder)
         xml_ids = musicxml_note_ids(xml)
         visual_sidecar = builder.to_json_dict()
 
-        self.assertEqual(xml_ids, visual_sidecar["visual_groups"][0]["musicxml_ids"])
+        self.assertEqual(xml_ids, [visual_sidecar["visual_groups"][0]["musicxml_id"]])
         self.assertEqual(visual_sidecar["notes"][0]["pitch"], "C4")
-        self.assertEqual(visual_sidecar["unmatched_musicxml_notes"], [])
-        self.assertEqual(visual_sidecar["unmatched_visual_notes"], [])
+        self.assertEqual(unmatched_musicxml_note_ids(visual_sidecar), [])
+        self.assertEqual(diagnostic_visual_group_ids(visual_sidecar), [])

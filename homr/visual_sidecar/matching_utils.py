@@ -71,8 +71,8 @@ def diatonic_pitch_index(pitch: str) -> int | None:
 
 
 def local_staff_unit(point: Any, line_index: int) -> float:
-    lines_per_stave = constants.number_of_lines_on_a_staff
-    stave_start = (line_index // lines_per_stave) * lines_per_stave
-    stave_lines = point.y[stave_start : stave_start + lines_per_stave]
-    differences = np.diff(stave_lines)
+    lines_per_staff = constants.number_of_lines_on_a_staff
+    staff_start = (line_index // lines_per_staff) * lines_per_staff
+    staff_lines = point.y[staff_start : staff_start + lines_per_staff]
+    differences = np.diff(staff_lines)
     return float(np.median(differences)) if len(differences) else 1.0

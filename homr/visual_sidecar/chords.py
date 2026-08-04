@@ -57,7 +57,7 @@ class ChordResolver:
     def recover_transformer_notehead(
         self,
         symbol: EncodedSymbol,
-        staff_index: int,
+        staff_group_index: int,
         *,
         source_staff: Staff | None,
         neighboring_groups: list[VisualGroup],
@@ -66,15 +66,17 @@ class ChordResolver:
     ) -> VisualGroup | None:
         return self._recover_transformer_chord_notehead(
             symbol,
-            staff_index,
+            staff_group_index,
             source_staff,
             neighboring_groups,
             chord_mates,
             available_groups=available_groups,
         )
 
-    def assign_physical_chord_ids(self, symbols: list[EncodedSymbol], staff_index: int) -> None:
-        self._assign_physical_chord_ids(symbols, staff_index)
+    def assign_physical_chord_ids(
+        self, symbols: list[EncodedSymbol], staff_group_index: int
+    ) -> None:
+        self._assign_physical_chord_ids(symbols, staff_group_index)
 
     def stem_component_ids_for_output(self, group: VisualGroup) -> list[str]:
         return self._stem_component_ids_for_output(group)
@@ -82,7 +84,7 @@ class ChordResolver:
     def _recover_transformer_chord_notehead(
         self,
         symbol: EncodedSymbol,
-        staff_index: int,
+        staff_group_index: int,
         source_staff: Staff | None,
         neighboring_groups: list[VisualGroup],
         chord_mates: list[tuple[EncodedSymbol, VisualGroup]],
@@ -91,8 +93,8 @@ class ChordResolver:
     ) -> VisualGroup | None:
         """Recover a chord head that segmentation missed but TrOMR recognized.
 
-        A matched same-stave chord member supplies an exact source anchor. Apply the
-        recognized diatonic interval using the local five-line stave spacing, then
+        A matched same-staff chord member supplies an exact source anchor. Apply the
+        recognized diatonic interval using the local five-line staff spacing, then
         require the source-image contour fitter to find supporting ink. Chord context
         and pixel evidence together keep hallucinated MusicXML notes unmatched.
         """
@@ -107,7 +109,8 @@ class ChordResolver:
             return None
         prediction_center: tuple[float, float] | None = None
         recovered_staff_position: int | None = None
-        recovered_stave_index: int | None = None
+        recovered_staff_index: int | None = None
+        visual_position_anchor: tuple[float, int, float] | None = None
         symbol_pitch_index = diatonic_pitch_index(symbol.pitch)
         for mate_symbol, mate_group in chord_mates:
             mate_pitch_index = diatonic_pitch_index(mate_symbol.pitch)
@@ -135,12 +138,18 @@ class ChordResolver:
                 float(mate_group.prediction_center[1]) - pitch_steps * local_unit / 2,
             )
             recovered_staff_position = mate_group.staff_position + pitch_steps
-            recovered_stave_index = mate_group.stave_index
+            recovered_staff_index = mate_group.staff_index
+            visual_position_anchor = (
+                float(mate_group.prediction_center[1]),
+                mate_group.staff_position,
+                local_unit,
+            )
             break
         if (
             prediction_center is None
             or recovered_staff_position is None
-            or recovered_stave_index is None
+            or recovered_staff_index is None
+            or visual_position_anchor is None
         ):
             return None
         source_point = source_staff.get_at(prediction_center[0])
@@ -158,8 +167,8 @@ class ChordResolver:
         existing_candidates: list[VisualGroup] = []
         for candidate in available_groups:
             if (
-                candidate.staff_index != staff_index
-                or candidate.stave_index != recovered_stave_index
+                candidate.staff_group_index != staff_group_index
+                or candidate.staff_index != recovered_staff_index
                 or abs(candidate.staff_position - recovered_staff_position) > 2
             ):
                 continue
@@ -212,7 +221,7 @@ class ChordResolver:
                 ),
             )
             for group in neighboring_groups
-            if group.staff_index == staff_index
+            if group.staff_group_index == staff_group_index
         ]
         neighboring_notes = [note for _group, note in neighboring_group_notes]
         refined_contour = self.noteheads.refined_notehead_contour(
@@ -237,12 +246,20 @@ class ChordResolver:
         self._next_transformer_recovered_visual_id += 1
         notehead_ellipse = self.noteheads.ellipse_from_source_contour(refined_contour)
         notehead_ellipse["_is_hollow"] = self.noteheads.is_hollow_notehead(guessed_note)
+        source_center = notehead_ellipse["center"]
+        fitted_prediction_center = self.coordinate_transform.source_point_to_prediction(
+            (float(source_center[0]), float(source_center[1]))
+        )
+        anchor_y, anchor_position, anchor_unit = visual_position_anchor
+        pixel_staff_position = anchor_position + round(
+            2 * (anchor_y - fitted_prediction_center[1]) / anchor_unit
+        )
         return VisualGroup(
             visual_id=visual_id,
-            staff_index=staff_index,
-            stave_index=recovered_stave_index,
-            staff_position=guessed_note.position,
-            prediction_center=center,
+            staff_group_index=staff_group_index,
+            staff_index=recovered_staff_index,
+            staff_position=pixel_staff_position,
+            prediction_center=fitted_prediction_center,
             prediction_notehead_size=(float(width), float(height)),
             transformer_center=(float(symbol.coordinates[0]), float(symbol.coordinates[1])),
             transformer_notehead_size=None,
@@ -358,11 +375,13 @@ class ChordResolver:
             upward != downward for upward in upward_components for downward in downward_components
         )
 
-    def _assign_physical_chord_ids(self, symbols: list[EncodedSymbol], staff_index: int) -> None:
-        """Assign chord identity only when same-stave geometry proves it."""
+    def _assign_physical_chord_ids(
+        self, symbols: list[EncodedSymbol], staff_group_index: int
+    ) -> None:
+        """Assign chord identity only when same-staff geometry proves it."""
         chord_index = 1
         for token_moment in token_moments(symbols):
-            matched_by_stave: dict[int, list[tuple[EncodedSymbol, VisualGroup]]] = {}
+            matched_by_staff: dict[int, list[tuple[EncodedSymbol, VisualGroup]]] = {}
             for symbol in token_moment:
                 match = self.matches_by_symbol_id.get(symbol.visual_match_id)
                 if match is None or match.visual_id is None:
@@ -370,12 +389,12 @@ class ChordResolver:
                 group = self.visual_groups.get(match.visual_id)
                 if (
                     group is None
-                    or group.staff_index != staff_index
+                    or group.staff_group_index != staff_group_index
                     or group.visual_status == "diagnostic"
                 ):
                     continue
-                matched_by_stave.setdefault(group.stave_index, []).append((symbol, group))
-            for stave_index, members in sorted(matched_by_stave.items()):
+                matched_by_staff.setdefault(group.staff_index, []).append((symbol, group))
+            for staff_index, members in sorted(matched_by_staff.items()):
                 if len(members) < 2:
                     continue
                 members_by_duration: dict[str, list[tuple[EncodedSymbol, VisualGroup]]] = {}
@@ -393,8 +412,8 @@ class ChordResolver:
                         continue
                     chord_assigned = self._assign_physical_chord_id_to_members(
                         duration_members,
+                        staff_group_index,
                         staff_index,
-                        stave_index,
                         chord_index,
                     )
                     if chord_assigned:
@@ -403,8 +422,8 @@ class ChordResolver:
     def _assign_physical_chord_id_to_members(
         self,
         members: list[tuple[EncodedSymbol, VisualGroup]],
+        staff_group_index: int,
         staff_index: int,
-        stave_index: int,
         chord_index: int,
     ) -> bool:
         groups = [group for _symbol, group in members]
@@ -466,9 +485,9 @@ class ChordResolver:
 
         moment_id = next(
             (group.moment_id for group in groups if group.moment_id),
-            f"moment-{staff_index + 1}-repair-{chord_index}",
+            f"moment-{staff_group_index + 1}-repair-{chord_index}",
         )
-        chord_id = f"chord-{staff_index + 1}-{moment_id}-" f"{stave_index + 1}-{chord_index}"
+        chord_id = f"chord-{staff_group_index + 1}-{moment_id}-{staff_index + 1}-{chord_index}"
         for symbol, group in members:
             group.chord_id = chord_id
             group.moment_id = moment_id
