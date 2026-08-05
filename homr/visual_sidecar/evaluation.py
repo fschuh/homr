@@ -685,23 +685,6 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
         moments = {_string(group.get("moment_id")) for group in groups}
         staff_groups = {_integer(group.get("staff_group_index")) for group in groups}
         staff_indexes = {_integer(group.get("staff_index")) for group in groups}
-        durations: set[str] = set()
-        for group in groups:
-            musicxml_id = _string(group.get("musicxml_id"))
-            if musicxml_id is None or musicxml_id not in sidecar_notes_by_id:
-                continue
-            duration = sidecar_notes_by_id[musicxml_id].get("duration")
-            if isinstance(duration, str):
-                durations.add(duration.rstrip("."))
-        event_keys = {
-            (
-                xml_notes_by_id[musicxml_id].part,
-                xml_notes_by_id[musicxml_id].measure,
-                xml_notes_by_id[musicxml_id].event_index,
-            )
-            for group in groups
-            if (musicxml_id := _string(group.get("musicxml_id"))) in xml_notes_by_id
-        }
         if (
             len(moments) != 1
             or None in moments
@@ -709,12 +692,10 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
             or None in staff_groups
             or len(staff_indexes) != 1
             or None in staff_indexes
-            or len(durations) > 1
-            or len(event_keys) > 1
         ):
             add(
                 "contract_error",
-                "chord_id spans incompatible visual or MusicXML events",
+                "chord_id spans incompatible visual groups",
                 details={
                     "chord_id": chord_id,
                     "visual_group_ids": sorted(

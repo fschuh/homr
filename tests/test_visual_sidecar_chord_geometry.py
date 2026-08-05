@@ -174,6 +174,8 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
                     [upper, lower],
                     [upper.copy(), lower.copy()],
                 )
+                for group in builder.visual_groups.values():
+                    group.is_hollow_notehead = True
                 builder.add_staff_matches(
                     [
                         EncodedSymbol("note_8", "Bb5", coordinates=(50, 40)),
@@ -447,6 +449,48 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
             "merged_fragments",
         )
 
+    def test_ordinary_width_hollow_candidates_are_not_premerged(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+
+        def hollow_candidate(visual_id: str, center_x: int) -> Note:
+            contour = cv2.ellipse2Poly((center_x, 50), (10, 5), 0, 0, 360, 5).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((center_x, 50), (20, 10), 0), contour),
+                position=9,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            hollow_candidate("left-head", 40),
+            hollow_candidate("right-head", 54),
+        ]
+        builder = VisualSidecarBuilder(coordinate_transform)
+        builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        for group in builder.visual_groups.values():
+            group.is_hollow_notehead = True
+
+        builder.candidate_cleaner.repair([], 0)
+
+        self.assertEqual(
+            {group.visual_status for group in builder.visual_groups.values()},
+            {"fallback"},
+        )
+        self.assertTrue(
+            all(
+                "merged_split_notehead_before_matching" not in group.repair_actions
+                for group in builder.visual_groups.values()
+            )
+        )
+
     def test_displaced_second_stays_in_stemless_whole_note_chord_moment(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
             source_image_size=(160, 120),
@@ -571,6 +615,76 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         self.assertIsNotNone(matched_groups[0].moment_id)
         self.assertEqual(builder.unmatched_visual_group_ids, set())
 
+    def test_two_displaced_chord_stacks_stay_in_the_shared_visual_moment(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(140, 130),
+            autocrop_box=(0, 0, 140, 130),
+            cropped_size=(140, 130),
+            resized_size=(140, 130),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 130),
+        )
+
+        def make_note(x: int, y: int, position: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (20, 14), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(78, 44, 2, "upper-f"),
+            make_note(60, 50, 1, "upper-e"),
+            make_note(78, 64, -1, "upper-c"),
+            make_note(78, 78, -3, "upper-a"),
+            make_note(60, 105, 4, "bass-anchor"),
+        ]
+        builder = VisualSidecarBuilder(coordinate_transform)
+        builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        builder.visual_groups["upper-f"].owned_stem_component_ids = ["shared-upper-stem"]
+        builder.visual_groups["upper-e"].owned_stem_component_ids = ["shared-upper-stem"]
+        builder.visual_groups["bass-anchor"].staff_index = 1
+        for visual_id in ("upper-f", "upper-c", "upper-a"):
+            builder.visual_groups[visual_id].is_hollow_notehead = True
+        symbols = [
+            EncodedSymbol("note_8", "F4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "E4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "C4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "A3", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "D2", position="lower"),
+        ]
+
+        builder.add_staff_matches(symbols, 0)
+
+        note_symbols = [symbol for symbol in symbols if symbol.rhythm.startswith("note")]
+        matched_visual_ids = [
+            builder.matches_by_symbol_id[symbol.visual_match_id].visual_id
+            for symbol in note_symbols
+        ]
+        self.assertEqual(
+            matched_visual_ids,
+            ["upper-f", "upper-e", "upper-c", "upper-a", "bass-anchor"],
+        )
+        matched_groups = [builder.visual_groups[str(visual_id)] for visual_id in matched_visual_ids]
+        self.assertEqual(len({group.moment_id for group in matched_groups}), 1)
+        self.assertEqual(builder.unmatched_visual_group_ids, set())
+        hollow_chord_id = builder.visual_groups["upper-f"].chord_id
+        self.assertIsNotNone(hollow_chord_id)
+        self.assertEqual(builder.visual_groups["upper-c"].chord_id, hollow_chord_id)
+        self.assertEqual(builder.visual_groups["upper-a"].chord_id, hollow_chord_id)
+        self.assertIsNone(builder.visual_groups["upper-e"].chord_id)
+        self.assertIn(
+            "hollow_column_proven",
+            builder.visual_groups["upper-f"].repair_actions,
+        )
+
     def test_dense_filled_chords_are_not_treated_as_split_whole_note_fragments(
         self,
     ) -> None:
@@ -596,8 +710,10 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         notes = [
             make_note(30, 35, "first-top"),
             make_note(30, 55, "first-bottom"),
-            make_note(50, 35, "second-top"),
-            make_note(50, 55, "second-bottom"),
+            # The outlines touch at x=37, reproducing the overlapping evidence
+            # columns emitted for staff-line-split hollow heads.
+            make_note(44, 35, "second-top"),
+            make_note(44, 55, "second-bottom"),
         ]
         builder = VisualSidecarBuilder(coordinate_transform)
         builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])

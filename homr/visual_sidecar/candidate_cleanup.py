@@ -10,6 +10,7 @@ DUPLICATE_NOTEHEAD_AREA_RATIO = 0.6
 DUPLICATE_NOTEHEAD_MAX_HORIZONTAL_DISTANCE = 1.5
 DUPLICATE_NOTEHEAD_MAX_VERTICAL_DISTANCE = 0.3
 MAX_VISUAL_GROUP_DISTANCE_FROM_CLEF = 16.0
+PREMATCH_SPLIT_FRAGMENT_MAX_ASPECT_RATIO = 1.25
 
 
 class CandidateCleaner:
@@ -61,6 +62,8 @@ class CandidateCleaner:
             if (
                 first.staff_index == second.staff_index
                 and first.staff_position == second.staff_position
+                and self._is_narrow_horizontal_fragment(first)
+                and self._is_narrow_horizontal_fragment(second)
                 and self._looks_like_horizontal_notehead_fragment(first, second)
             )
         ]
@@ -83,6 +86,21 @@ class CandidateCleaner:
             fragment.visual_status = "diagnostic"
             fragment.repair_actions.append(f"merged_into:{primary.visual_id}")
             merged_visual_ids.update((primary.visual_id, fragment.visual_id))
+
+    @staticmethod
+    def _is_narrow_horizontal_fragment(group: VisualGroup) -> bool:
+        """Distinguish a left/right fragment from an ordinary notehead candidate.
+
+        Before matching, sharing a staff position is not enough evidence that two
+        touching hollow candidates are halves of one head. Dense chords can produce
+        several overlapping, full-width candidates at the same rounded positions;
+        merging those alternatives before matching collapses the whole moment. Only
+        pre-merge candidates that are narrow relative to their height, as true
+        left/right fragments are. The post-match whole-note repair remains available
+        once MusicXML supplies stronger evidence for a particular head.
+        """
+        width, height = group.prediction_notehead_size
+        return height > 0 and width <= height * PREMATCH_SPLIT_FRAGMENT_MAX_ASPECT_RATIO
 
     def _consolidate_exact_duplicate_noteheads(self, staff_group_index: int) -> None:
         """Keep one physical head when overlapping staff zones emitted it twice.

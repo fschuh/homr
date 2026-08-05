@@ -247,10 +247,10 @@ class MomentMatcher:
 
         # A simultaneous second is conventionally displaced left or right by
         # roughly one notehead width. This occurs both inside stemless chords and
-        # between close opposing voices, and can put its singleton component just
-        # outside the ordinary column tolerance. Rejoin only that narrow
-        # singleton-plus-stack pattern when the physical notehead outlines still
-        # touch; two ordinary sequential note columns remain separate.
+        # between close opposing voices, and can put part of its stack just outside
+        # the ordinary column tolerance. Rejoin adjacent stacks only when at least
+        # one side contains a chord and the physical notehead outlines still touch;
+        # two ordinary sequential singleton notes remain separate.
         merged_moments: list[list[int]] = []
         for moment in moments:
             if merged_moments and cls._moments_form_displaced_notehead_stack(
@@ -275,13 +275,19 @@ class MomentMatcher:
             second_staff = [
                 index for index in second_moment if visual_groups[index].staff_index == staff_index
             ]
-            if len(first_staff) == 1 and len(second_staff) > 1:
-                singleton_index = first_staff[0]
-                chord_indices = second_staff
-            elif len(second_staff) == 1 and len(first_staff) > 1:
-                singleton_index = second_staff[0]
-                chord_indices = first_staff
-            else:
+            if (
+                not first_staff
+                or not second_staff
+                or (len(first_staff) == 1 and len(second_staff) == 1)
+            ):
+                continue
+            first_positions = {visual_groups[index].staff_position for index in first_staff}
+            second_positions = {visual_groups[index].staff_position for index in second_staff}
+            if first_positions & second_positions:
+                # Parallel columns containing the same rounded staff positions are
+                # commonly alternate segmentation evidence for hollow heads, not
+                # two halves of a larger chord. Keep the columns separate so
+                # attention can select the one that represents the token moment.
                 continue
 
             other_staff_index = 1 - staff_index
@@ -292,23 +298,24 @@ class MomentMatcher:
             ):
                 continue
 
-            singleton = visual_groups[singleton_index]
-            for chord_index in chord_indices:
-                chord_member = visual_groups[chord_index]
-                if not noteheads_can_share_chord_stem(singleton, chord_member):
-                    continue
-                maximum_vertical_distance = (
-                    max(
-                        singleton.prediction_notehead_size[1],
-                        chord_member.prediction_notehead_size[1],
+            for first_index in first_staff:
+                first_group = visual_groups[first_index]
+                for second_index in second_staff:
+                    second_group = visual_groups[second_index]
+                    if not noteheads_can_share_chord_stem(first_group, second_group):
+                        continue
+                    maximum_vertical_distance = (
+                        max(
+                            first_group.prediction_notehead_size[1],
+                            second_group.prediction_notehead_size[1],
+                        )
+                        * DISPLACED_CHORD_MAX_VERTICAL_NOTEHEAD_RATIO
                     )
-                    * DISPLACED_CHORD_MAX_VERTICAL_NOTEHEAD_RATIO
-                )
-                if (
-                    abs(singleton.prediction_center[1] - chord_member.prediction_center[1])
-                    <= maximum_vertical_distance
-                ):
-                    return True
+                    if (
+                        abs(first_group.prediction_center[1] - second_group.prediction_center[1])
+                        <= maximum_vertical_distance
+                    ):
+                        return True
         return False
 
     @staticmethod

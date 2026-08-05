@@ -419,6 +419,34 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
 
         self.assertTrue(report.passed, report.to_dict())
 
+    def test_physical_chord_id_can_span_same_moment_musicxml_voices(self) -> None:
+        xml = musicxml_document(
+            xml_note("homr-note-1", "F", 4, voice=1)
+            + "<backup><duration>1</duration></backup>"
+            + xml_note("homr-note-2", "C", 4, voice=2)
+            + xml_note("homr-note-3", "A", 3, chord=True, voice=2)
+        )
+        sidecar = {
+            "version": 3,
+            "notes": [
+                sidecar_note("homr-note-1", "F4", "vnote-1", voice=1),
+                sidecar_note("homr-note-2", "C4", "vnote-2", voice=2),
+                sidecar_note("homr-note-3", "A3", "vnote-3", voice=2),
+            ],
+            "visual_groups": [
+                visual_group("vnote-1", "homr-note-1", 2, chord_id="chord-1"),
+                visual_group("vnote-2", "homr-note-2", -1, chord_id="chord-1"),
+                visual_group("vnote-3", "homr-note-3", -3, chord_id="chord-1"),
+            ],
+        }
+        sidecar["notes"][0]["duration"] = "note_8"
+        sidecar["notes"][1]["duration"] = "note_1"
+        sidecar["notes"][2]["duration"] = "note_1"
+
+        report = evaluate_musicxml_sidecar(xml, sidecar)
+
+        self.assertTrue(report.passed, report.to_dict())
+
     def test_broken_same_staff_chord_identifies_moment_assignments(self) -> None:
         xml = musicxml_document(
             xml_note("homr-note-31", "E", 4) + xml_note("homr-note-32", "G", 4, chord=True)

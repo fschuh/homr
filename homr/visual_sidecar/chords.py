@@ -378,7 +378,14 @@ class ChordResolver:
     def _assign_physical_chord_ids(
         self, symbols: list[EncodedSymbol], staff_group_index: int
     ) -> None:
-        """Assign chord identity only when same-staff geometry proves it."""
+        """Assign chord identity only when same-staff geometry proves it.
+
+        Duration normally separates simultaneous voices. In an ambiguous second,
+        however, recognition can attach the two durations to the wrong visual
+        heads even while pitch order remains correct. A compact column of hollow
+        heads is independent pixel evidence for the physical chord, so resolve
+        that column before falling back to recognized-duration partitions.
+        """
         chord_index = 1
         for token_moment in token_moments(symbols):
             matched_by_staff: dict[int, list[tuple[EncodedSymbol, VisualGroup]]] = {}
@@ -407,6 +414,29 @@ class ChordResolver:
                         if "mixed_duration_stems_separated" not in group.repair_actions:
                             group.repair_actions.append("mixed_duration_stems_separated")
 
+                    assigned_visual_ids: set[str] = set()
+                    for hollow_column in self._mixed_duration_hollow_columns(members):
+                        chord_assigned = self._assign_physical_chord_id_to_members(
+                            hollow_column,
+                            staff_group_index,
+                            staff_index,
+                            chord_index,
+                        )
+                        if chord_assigned:
+                            assigned_visual_ids.update(
+                                group.visual_id for _symbol, group in hollow_column
+                            )
+                            chord_index += 1
+
+                    if assigned_visual_ids:
+                        members_by_duration = {}
+                        for symbol, group in members:
+                            if group.visual_id in assigned_visual_ids:
+                                continue
+                            members_by_duration.setdefault(symbol.rhythm.rstrip("."), []).append(
+                                (symbol, group)
+                            )
+
                 for duration_members in members_by_duration.values():
                     if len(duration_members) < 2:
                         continue
@@ -418,6 +448,49 @@ class ChordResolver:
                     )
                     if chord_assigned:
                         chord_index += 1
+
+    @staticmethod
+    def _mixed_duration_hollow_columns(
+        members: list[tuple[EncodedSymbol, VisualGroup]],
+    ) -> list[list[tuple[EncodedSymbol, VisualGroup]]]:
+        """Return conservative pixel-proven hollow columns in a mixed moment."""
+        hollow_members = sorted(
+            (
+                member
+                for member in members
+                if member[1].is_hollow_notehead and member[1].moment_id is not None
+            ),
+            key=lambda member: (
+                member[1].prediction_center[0],
+                member[1].prediction_center[1],
+            ),
+        )
+        columns: list[list[tuple[EncodedSymbol, VisualGroup]]] = []
+        for member in hollow_members:
+            group = member[1]
+            for column in columns:
+                column_groups = [candidate_group for _symbol, candidate_group in column]
+                candidate_groups = [*column_groups, group]
+                widths = [
+                    max(candidate.prediction_notehead_size[0], 1.0)
+                    for candidate in candidate_groups
+                ]
+                same_moment = len({candidate.moment_id for candidate in candidate_groups}) == 1
+                compact_column = (
+                    max(candidate.prediction_center[0] for candidate in candidate_groups)
+                    - min(candidate.prediction_center[0] for candidate in candidate_groups)
+                    <= float(np.median(widths)) * VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO
+                )
+                pairwise_compatible = all(
+                    noteheads_can_share_chord_stem(group, existing)
+                    for existing in column_groups
+                )
+                if same_moment and compact_column and pairwise_compatible:
+                    column.append(member)
+                    break
+            else:
+                columns.append([member])
+        return [column for column in columns if len(column) >= 2]
 
     def _assign_physical_chord_id_to_members(
         self,
@@ -460,12 +533,8 @@ class ChordResolver:
             )
         )
         widths = [max(group.prediction_notehead_size[0], 1.0) for group in groups]
-        whole_note_proven = (
+        hollow_column_proven = (
             all(group.is_hollow_notehead for group in groups)
-            and all(
-                group.duration is not None and group.duration.rstrip(".") == "note_1"
-                for group in groups
-            )
             and bool(widths)
             and max(group.prediction_center[0] for group in groups)
             - min(group.prediction_center[0] for group in groups)
@@ -478,7 +547,7 @@ class ChordResolver:
         if (
             not stem_proven
             and not structural_chord_proven
-            and not whole_note_proven
+            and not hollow_column_proven
             and not transformer_chord_recovered
         ):
             return False
@@ -495,6 +564,8 @@ class ChordResolver:
                 group.repair_actions.append("shared_stem_proven")
             if structural_chord_proven and "structural_chord_proven" not in group.repair_actions:
                 group.repair_actions.append("structural_chord_proven")
+            if hollow_column_proven and "hollow_column_proven" not in group.repair_actions:
+                group.repair_actions.append("hollow_column_proven")
             if (
                 transformer_chord_recovered
                 and "transformer_chord_recovered" not in group.repair_actions
