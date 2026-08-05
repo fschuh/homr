@@ -41,6 +41,12 @@ inverse singular ``musicxml_id``, a ``moment_id``, notehead geometry, and a
 ``visual_status`` of ``canonical`` or ``fallback``. The two directions must
 agree, and neither identifier can participate in more than one link.
 
+``moment_id`` represents a shared musical onset and must agree for members of a
+MusicXML chord. ``chord_id`` is optional and narrower: it groups noteheads only
+when image geometry proves one physical visual chord. Simultaneous noteheads
+with independent or opposed stems therefore share a ``moment_id`` while keeping
+``chord_id: null``.
+
 An unlinked pixel candidate has ``visual_status: diagnostic`` and
 ``musicxml_id: null``. Diagnostics are reported but do not fail the consistency
 evaluation: they can indicate a real note missed by transformer recognition,

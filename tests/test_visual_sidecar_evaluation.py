@@ -377,7 +377,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
 
         self.assertIn("contract_error", divergence_kinds(report))
 
-    def test_same_staff_musicxml_chord_requires_shared_chord_and_moment(self) -> None:
+    def test_same_staff_musicxml_chord_can_share_a_physical_chord_id(self) -> None:
         xml = musicxml_document(
             xml_note("homr-note-1", "E", 4) + xml_note("homr-note-2", "G", 4, chord=True)
         )
@@ -397,51 +397,27 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
 
         self.assertTrue(report.passed, report.to_dict())
 
-    def test_broken_same_staff_chord_identifies_every_member_and_assignment(self) -> None:
+    def test_opposed_stem_musicxml_chord_needs_only_a_shared_moment(self) -> None:
         xml = musicxml_document(
             xml_note("homr-note-21", "E", 4) + xml_note("homr-note-22", "G", 4, chord=True)
         )
+        sidecar = {
+            "version": 3,
+            "notes": [
+                sidecar_note("homr-note-21", "E4", "vnote-21"),
+                sidecar_note("homr-note-22", "G4", "vnote-22"),
+            ],
+            "visual_groups": [
+                visual_group("vnote-21", "homr-note-21", 1),
+                visual_group("vnote-22", "homr-note-22", 3),
+            ],
+        }
+        for group in sidecar["visual_groups"]:
+            group["repair_actions"] = ["opposed_stems_separated"]
 
-        for chord_ids in ((None, None), ("chord-left", "chord-right")):
-            with self.subTest(chord_ids=chord_ids):
-                sidecar = {
-                    "version": 3,
-                    "notes": [
-                        sidecar_note("homr-note-21", "E4", "vnote-21"),
-                        sidecar_note("homr-note-22", "G4", "vnote-22"),
-                    ],
-                    "visual_groups": [
-                        visual_group("vnote-21", "homr-note-21", 1, chord_id=chord_ids[0]),
-                        visual_group("vnote-22", "homr-note-22", 3, chord_id=chord_ids[1]),
-                    ],
-                }
+        report = evaluate_musicxml_sidecar(xml, sidecar)
 
-                report = evaluate_musicxml_sidecar(xml, sidecar)
-                errors = [
-                    divergence
-                    for divergence in report.divergences
-                    if "inconsistent chord_id assignments" in divergence.message
-                ]
-
-                self.assertEqual(len(errors), 1, report.to_dict())
-                error = errors[0]
-                self.assertEqual(error.musicxml_id, "homr-note-21")
-                self.assertEqual(error.visual_group_id, "vnote-21")
-                self.assertIn(
-                    "part 1, measure 1, MusicXML staff 1, voice 1, event 1",
-                    error.message,
-                )
-                self.assertIn("homr-note-21/vnote-21=", error.message)
-                self.assertIn("homr-note-22/vnote-22=", error.message)
-                self.assertEqual(
-                    error.details["musicxml_ids"],
-                    ["homr-note-21", "homr-note-22"],
-                )
-                self.assertEqual(error.details["physical_staff_index"], 0)
-                self.assertEqual(
-                    [member["chord_id"] for member in error.details["members"]],
-                    list(chord_ids),
-                )
+        self.assertTrue(report.passed, report.to_dict())
 
     def test_broken_same_staff_chord_identifies_moment_assignments(self) -> None:
         xml = musicxml_document(

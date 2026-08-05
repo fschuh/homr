@@ -640,23 +640,12 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
             }
 
             moments = {_string(group.get("moment_id")) for group in staff_groups}
-            chords = {_string(group.get("chord_id")) for group in staff_groups}
             if len(moments) != 1 or None in moments:
                 add(
                     "contract_error",
                     f"Same-staff MusicXML chord at {location} has inconsistent moment_id "
                     f"assignments: {_format_member_assignments(members, 'moment_id')}; "
                     "members must share one non-null moment_id",
-                    musicxml_id=first_member_id,
-                    visual_group_id=first_visual_group_id,
-                    details=details,
-                )
-            if len(chords) != 1 or None in chords:
-                add(
-                    "contract_error",
-                    f"Same-staff MusicXML chord at {location} has inconsistent chord_id "
-                    f"assignments: {_format_member_assignments(members, 'chord_id')}; "
-                    "members must share one non-null chord_id",
                     musicxml_id=first_member_id,
                     visual_group_id=first_visual_group_id,
                     details=details,
