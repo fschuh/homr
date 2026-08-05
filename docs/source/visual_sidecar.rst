@@ -68,6 +68,22 @@ Run inference and evaluate the two generated artifacts with:
    homr-visual-eval score.png
    homr-visual-eval score.png --report score.visual-eval.json
 
+Evaluate existing artifacts without loading models or rerunning inference:
+
+.. code-block:: console
+
+   homr-visual-eval --musicxml score.musicxml
+   homr-visual-eval --sidecar score.homr.visual.json
+   homr-visual-eval --musicxml score.musicxml --sidecar alternate.visual.json
+
+With only ``--musicxml``, the evaluator infers
+``<stem>.homr.visual.json`` in the same directory. With only ``--sidecar``, it
+infers ``<stem>.musicxml`` by removing the standard ``.homr.visual.json``
+suffix. The inferred absolute path is printed before the files are loaded. If
+the inferred file does not exist, evaluation exits with status ``2``. Supplying
+both paths overrides inference; artifact options cannot be combined with the
+positional image mode.
+
 The command exits with:
 
 * ``0`` when the MusicXML and sidecar agree;
