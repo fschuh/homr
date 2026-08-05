@@ -288,6 +288,14 @@ def _has_notehead_geometry(group: dict[str, Any]) -> bool:
     )
 
 
+def _format_member_assignments(members: list[dict[str, str | None]], field: str) -> str:
+    return ", ".join(
+        f"{member['musicxml_id']}/{member['visual_group_id']}="
+        f"{member[field] if member[field] is not None else 'null'}"
+        for member in members
+    )
+
+
 def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualEvalReport:
     version = sidecar.get("version")
     if version != SIDECAR_VERSION:
@@ -581,22 +589,77 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
             staff_index = _integer(group.get("staff_index"))
             if staff_index is not None:
                 by_staff[staff_index].append(group)
-        for staff_groups in by_staff.values():
+        for staff_index, staff_groups in sorted(by_staff.items()):
             if len(staff_groups) < 2:
                 continue
+            members = [
+                {
+                    "musicxml_id": _string(group.get("musicxml_id")),
+                    "visual_group_id": _string(group.get("visual_group_id")),
+                    "moment_id": _string(group.get("moment_id")),
+                    "chord_id": _string(group.get("chord_id")),
+                }
+                for group in staff_groups
+            ]
+            member_ids = [
+                musicxml_id
+                for member in members
+                if (musicxml_id := member["musicxml_id"]) is not None
+            ]
+            member_notes = [
+                xml_notes_by_id[musicxml_id]
+                for musicxml_id in member_ids
+                if musicxml_id in xml_notes_by_id
+            ]
+            first_member_id = member_ids[0] if member_ids else None
+            first_visual_group_id = members[0]["visual_group_id"] if members else None
+            parts = sorted({note.part for note in member_notes})
+            measures = sorted({note.measure for note in member_notes})
+            staff_numbers = sorted({note.musicxml_staff_number for note in member_notes})
+            voices = sorted({note.voice for note in member_notes})
+            event_indexes = sorted({note.event_index for note in member_notes})
+            location = (
+                f"part {parts[0]}, measure {measures[0]}, MusicXML staff "
+                f"{staff_numbers[0]}, voice {voices[0]}, event {event_indexes[0]}"
+                if all(
+                    len(values) == 1
+                    for values in (parts, measures, staff_numbers, voices, event_indexes)
+                )
+                else f"physical staff index {staff_index}"
+            )
+            details = {
+                "musicxml_ids": member_ids,
+                "visual_group_ids": [member["visual_group_id"] for member in members],
+                "members": members,
+                "part_numbers": parts,
+                "measure_numbers": measures,
+                "musicxml_staff_numbers": staff_numbers,
+                "physical_staff_index": staff_index,
+                "voices": voices,
+                "event_indexes": event_indexes,
+            }
+
             moments = {_string(group.get("moment_id")) for group in staff_groups}
             chords = {_string(group.get("chord_id")) for group in staff_groups}
             if len(moments) != 1 or None in moments:
                 add(
                     "contract_error",
-                    "MusicXML chord members must share one visual moment",
-                    details={"musicxml_ids": list(event_ids)},
+                    f"Same-staff MusicXML chord at {location} has inconsistent moment_id "
+                    f"assignments: {_format_member_assignments(members, 'moment_id')}; "
+                    "members must share one non-null moment_id",
+                    musicxml_id=first_member_id,
+                    visual_group_id=first_visual_group_id,
+                    details=details,
                 )
             if len(chords) != 1 or None in chords:
                 add(
                     "contract_error",
-                    "Same-staff MusicXML chord members must share one chord_id",
-                    details={"musicxml_ids": list(event_ids)},
+                    f"Same-staff MusicXML chord at {location} has inconsistent chord_id "
+                    f"assignments: {_format_member_assignments(members, 'chord_id')}; "
+                    "members must share one non-null chord_id",
+                    musicxml_id=first_member_id,
+                    visual_group_id=first_visual_group_id,
+                    details=details,
                 )
 
     for stream, musicxml_ids in parsed_xml.non_chord_streams.items():
