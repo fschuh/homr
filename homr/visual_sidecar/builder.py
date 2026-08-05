@@ -55,6 +55,7 @@ class VisualSidecarBuilder:
             self.notehead_candidates,
             notehead_mask,
             self.stems,
+            source_image,
         )
         self.candidate_cleaner = CandidateCleaner(self.state, coordinate_transform)
         self.moments = MomentMatcher(self.state)

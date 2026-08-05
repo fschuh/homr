@@ -80,6 +80,98 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         self.assertEqual(groups["vnote-upper"]["staff_position"], 5)
         self.assertEqual(groups["vnote-lower"]["staff_position"], 5)
 
+    def test_staff_position_ignores_a_local_grid_outlier_under_a_notehead(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(140, 100),
+            autocrop_box=(0, 0, 140, 100),
+            cropped_size=(140, 100),
+            resized_size=(140, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 100),
+        )
+
+        def true_lines(x: float) -> list[float]:
+            top = 30 + 0.05 * x
+            return [top + 10 * line_index for line_index in range(5)]
+
+        grid = []
+        for x in range(0, 131, 10):
+            lines = true_lines(x)
+            if x == 60:
+                lines = [line + 5 for line in lines]
+            grid.append(StaffPoint(x, lines, 0))
+        staff = Staff(grid)
+
+        def note(x: int, visual_id: str) -> Note:
+            center_y = true_lines(x)[0] + 5
+            contour = np.array(
+                [[x - 4, center_y - 3], [x + 4, center_y + 3]],
+                dtype=np.float32,
+            )
+            return Note(
+                BoundingEllipse(((x, center_y), (8, 6), 0), contour, 1),
+                position=8,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        regular = note(20, "regular-g3")
+        over_outlier = note(60, "outlier-g3")
+        staff.add_symbol(regular)
+        staff.add_symbol(over_outlier)
+        builder = VisualSidecarBuilder(coordinate_transform)
+
+        builder.prepare_recovery_notes([staff])
+        builder.add_staff_visual_notes(
+            0,
+            [regular, over_outlier],
+            [regular.copy(), over_outlier.copy()],
+        )
+        groups = {
+            group["visual_group_id"]: group for group in builder.to_json_dict()["visual_groups"]
+        }
+
+        self.assertEqual(groups["regular-g3"]["staff_position"], 8)
+        self.assertEqual(groups["outlier-g3"]["staff_position"], 8)
+
+    def test_staff_position_uses_printed_lines_when_resampled_grid_drifts(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(140, 100),
+            autocrop_box=(0, 0, 140, 100),
+            cropped_size=(140, 100),
+            resized_size=(140, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 100),
+        )
+        source_image = np.full((100, 140), 255, dtype=np.uint8)
+        for y in (30, 40, 50, 60, 70):
+            source_image[y, :] = 0
+
+        grid = []
+        for x in range(0, 131, 10):
+            lines = [30.0, 40.0, 50.0, 60.0, 70.0]
+            if 30 <= x <= 90:
+                lines = [30.0, 40.0, 54.0, 64.0, 74.0]
+            grid.append(StaffPoint(x, lines, 0))
+        staff = Staff(grid)
+        contour = np.array([[56, 62], [64, 68]], dtype=np.float32)
+        note = Note(
+            BoundingEllipse(((60, 65), (8, 6), 0), contour, 1),
+            position=2,
+            stem=None,
+            stem_direction=None,
+            visual_id="bottom-space-note",
+        )
+        staff.add_symbol(note)
+        builder = VisualSidecarBuilder(coordinate_transform, source_image=source_image)
+
+        builder.prepare_recovery_notes([staff])
+        builder.add_staff_visual_notes(0, [note], [note.copy()])
+        group = builder.to_json_dict()["visual_groups"][0]
+
+        self.assertEqual(group["staff_position"], 2)
+
     def test_recovers_real_fifth_ledger_line_candidate_for_sidecar_only(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
             source_image_size=(200, 200),
