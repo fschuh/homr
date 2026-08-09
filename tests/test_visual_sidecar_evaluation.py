@@ -243,6 +243,54 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         self.assertTrue(report.passed)
         self.assertEqual(report.capabilities["visual_accidental_check"], "not_evaluated")
 
+    def test_marked_cross_staff_repair_uses_the_physical_staff_clef(self) -> None:
+        clefs = (
+            "<clef number='1'><sign>G</sign><line>2</line></clef>"
+            "<clef number='2'><sign>F</sign><line>4</line></clef>"
+        )
+        xml = musicxml_document(xml_note("homr-note-1", "F", 3, alter=1, staff=2), clefs)
+        note = sidecar_note("homr-note-1", "F#3", "vnote-1", staff=2)
+        note["alignment_method"] = "cross_staff_repair"
+        group = visual_group("vnote-1", "homr-note-1", -5, status="fallback", staff=0)
+        group["repair_actions"].append("cross_staff_link_repaired")
+        sidecar = {"version": 3, "notes": [note], "visual_groups": [group]}
+
+        report = evaluate_musicxml_sidecar(xml, sidecar)
+
+        self.assertTrue(report.passed, report.to_dict())
+        self.assertEqual(report.capabilities["visual_accidental_check"], "not_evaluated")
+
+    def test_cross_staff_mismatch_without_complete_repair_metadata_fails(self) -> None:
+        clefs = (
+            "<clef number='1'><sign>G</sign><line>2</line></clef>"
+            "<clef number='2'><sign>F</sign><line>4</line></clef>"
+        )
+        xml = musicxml_document(xml_note("homr-note-1", "F", 3, staff=2), clefs)
+        note = sidecar_note("homr-note-1", "F3", "vnote-1", staff=2)
+        note["alignment_method"] = "cross_staff_repair"
+        group = visual_group("vnote-1", "homr-note-1", -5, status="fallback", staff=0)
+        sidecar = {"version": 3, "notes": [note], "visual_groups": [group]}
+
+        report = evaluate_musicxml_sidecar(xml, sidecar)
+
+        self.assertIn("contract_error", divergence_kinds(report))
+
+    def test_cross_staff_repair_still_checks_diatonic_visual_position(self) -> None:
+        clefs = (
+            "<clef number='1'><sign>G</sign><line>2</line></clef>"
+            "<clef number='2'><sign>F</sign><line>4</line></clef>"
+        )
+        xml = musicxml_document(xml_note("homr-note-1", "F", 3, staff=2), clefs)
+        note = sidecar_note("homr-note-1", "F3", "vnote-1", staff=2)
+        note["alignment_method"] = "cross_staff_repair"
+        group = visual_group("vnote-1", "homr-note-1", -4, status="fallback", staff=0)
+        group["repair_actions"].append("cross_staff_link_repaired")
+        sidecar = {"version": 3, "notes": [note], "visual_groups": [group]}
+
+        report = evaluate_musicxml_sidecar(xml, sidecar)
+
+        self.assertEqual(divergence_kinds(report), {"visual_pitch_divergence"})
+
     def test_supported_clefs_and_octave_changes_derive_local_positions(self) -> None:
         cases = [
             ("<clef number='1'><sign>G</sign><line>2</line></clef>", "C", 4, -1),

@@ -9,6 +9,8 @@ from homr.visual_sidecar.candidate_cleanup import CandidateCleaner
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
 from homr.visual_sidecar.models import (
+    CROSS_STAFF_ALIGNMENT_METHOD,
+    CROSS_STAFF_REPAIR_ACTION,
     MusicXmlNoteRecord,
     SidecarState,
     VisualGroup,
@@ -324,6 +326,36 @@ class VisualSidecarBuilder:
             if not recovered_any:
                 break
 
+        cross_staff_assignments = self.moments.cross_staff_assignments(
+            symbols,
+            pending_symbols,
+            [group for group in visual_groups if group.visual_id not in assigned_visual_ids],
+            list(assigned_group_by_symbol_id.values()),
+        )
+        cross_staff_symbol_ids = {
+            symbol.visual_match_id for symbol, _group in cross_staff_assignments
+        }
+        for symbol, visual_group in cross_staff_assignments:
+            visual_group.duration = symbol.rhythm
+            visual_group.visual_status = "fallback"
+            visual_group.moment_id = self.state.moment_id_by_symbol_id.get(symbol.visual_match_id)
+            if CROSS_STAFF_REPAIR_ACTION not in visual_group.repair_actions:
+                visual_group.repair_actions.append(CROSS_STAFF_REPAIR_ACTION)
+            self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
+                symbol=symbol,
+                visual_id=visual_group.visual_id,
+                confidence=self._score_match(symbol, visual_group),
+                alignment_method=CROSS_STAFF_ALIGNMENT_METHOD,
+            )
+            assigned_group_by_symbol_id[symbol.visual_match_id] = visual_group
+            assigned_visual_ids.add(visual_group.visual_id)
+            self.unmatched_visual_group_ids.discard(visual_group.visual_id)
+        pending_symbols = [
+            symbol
+            for symbol in pending_symbols
+            if symbol.visual_match_id not in cross_staff_symbol_ids
+        ]
+
         for symbol in pending_symbols:
             self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                 symbol=symbol,
@@ -376,7 +408,12 @@ class VisualSidecarBuilder:
                     f"Visual group {visual_id} is already linked to {visual_group.musicxml_id}"
                 )
             expected_staff_index = musicxml_staff_number - 1
-            if visual_group.staff_index != expected_staff_index:
+            cross_staff_repaired = (
+                alignment_method == CROSS_STAFF_ALIGNMENT_METHOD
+                and visual_group.visual_status == "fallback"
+                and CROSS_STAFF_REPAIR_ACTION in visual_group.repair_actions
+            )
+            if visual_group.staff_index != expected_staff_index and not cross_staff_repaired:
                 raise ValueError(
                     f"Visual group {visual_id} belongs to physical staff "
                     f"{visual_group.staff_index}, expected {expected_staff_index}"

@@ -5,6 +5,8 @@ from homr.model import Note
 from homr.transformer.vocabulary import EncodedSymbol
 
 VISUAL_SIDECAR_VERSION = 3
+CROSS_STAFF_ALIGNMENT_METHOD = "cross_staff_repair"
+CROSS_STAFF_REPAIR_ACTION = "cross_staff_link_repaired"
 
 
 def sounding_pitch(symbol: EncodedSymbol) -> str | None:

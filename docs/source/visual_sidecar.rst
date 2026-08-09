@@ -24,7 +24,9 @@ The v3 names distinguish three different concepts:
 
 ``musicxml_staff_number``
    One-based value of the MusicXML note's ``<staff>`` element. It appears on a
-   sidecar ``notes`` record rather than a visual group.
+   sidecar ``notes`` record rather than a visual group. It normally identifies
+   the same staff as ``visual_groups[].staff_index + 1``. The sole exception is
+   an explicitly marked cross-staff repair described below.
 
 ``staff_position``
    Diatonic line/space position local to the physical staff. The bottom line is
@@ -63,6 +65,27 @@ and recovery of notehead geometry from existing image candidates. Repair
 metadata remains available through ``visual_status``, ``provenance``,
 ``alignment_method``, and ``repair_actions``. Recovery never creates a MusicXML
 note and never invents stem geometry without pixel evidence.
+
+A transformer can exceptionally emit a real note in the wrong grand-staff
+branch: MusicXML then assigns the note to one staff while the existing notehead
+pixels belong to the other. HOMR links that candidate only when all of the
+following evidence is unique:
+
+* the MusicXML-side symbol is otherwise unlinked;
+* no candidate on its declared staff encodes the same diatonic pitch;
+* exactly one candidate on the other physical staff encodes its step and octave
+  under that staff's active clef; and
+* the candidate occupies the exact missing moment bracketed by the immediately
+  preceding and following linked moments, or joins an already linked visual
+  moment at the same horizontal position.
+
+The repaired visual group stays on its observed physical ``staff_index`` and is
+serialized with ``visual_status: fallback`` and
+``repair_actions: ["cross_staff_link_repaired", ...]``. Its note record uses
+``alignment_method: "cross_staff_repair"`` while retaining the unchanged
+MusicXML ``musicxml_staff_number``. Ambiguous candidates, ambiguous rhythmic
+slots, missing clefs, and cases that require accidental recognition to
+disambiguate remain unlinked rather than guessed.
 
 Evaluation CLI
 --------------
@@ -103,9 +126,12 @@ mismatches, and malformed links.
 
 Pitch validation has two independent layers. First, ``notes[].pitch`` must equal
 the MusicXML pitch, including its accidental. Second, MusicXML step and octave,
-the active clef (including ``clef-octave-change``), and
-``musicxml_staff_number`` must imply the visual group's ``staff_position``.
-The second check detects a pitch assigned to the wrong printed line or space.
+the active clef (including ``clef-octave-change``), and the relevant physical
+staff must imply the visual group's ``staff_position``. Normally that physical
+staff is specified by ``musicxml_staff_number``. For an explicitly marked
+cross-staff repair, the evaluator instead uses the clef belonging to the visual
+group's ``staff_index``. The second check detects a pitch assigned to the wrong
+printed line or space.
 
 Accidental glyphs are not yet represented and associated independently in the
 sidecar. Consequently, the geometric check validates diatonic step and octave,

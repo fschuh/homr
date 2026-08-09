@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from typing import Any
 from xml.etree import ElementTree
 
-from homr.visual_sidecar.models import VISUAL_SIDECAR_VERSION
+from homr.visual_sidecar.models import (
+    CROSS_STAFF_ALIGNMENT_METHOD,
+    CROSS_STAFF_REPAIR_ACTION,
+    VISUAL_SIDECAR_VERSION,
+)
 
 SIDECAR_VERSION = VISUAL_SIDECAR_VERSION
 REPORT_VERSION = 1
@@ -91,6 +95,7 @@ class MusicXmlNote:
     musicxml_staff_number: int
     voice: int
     clef: ClefDefinition | None
+    active_clefs: dict[int, ClefDefinition | None]
     event_index: int
     is_chord_tone: bool
 
@@ -229,6 +234,7 @@ def parse_musicxml(musicxml: str) -> ParsedMusicXml:
                     musicxml_staff_number=staff_number,
                     voice=voice,
                     clef=active_clefs.get(staff_number),
+                    active_clefs=dict(active_clefs),
                     event_index=event_index,
                     is_chord_tone=is_chord_tone,
                 )
@@ -248,8 +254,12 @@ def parse_musicxml(musicxml: str) -> ParsedMusicXml:
     )
 
 
-def expected_staff_position(note: MusicXmlNote) -> int | None:
-    clef = note.clef
+def expected_staff_position(
+    note: MusicXmlNote, *, musicxml_staff_number: int | None = None
+) -> int | None:
+    clef = (
+        note.clef if musicxml_staff_number is None else note.active_clefs.get(musicxml_staff_number)
+    )
     if clef is None or clef.sign not in CLEF_REFERENCE_PITCHES or not 1 <= clef.line <= 5:
         return None
     reference_step, reference_octave = CLEF_REFERENCE_PITCHES[clef.sign]
@@ -527,7 +537,36 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
 
         staff_index = _integer(group.get("staff_index"))
         expected_staff_index = xml_note.musicxml_staff_number - 1
-        if staff_index != expected_staff_index:
+        repair_actions = group.get("repair_actions")
+        has_cross_staff_action = (
+            isinstance(repair_actions, list) and CROSS_STAFF_REPAIR_ACTION in repair_actions
+        )
+        has_cross_staff_alignment = (
+            _string(sidecar_note.get("alignment_method")) == CROSS_STAFF_ALIGNMENT_METHOD
+        )
+        claims_cross_staff_repair = has_cross_staff_action or has_cross_staff_alignment
+        valid_cross_staff_repair = (
+            has_cross_staff_action
+            and has_cross_staff_alignment
+            and group.get("visual_status") == "fallback"
+            and staff_index is not None
+            and staff_index != expected_staff_index
+        )
+        if claims_cross_staff_repair and not valid_cross_staff_repair:
+            add(
+                "contract_error",
+                "Cross-staff repair metadata is incomplete or inconsistent",
+                musicxml_id=musicxml_id,
+                visual_group_id=visual_group_id,
+                details={
+                    "alignment_method": sidecar_note.get("alignment_method"),
+                    "repair_actions": repair_actions,
+                    "visual_status": group.get("visual_status"),
+                    "musicxml_staff_index": expected_staff_index,
+                    "visual_staff_index": staff_index,
+                },
+            )
+        elif staff_index != expected_staff_index and not valid_cross_staff_repair:
             add(
                 "contract_error",
                 "Visual group physical staff does not match MusicXML staff",
@@ -537,7 +576,14 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
             )
 
         actual_staff_position = _integer(group.get("staff_position"))
-        expected_position = expected_staff_position(xml_note)
+        pitch_staff_number = (
+            staff_index + 1
+            if valid_cross_staff_repair and staff_index is not None
+            else xml_note.musicxml_staff_number
+        )
+        expected_position = expected_staff_position(
+            xml_note, musicxml_staff_number=pitch_staff_number
+        )
         if expected_position is None:
             add(
                 "unevaluable_visual_pitch",

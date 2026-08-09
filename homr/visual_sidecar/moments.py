@@ -20,6 +20,8 @@ VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO = 0.65
 ATTENTION_MATCH_NOTEHEAD_WIDTH_RATIO = 1.5
 ATTENTION_UNIQUENESS_NOTEHEAD_WIDTH_RATIO = 0.25
 DISPLACED_CHORD_MAX_VERTICAL_NOTEHEAD_RATIO = 1.25
+CROSS_STAFF_SLOT_NOTEHEAD_WIDTH_RATIO = 1.5
+CLEF_REFERENCE_PITCHES = {"G": "G4", "F": "F3", "C": "C4"}
 
 
 class MomentMatcher:
@@ -39,6 +41,235 @@ class MomentMatcher:
     @staticmethod
     def token_moments(symbols: list[EncodedSymbol]) -> list[list[EncodedSymbol]]:
         return token_moments(symbols)
+
+    def cross_staff_assignments(
+        self,
+        symbols: list[EncodedSymbol],
+        pending_symbols: list[EncodedSymbol],
+        available_groups: list[VisualGroup],
+        assigned_groups: list[VisualGroup],
+    ) -> list[tuple[EncodedSymbol, VisualGroup]]:
+        """Link unique other-staff candidates in one missing structural slot.
+
+        This repairs a transformer staff-branch error, not a missing note. Pixel
+        geometry must already provide the notehead, and its local staff position
+        must encode the recognized step and octave under that physical staff's
+        active clef. Accidentals deliberately do not participate because they are
+        not independently associated with noteheads in sidecar v3.
+        """
+        if not pending_symbols or not available_groups:
+            return []
+
+        moment_ids = self._ordered_note_moment_ids(symbols)
+        moment_index_by_id = {
+            moment_id: moment_index for moment_index, moment_id in enumerate(moment_ids)
+        }
+        groups_by_moment: dict[str, list[VisualGroup]] = {}
+        for group in assigned_groups:
+            if group.moment_id is not None:
+                groups_by_moment.setdefault(group.moment_id, []).append(group)
+        clefs_by_symbol_id = self._active_clefs_by_symbol_id(symbols)
+
+        slot_cache: dict[str, list[VisualGroup]] = {}
+        possible_groups_by_symbol_id: dict[int, list[VisualGroup]] = {}
+        for symbol in pending_symbols:
+            if not symbol.rhythm.startswith("note"):
+                continue
+            moment_id = self._moment_id_by_symbol_id.get(symbol.visual_match_id)
+            if moment_id is None or moment_id not in moment_index_by_id:
+                continue
+            if moment_id not in slot_cache:
+                slot_cache[moment_id] = self._cross_staff_slot_groups(
+                    moment_id,
+                    moment_ids,
+                    moment_index_by_id,
+                    available_groups,
+                    groups_by_moment,
+                )
+            slot_groups = slot_cache[moment_id]
+            if not slot_groups:
+                continue
+
+            expected_staff_index = 1 if symbol.position == "lower" else 0
+            clefs = clefs_by_symbol_id.get(symbol.visual_match_id, {})
+            same_staff_matches = [
+                group
+                for group in slot_groups
+                if group.staff_index == expected_staff_index
+                and self._group_encodes_symbol_pitch(group, symbol, clefs)
+            ]
+            if same_staff_matches:
+                # Ordinary staff ownership remains preferable even if another
+                # candidate happens to encode the same diatonic pitch.
+                continue
+            possible_groups_by_symbol_id[symbol.visual_match_id] = [
+                group
+                for group in slot_groups
+                if group.staff_index != expected_staff_index
+                and self._group_encodes_symbol_pitch(group, symbol, clefs)
+            ]
+
+        claiming_symbols_by_visual_id: dict[str, list[int]] = {}
+        for symbol_id, groups in possible_groups_by_symbol_id.items():
+            for group in groups:
+                claiming_symbols_by_visual_id.setdefault(group.visual_id, []).append(symbol_id)
+
+        result = []
+        for symbol in pending_symbols:
+            groups = possible_groups_by_symbol_id.get(symbol.visual_match_id, [])
+            if len(groups) != 1:
+                continue
+            group = groups[0]
+            claimants = claiming_symbols_by_visual_id.get(group.visual_id, [])
+            if len(claimants) != 1 or claimants[0] != symbol.visual_match_id:
+                continue
+            result.append((symbol, group))
+        return result
+
+    def _ordered_note_moment_ids(self, symbols: list[EncodedSymbol]) -> list[str]:
+        result = []
+        for moment in token_moments(symbols):
+            occupied = [symbol for symbol in moment if self._symbol_occupies_visual_moment(symbol)]
+            if not occupied:
+                continue
+            moment_id = self._moment_id_by_symbol_id.get(occupied[0].visual_match_id)
+            if moment_id is not None:
+                result.append(moment_id)
+        return result
+
+    @staticmethod
+    def _active_clefs_by_symbol_id(
+        symbols: list[EncodedSymbol],
+    ) -> dict[int, dict[int, tuple[str, int]]]:
+        active_clefs: dict[int, tuple[str, int]] = {}
+        result: dict[int, dict[int, tuple[str, int]]] = {}
+        for symbol in symbols:
+            if symbol.rhythm.startswith("clef_"):
+                definition = symbol.rhythm.removeprefix("clef_")
+                if len(definition) >= 2 and definition[0] in CLEF_REFERENCE_PITCHES:
+                    try:
+                        line = int(definition[1:])
+                    except ValueError:
+                        pass
+                    else:
+                        if 1 <= line <= 5:
+                            staff_index = 1 if symbol.position == "lower" else 0
+                            active_clefs[staff_index] = (definition[0], line)
+            if symbol.rhythm.startswith(("note", "rest")):
+                result[symbol.visual_match_id] = dict(active_clefs)
+        return result
+
+    @classmethod
+    def _cross_staff_slot_groups(
+        cls,
+        moment_id: str,
+        moment_ids: list[str],
+        moment_index_by_id: dict[str, int],
+        available_groups: list[VisualGroup],
+        groups_by_moment: dict[str, list[VisualGroup]],
+    ) -> list[VisualGroup]:
+        target_groups = groups_by_moment.get(moment_id, [])
+        if target_groups:
+            target_x = float(np.median([group.prediction_center[0] for group in target_groups]))
+            widths = [
+                max(group.prediction_notehead_size[0], 1.0)
+                for group in [*target_groups, *available_groups]
+            ]
+            tolerance = max(
+                VISUAL_MOMENT_X_TOLERANCE,
+                float(np.median(widths)) * CROSS_STAFF_SLOT_NOTEHEAD_WIDTH_RATIO,
+            )
+            candidates = [
+                group
+                for group in available_groups
+                if abs(group.prediction_center[0] - target_x) <= tolerance
+            ]
+            return [
+                candidate
+                for candidate in candidates
+                if len(cls._construct_visual_moments([*target_groups, candidate])) == 1
+            ]
+
+        return cls._groups_in_missing_cross_staff_slot(
+            moment_id,
+            moment_ids,
+            moment_index_by_id,
+            available_groups,
+            groups_by_moment,
+        )
+
+    @classmethod
+    def _groups_in_missing_cross_staff_slot(
+        cls,
+        moment_id: str,
+        moment_ids: list[str],
+        moment_index_by_id: dict[str, int],
+        available_groups: list[VisualGroup],
+        groups_by_moment: dict[str, list[VisualGroup]],
+    ) -> list[VisualGroup]:
+        target_index = moment_index_by_id[moment_id]
+        previous_indices = [
+            index
+            for index in range(target_index - 1, -1, -1)
+            if groups_by_moment.get(moment_ids[index])
+        ]
+        following_indices = [
+            index
+            for index in range(target_index + 1, len(moment_ids))
+            if groups_by_moment.get(moment_ids[index])
+        ]
+        if not previous_indices or not following_indices:
+            return []
+        previous_index = previous_indices[0]
+        following_index = following_indices[0]
+        if previous_index != target_index - 1 or following_index != target_index + 1:
+            return []
+        previous_x = float(
+            np.median(
+                [
+                    group.prediction_center[0]
+                    for group in groups_by_moment[moment_ids[previous_index]]
+                ]
+            )
+        )
+        following_x = float(
+            np.median(
+                [
+                    group.prediction_center[0]
+                    for group in groups_by_moment[moment_ids[following_index]]
+                ]
+            )
+        )
+        if previous_x >= following_x:
+            return []
+        candidates = [
+            group
+            for group in available_groups
+            if previous_x < group.prediction_center[0] < following_x
+        ]
+        if not candidates:
+            return []
+        visual_moments = cls._construct_visual_moments(candidates)
+        if len(visual_moments) != 1:
+            return []
+        return [candidates[group_index] for group_index in visual_moments[0]]
+
+    @staticmethod
+    def _group_encodes_symbol_pitch(
+        group: VisualGroup,
+        symbol: EncodedSymbol,
+        clefs: dict[int, tuple[str, int]],
+    ) -> bool:
+        clef = clefs.get(group.staff_index)
+        pitch_index = diatonic_pitch_index(symbol.pitch)
+        if clef is None or pitch_index is None:
+            return False
+        sign, line = clef
+        reference_pitch_index = diatonic_pitch_index(CLEF_REFERENCE_PITCHES[sign])
+        if reference_pitch_index is None:
+            return False
+        expected_position = 2 * line - 1 + pitch_index - reference_pitch_index
+        return group.staff_position == expected_position
 
     def _structural_moment_assignments(
         self,

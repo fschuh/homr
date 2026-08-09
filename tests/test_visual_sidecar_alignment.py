@@ -617,3 +617,127 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
             builder.visual_groups["surplus-upper"].visual_status,
             "diagnostic",
         )
+
+    def test_unique_missing_moment_repairs_transformer_cross_staff_link(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(140, 180),
+            autocrop_box=(0, 0, 140, 180),
+            cropped_size=(140, 180),
+            resized_size=(140, 180),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 180),
+        )
+
+        def make_note(x: int, y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (14, 10), -20), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        previous = make_note(20, 140, "previous-lower")
+        cross_staff_candidate = make_note(60, 70, "cross-staff-candidate")
+        following = make_note(100, 140, "following-lower")
+        notes = [previous, cross_staff_candidate, following]
+        builder = VisualSidecarBuilder(coordinate_transform)
+        builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        for visual_id in ("previous-lower", "following-lower"):
+            builder.visual_groups[visual_id].staff_index = 1
+        builder.visual_groups["cross-staff-candidate"].staff_position = -5
+
+        previous_symbol = EncodedSymbol("note_8", "D2", position="lower", coordinates=(20, 140))
+        misplaced_symbol = EncodedSymbol(
+            "note_8",
+            "F3",
+            lift="#",
+            position="lower",
+            coordinates=(60, 140),
+        )
+        following_symbol = EncodedSymbol("note_8", "D2", position="lower", coordinates=(100, 140))
+        builder.add_staff_matches(
+            [
+                EncodedSymbol("clef_G2", position="upper"),
+                EncodedSymbol("clef_F4", position="lower"),
+                previous_symbol,
+                misplaced_symbol,
+                following_symbol,
+            ],
+            0,
+        )
+
+        match = builder.matches_by_symbol_id[misplaced_symbol.visual_match_id]
+        repaired_group = builder.visual_groups["cross-staff-candidate"]
+        self.assertEqual(match.visual_id, "cross-staff-candidate")
+        self.assertEqual(match.alignment_method, "cross_staff_repair")
+        self.assertEqual(repaired_group.staff_index, 0)
+        self.assertEqual(repaired_group.staff_position, -5)
+        self.assertEqual(repaired_group.moment_id, "moment-1-2")
+        self.assertEqual(repaired_group.visual_status, "fallback")
+        self.assertIn("cross_staff_link_repaired", repaired_group.repair_actions)
+        self.assertNotIn("cross-staff-candidate", builder.unmatched_visual_group_ids)
+
+        builder.record_musicxml_note(
+            "homr-note-1",
+            misplaced_symbol,
+            part=1,
+            measure=1,
+            musicxml_staff_number=2,
+            voice=1,
+        )
+        self.assertEqual(repaired_group.musicxml_id, "homr-note-1")
+
+    def test_ambiguous_cross_staff_candidates_remain_diagnostic(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(140, 180),
+            autocrop_box=(0, 0, 140, 180),
+            cropped_size=(140, 180),
+            resized_size=(140, 180),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 180),
+        )
+
+        def make_note(x: int, y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (14, 10), -20), contour),
+                position=4,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(20, 140, "previous-lower"),
+            make_note(58, 70, "candidate-a"),
+            make_note(62, 70, "candidate-b"),
+            make_note(100, 140, "following-lower"),
+        ]
+        builder = VisualSidecarBuilder(coordinate_transform)
+        builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        for visual_id in ("previous-lower", "following-lower"):
+            builder.visual_groups[visual_id].staff_index = 1
+        for visual_id in ("candidate-a", "candidate-b"):
+            builder.visual_groups[visual_id].staff_position = -5
+
+        misplaced_symbol = EncodedSymbol(
+            "note_8", "F3", lift="#", position="lower", coordinates=(60, 140)
+        )
+        builder.add_staff_matches(
+            [
+                EncodedSymbol("clef_G2", position="upper"),
+                EncodedSymbol("clef_F4", position="lower"),
+                EncodedSymbol("note_8", "D2", position="lower", coordinates=(20, 140)),
+                misplaced_symbol,
+                EncodedSymbol("note_8", "D2", position="lower", coordinates=(100, 140)),
+            ],
+            0,
+        )
+
+        self.assertIsNone(builder.matches_by_symbol_id[misplaced_symbol.visual_match_id].visual_id)
+        self.assertEqual(
+            builder.unmatched_visual_group_ids.intersection({"candidate-a", "candidate-b"}),
+            {"candidate-a", "candidate-b"},
+        )
