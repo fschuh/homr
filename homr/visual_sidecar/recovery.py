@@ -1,3 +1,4 @@
+import itertools
 from typing import Any
 
 import cv2
@@ -262,37 +263,115 @@ class RecoveryManager:
         if min(len(left_x), len(right_x)) < max(4, int(round(unit_size))):
             return fitted_lines
 
-        refined_lines: list[float] = []
-        for fitted_y in fitted_lines:
-            candidates: list[tuple[float, int, float, float, int]] = []
-            first_y = max(0, int(round(fitted_y)) - search_radius)
-            last_y = min(height - 1, int(round(fitted_y)) + search_radius)
-            for candidate_y in range(first_y, last_y + 1):
-                pixels = image[candidate_y, sample_x].astype(np.float32)
-                left_dark_count = int(np.count_nonzero(image[candidate_y, left_x] < 160))
-                right_dark_count = int(np.count_nonzero(image[candidate_y, right_x] < 160))
-                bilateral_support = min(
-                    left_dark_count / len(left_x), right_dark_count / len(right_x)
+        line_windows: list[tuple[float, float, float, list[float]]] = []
+        for staff_line_shift in (0, -1, 1):
+            shifted_lines = [line + staff_line_shift * unit_size for line in fitted_lines]
+            refined_lines: list[float] = []
+            supports: list[float] = []
+            for shifted_y in shifted_lines:
+                candidates: list[tuple[float, int, float, float, int]] = []
+                first_y = max(0, int(round(shifted_y)) - search_radius)
+                last_y = min(height - 1, int(round(shifted_y)) + search_radius)
+                for candidate_y in range(first_y, last_y + 1):
+                    pixels = image[candidate_y, sample_x].astype(np.float32)
+                    left_dark_count = int(np.count_nonzero(image[candidate_y, left_x] < 160))
+                    right_dark_count = int(np.count_nonzero(image[candidate_y, right_x] < 160))
+                    bilateral_support = min(
+                        left_dark_count / len(left_x), right_dark_count / len(right_x)
+                    )
+                    dark_count = left_dark_count + right_dark_count
+                    darkness = float(np.sum(255 - pixels))
+                    shifted_distance = -abs(candidate_y - shifted_y)
+                    candidates.append(
+                        (bilateral_support, dark_count, darkness, shifted_distance, candidate_y)
+                    )
+                best_support, _best_count, _best_darkness, _best_distance, best_y = max(candidates)
+                if best_support < 0.35:
+                    break
+                supports.append(best_support)
+                refined_lines.append(float(best_y))
+            if len(refined_lines) != len(fitted_lines):
+                continue
+            spacings = np.diff(refined_lines)
+            if (
+                not np.all(spacings > 0)
+                or np.any(spacings < 0.6 * unit_size)
+                or np.any(spacings > 1.4 * unit_size)
+            ):
+                continue
+            line_windows.append(
+                (
+                    min(supports),
+                    float(np.mean(supports)),
+                    -abs(float(staff_line_shift)),
+                    refined_lines,
                 )
-                dark_count = left_dark_count + right_dark_count
-                darkness = float(np.sum(255 - pixels))
-                fitted_distance = -abs(candidate_y - fitted_y)
-                candidates.append(
-                    (bilateral_support, dark_count, darkness, fitted_distance, candidate_y)
-                )
-            best_support, _best_count, _best_darkness, _best_distance, best_y = max(candidates)
-            if best_support < 0.35:
-                return fitted_lines
-            refined_lines.append(float(best_y))
+            )
+        if line_windows:
+            return max(line_windows, key=lambda window: window[:3])[3]
 
-        spacings = np.diff(refined_lines)
-        if (
-            not np.all(spacings > 0)
-            or np.any(spacings < 0.6 * unit_size)
-            or np.any(spacings > 1.4 * unit_size)
-        ):
+        # If individual grid lines drift by different amounts, no rigidly shifted
+        # window can work. Search the complete nearby band for five bilateral ink
+        # runs, then require regular staff spacing. Short ledger lines, beams, and
+        # noteheads normally fail the bilateral support requirement.
+        scan_top = max(0, int(round(min(fitted_lines) - unit_size)))
+        scan_bottom = min(height - 1, int(round(max(fitted_lines) + unit_size)))
+        supported_runs: list[list[tuple[float, int, float, int]]] = []
+        current_run: list[tuple[float, int, float, int]] = []
+        for candidate_y in range(scan_top, scan_bottom + 1):
+            pixels = image[candidate_y, sample_x].astype(np.float32)
+            left_dark_count = int(np.count_nonzero(image[candidate_y, left_x] < 160))
+            right_dark_count = int(np.count_nonzero(image[candidate_y, right_x] < 160))
+            bilateral_support = min(left_dark_count / len(left_x), right_dark_count / len(right_x))
+            if bilateral_support < 0.35:
+                if current_run:
+                    supported_runs.append(current_run)
+                    current_run = []
+                continue
+            current_run.append(
+                (
+                    bilateral_support,
+                    left_dark_count + right_dark_count,
+                    float(np.sum(255 - pixels)),
+                    candidate_y,
+                )
+            )
+        if current_run:
+            supported_runs.append(current_run)
+
+        line_peaks = [max(run) for run in supported_runs]
+        recovered_windows: list[tuple[float, float, float, float, list[float]]] = []
+        for peak_subset in itertools.combinations(line_peaks, len(fitted_lines)):
+            ordered_peaks = sorted(peak_subset, key=lambda peak: peak[3])
+            recovered_lines = [float(peak[3]) for peak in ordered_peaks]
+            spacings = np.diff(recovered_lines)
+            if (
+                not np.all(spacings > 0)
+                or np.any(spacings < 0.6 * unit_size)
+                or np.any(spacings > 1.4 * unit_size)
+            ):
+                continue
+            supports = [peak[0] for peak in ordered_peaks]
+            fitted_distance = float(
+                np.mean(
+                    [
+                        min(abs(line_y - fitted_y) for fitted_y in fitted_lines)
+                        for line_y in recovered_lines
+                    ]
+                )
+            )
+            recovered_windows.append(
+                (
+                    min(supports),
+                    float(np.mean(supports)),
+                    -float(np.std(spacings)),
+                    -fitted_distance,
+                    recovered_lines,
+                )
+            )
+        if not recovered_windows:
             return fitted_lines
-        return refined_lines
+        return max(recovered_windows, key=lambda window: window[:4])[4]
 
     def _staff_index_for_center(self, staff: Staff, center: tuple[float, float]) -> int:
         lines_per_staff = constants.number_of_lines_on_a_staff

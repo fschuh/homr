@@ -11,6 +11,122 @@ from tests.visual_sidecar_helpers import diagnostic_visual_group_ids
 
 
 class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
+    def test_surplus_chord_candidates_use_the_unique_diatonic_shape(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(140, 160),
+            autocrop_box=(0, 0, 140, 160),
+            cropped_size=(140, 160),
+            resized_size=(140, 160),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 160),
+        )
+
+        def make_note(position: int, *, x: int = 70, suffix: str = "") -> Note:
+            y = 130 - 8 * position
+            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (14, 10), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=f"position-{position}{suffix}",
+            )
+
+        notes = [make_note(position) for position in (11, 10, 9, 6, 4, 3, 2)]
+        # Split hollow heads can contribute two horizontal candidates at the
+        # same staff position. They must not make an otherwise unique pitch
+        # shape ambiguous.
+        notes.extend(
+            [
+                make_note(6, x=82, suffix="-right"),
+                make_note(4, x=82, suffix="-right"),
+            ]
+        )
+        builder = VisualSidecarBuilder(coordinate_transform)
+        builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        symbols = [
+            EncodedSymbol("note_1", "A5", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "G5", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "C5", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "A4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "G4", position="upper"),
+        ]
+
+        builder.add_staff_matches(symbols, 0)
+
+        note_symbols = [symbol for symbol in symbols if symbol.rhythm.startswith("note")]
+        self.assertEqual(
+            [
+                builder.matches_by_symbol_id[symbol.visual_match_id].visual_id
+                for symbol in note_symbols
+            ],
+            ["position-11", "position-10", "position-6", "position-4", "position-3"],
+        )
+        self.assertEqual(
+            builder.unmatched_visual_group_ids,
+            {"position-9", "position-2", "position-6-right", "position-4-right"},
+        )
+
+    def test_touching_displaced_second_merges_despite_equal_rounded_position(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(140, 140),
+            autocrop_box=(0, 0, 140, 140),
+            cropped_size=(140, 140),
+            resized_size=(140, 140),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 140),
+        )
+
+        def make_note(x: int, y: int, position: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((x, y), (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((x, y), (20, 14), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        notes = [
+            make_note(60, 35, 5, "top"),
+            make_note(60, 70, 1, "bottom-left"),
+            # The two touching heads are an adjacent second even though their
+            # biased segmentation centers round to the same staff position.
+            make_note(78, 64, 1, "bottom-right"),
+        ]
+        builder = VisualSidecarBuilder(coordinate_transform)
+        builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        symbols = [
+            EncodedSymbol("note_1", "B4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "F4", position="upper"),
+            EncodedSymbol("chord"),
+            EncodedSymbol("note_1", "E4", position="upper"),
+        ]
+
+        builder.add_staff_matches(symbols, 0)
+
+        note_symbols = [symbol for symbol in symbols if symbol.rhythm.startswith("note")]
+        self.assertEqual(
+            {
+                builder.matches_by_symbol_id[symbol.visual_match_id].visual_id
+                for symbol in note_symbols
+            },
+            {"top", "bottom-left", "bottom-right"},
+        )
+        matched_groups = [
+            builder.visual_groups[
+                str(builder.matches_by_symbol_id[symbol.visual_match_id].visual_id)
+            ]
+            for symbol in note_symbols
+        ]
+        self.assertEqual(len({group.moment_id for group in matched_groups}), 1)
+        self.assertIsNotNone(matched_groups[0].moment_id)
+
     def test_shared_stem_components_are_exported_as_chord_identity(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(
             source_image_size=(100, 100),

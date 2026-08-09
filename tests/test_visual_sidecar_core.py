@@ -17,6 +17,26 @@ from tests.visual_sidecar_helpers import (
 
 
 class TestVisualSidecarBuilderCore(unittest.TestCase):
+    def test_expected_staff_positions_retain_clef_across_systems(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(10, 10),
+            autocrop_box=(0, 0, 10, 10),
+            cropped_size=(10, 10),
+            resized_size=(10, 10),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(10, 10),
+        )
+        builder = VisualSidecarBuilder(coordinate_transform)
+        first_note = EncodedSymbol("note_4", "E4", position="upper")
+        builder.moments.expected_staff_positions(
+            [EncodedSymbol("clef_G2", position="upper"), first_note]
+        )
+        later_note = EncodedSymbol("note_4", "G4", position="upper")
+
+        positions = builder.moments.expected_staff_positions([later_note])
+
+        self.assertEqual(positions[later_note.visual_match_id], 3)
+
     def test_sidecar_pitch_includes_resolved_accidentals(self) -> None:
         self.assertEqual(
             sounding_pitch(EncodedSymbol("note_4", "A3", "b", "_", "_", "upper")),
@@ -171,6 +191,54 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         group = builder.to_json_dict()["visual_groups"][0]
 
         self.assertEqual(group["staff_position"], 2)
+
+    def test_printed_lines_realign_a_grid_shifted_by_one_complete_line(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(140, 100),
+            autocrop_box=(0, 0, 140, 100),
+            cropped_size=(140, 100),
+            resized_size=(140, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(140, 100),
+        )
+        source_image = np.full((100, 140), 255, dtype=np.uint8)
+        for y in (30, 40, 50, 60, 70):
+            source_image[y, :] = 0
+        # The detected window includes a spurious row above the staff, omits one
+        # printed line, and has nonuniform local drift. A rigid offset therefore
+        # cannot repair it.
+        staff = Staff(
+            [
+                StaffPoint(0, [18, 30, 39, 51, 70], 0),
+                StaffPoint(140, [18, 30, 39, 51, 70], 0),
+            ]
+        )
+
+        def make_note(y: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((70, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            note = Note(
+                BoundingEllipse(((70, y), (14, 10), -20), contour),
+                position=0,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+            staff.add_symbol(note)
+            return note
+
+        above_top_space = make_note(25, "above-top-space")
+        below_middle_space = make_note(55, "below-middle-space")
+        notes = [above_top_space, below_middle_space]
+        builder = VisualSidecarBuilder(coordinate_transform, source_image=source_image)
+
+        builder.prepare_recovery_notes([staff])
+        builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        groups = {
+            group["visual_group_id"]: group for group in builder.to_json_dict()["visual_groups"]
+        }
+
+        self.assertEqual(groups["above-top-space"]["staff_position"], 10)
+        self.assertEqual(groups["below-middle-space"]["staff_position"], 4)
 
     def test_recovers_real_fifth_ledger_line_candidate_for_sidecar_only(self) -> None:
         coordinate_transform = PredictionCoordinateTransform(

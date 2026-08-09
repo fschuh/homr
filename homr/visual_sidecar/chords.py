@@ -78,6 +78,212 @@ class ChordResolver:
     ) -> None:
         self._assign_physical_chord_ids(symbols, staff_group_index)
 
+    def refine_misaligned_chord_members(
+        self,
+        symbols: list[EncodedSymbol],
+        staff_group_index: int,
+        *,
+        source_staff: Staff | None,
+        expected_staff_positions: dict[int, int],
+    ) -> None:
+        """Refit linked chord heads whose rounded position disagrees with the clef.
+
+        Recognition identifies where to inspect, but never supplies the repaired
+        position by itself. A correctly positioned member of the same chord anchors
+        the local staff spacing, and source-image fitting must independently land on
+        the requested line or space before the sidecar geometry is changed.
+        """
+        if self.source_image is None or source_staff is None:
+            return
+        for moment in token_moments(symbols):
+            members: list[tuple[EncodedSymbol, VisualGroup, int]] = []
+            for symbol in moment:
+                expected_position = expected_staff_positions.get(symbol.visual_match_id)
+                match = self.matches_by_symbol_id.get(symbol.visual_match_id)
+                if (
+                    expected_position is None
+                    or match is None
+                    or match.visual_id is None
+                    or match.visual_id not in self.visual_groups
+                ):
+                    continue
+                group = self.visual_groups[match.visual_id]
+                if group.staff_group_index != staff_group_index:
+                    continue
+                members.append((symbol, group, expected_position))
+            if len(members) < 2:
+                continue
+
+            exact_members = [member for member in members if member[1].staff_position == member[2]]
+            if not exact_members:
+                # A chord whose complete shape is consistently displaced may be
+                # a genuine transformer pitch error. It provides no visual anchor
+                # from which a safe absolute-position repair can be made.
+                continue
+            for symbol, group, expected_position in members:
+                if (
+                    group.staff_position == expected_position
+                    or abs(group.staff_position - expected_position) > 2
+                ):
+                    continue
+                same_staff_anchors = [
+                    member
+                    for member in exact_members
+                    if member[1].staff_index == group.staff_index
+                    and member[0].position == symbol.position
+                ]
+                if not same_staff_anchors:
+                    continue
+                target_pitch_index = diatonic_pitch_index(symbol.pitch)
+                if target_pitch_index is None:
+                    continue
+                ranked_anchors: list[tuple[int, tuple[EncodedSymbol, VisualGroup, int]]] = []
+                for member in same_staff_anchors:
+                    anchor_pitch_index = diatonic_pitch_index(member[0].pitch)
+                    if anchor_pitch_index is not None:
+                        ranked_anchors.append(
+                            (abs(anchor_pitch_index - target_pitch_index), member)
+                        )
+                if not ranked_anchors:
+                    continue
+                anchor_symbol, anchor_group, _anchor_expected = min(
+                    ranked_anchors,
+                    key=lambda ranked: ranked[0],
+                )[1]
+                self._refine_misaligned_chord_member(
+                    symbol,
+                    group,
+                    expected_position,
+                    anchor_symbol,
+                    anchor_group,
+                    source_staff,
+                    [member_group for _member_symbol, member_group, _expected in members],
+                )
+
+    def _refine_misaligned_chord_member(
+        self,
+        symbol: EncodedSymbol,
+        group: VisualGroup,
+        expected_position: int,
+        anchor_symbol: EncodedSymbol,
+        anchor_group: VisualGroup,
+        source_staff: Staff,
+        neighboring_groups: list[VisualGroup],
+    ) -> bool:
+        symbol_pitch_index = diatonic_pitch_index(symbol.pitch)
+        anchor_pitch_index = diatonic_pitch_index(anchor_symbol.pitch)
+        if symbol_pitch_index is None or anchor_pitch_index is None:
+            return False
+        pitch_steps = symbol_pitch_index - anchor_pitch_index
+        source_point = source_staff.get_at(group.prediction_center[0])
+        if source_point is None:
+            source_point = min(
+                source_staff.grid,
+                key=lambda point: abs(point.x - group.prediction_center[0]),
+            )
+        line_index = int(
+            np.argmin(np.abs(np.asarray(source_point.y) - float(anchor_group.prediction_center[1])))
+        )
+        unit_size = max(local_staff_unit(source_point, line_index), 4.0)
+        width = constants.NOTEHEAD_SIZE_RATIO * unit_size
+        height = unit_size
+        expected_center = (
+            float(group.prediction_center[0]),
+            float(anchor_group.prediction_center[1]) - pitch_steps * unit_size / 2,
+        )
+        contour = np.asarray(
+            cv2.ellipse2Poly(
+                (int(round(expected_center[0])), int(round(expected_center[1]))),
+                (max(2, int(round(width / 2))), max(2, int(round(height / 2)))),
+                -20,
+                0,
+                360,
+                5,
+            )
+        ).reshape(-1, 1, 2)
+        guessed_note = Note(
+            BoundingEllipse((expected_center, (width, height), -20), contour),
+            expected_position,
+            None,
+            None,
+            group.visual_id,
+        )
+        neighbor_notes = [
+            Note(
+                BoundingEllipse(
+                    (
+                        neighbor.prediction_center,
+                        neighbor.prediction_notehead_size,
+                        -20,
+                    ),
+                    contour,
+                ),
+                neighbor.staff_position,
+                None,
+                None,
+                neighbor.visual_id,
+            )
+            for neighbor in neighboring_groups
+            if neighbor.visual_id != group.visual_id
+        ]
+        refined_contour = self.noteheads.refined_notehead_contour(
+            guessed_note, [guessed_note, *neighbor_notes]
+        )
+        if refined_contour is None:
+            refined_contour = self.noteheads.refined_notehead_contour(guessed_note, [guessed_note])
+        if refined_contour is None:
+            return False
+        contour_support = self._source_contour_support(refined_contour)
+        if contour_support < 0.55:
+            return False
+        notehead_ellipse = self.noteheads.ellipse_from_source_contour(refined_contour)
+        source_center = notehead_ellipse["center"]
+        fitted_center = self.coordinate_transform.source_point_to_prediction(
+            (float(source_center[0]), float(source_center[1]))
+        )
+        fitted_position = anchor_group.staff_position + round(
+            2 * (anchor_group.prediction_center[1] - fitted_center[1]) / unit_size
+        )
+        if fitted_position != expected_position:
+            return False
+
+        is_hollow = self.noteheads.is_hollow_notehead(guessed_note)
+        notehead_ellipse["_is_hollow"] = is_hollow
+        group.staff_position = fitted_position
+        group.prediction_center = fitted_center
+        group.prediction_notehead_size = (float(width), float(height))
+        group.notehead_ellipses = [notehead_ellipse]
+        group.notehead_contours = [refined_contour]
+        group.refined_notehead_contours = [refined_contour]
+        group.is_hollow_notehead = is_hollow
+        group.visual_status = "fallback"
+        if "pixel_staff_position_repaired" not in group.repair_actions:
+            group.repair_actions.append("pixel_staff_position_repaired")
+        return True
+
+    def _source_contour_support(self, contour: list[list[float]]) -> float:
+        """Return the fraction of a fitted boundary backed by nearby dark pixels."""
+        if self.source_image is None or not contour:
+            return 0.0
+        image = self.source_image
+        if image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        height, width = image.shape[:2]
+        supported = 0
+        for source_x, source_y in contour:
+            x_value, y_value = self.coordinate_transform.source_point_to_prediction(
+                (float(source_x), float(source_y))
+            )
+            x = int(round(x_value))
+            y = int(round(y_value))
+            left = max(0, x - 1)
+            right = min(width, x + 2)
+            top = max(0, y - 1)
+            bottom = min(height, y + 2)
+            if left < right and top < bottom and bool(np.any(image[top:bottom, left:right] < 160)):
+                supported += 1
+        return supported / len(contour)
+
     def stem_component_ids_for_output(self, group: VisualGroup) -> list[str]:
         return self._stem_component_ids_for_output(group)
 
@@ -482,8 +688,7 @@ class ChordResolver:
                     <= float(np.median(widths)) * VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO
                 )
                 pairwise_compatible = all(
-                    noteheads_can_share_chord_stem(group, existing)
-                    for existing in column_groups
+                    noteheads_can_share_chord_stem(group, existing) for existing in column_groups
                 )
                 if same_moment and compact_column and pairwise_compatible:
                     column.append(member)

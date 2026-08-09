@@ -356,6 +356,13 @@ class VisualSidecarBuilder:
             if symbol.visual_match_id not in cross_staff_symbol_ids
         ]
 
+        self.chords.refine_misaligned_chord_members(
+            symbols,
+            staff_group_index,
+            source_staff=source_staff,
+            expected_staff_positions=self.moments.expected_staff_positions(symbols),
+        )
+
         for symbol in pending_symbols:
             self.matches_by_symbol_id[symbol.visual_match_id] = VisualMatch(
                 symbol=symbol,

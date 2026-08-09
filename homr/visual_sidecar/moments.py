@@ -29,6 +29,7 @@ class MomentMatcher:
         self.state = state
         self._duplicate_staff_positions_by_visual_id = state.duplicate_staff_positions_by_visual_id
         self._moment_id_by_symbol_id = state.moment_id_by_symbol_id
+        self._active_clefs: dict[int, tuple[str, int]] = {}
 
     def structural_assignments(
         self,
@@ -41,6 +42,35 @@ class MomentMatcher:
     @staticmethod
     def token_moments(symbols: list[EncodedSymbol]) -> list[list[EncodedSymbol]]:
         return token_moments(symbols)
+
+    def expected_staff_positions(self, symbols: list[EncodedSymbol]) -> dict[int, int]:
+        """Resolve positions while retaining clefs omitted on later systems."""
+        result: dict[int, int] = {}
+        for symbol in symbols:
+            if symbol.rhythm.startswith("clef_"):
+                definition = symbol.rhythm.removeprefix("clef_")
+                if len(definition) >= 2 and definition[0] in CLEF_REFERENCE_PITCHES:
+                    try:
+                        line = int(definition[1:])
+                    except ValueError:
+                        pass
+                    else:
+                        if 1 <= line <= 5:
+                            staff_index = 1 if symbol.position == "lower" else 0
+                            self._active_clefs[staff_index] = (definition[0], line)
+            if not symbol.rhythm.startswith("note"):
+                continue
+            staff_index = 1 if symbol.position == "lower" else 0
+            clef = self._active_clefs.get(staff_index)
+            pitch_index = diatonic_pitch_index(symbol.pitch)
+            if clef is None or pitch_index is None:
+                continue
+            sign, line = clef
+            reference_pitch_index = diatonic_pitch_index(CLEF_REFERENCE_PITCHES[sign])
+            if reference_pitch_index is None:
+                continue
+            result[symbol.visual_match_id] = 2 * line - 1 + pitch_index - reference_pitch_index
+        return result
 
     def cross_staff_assignments(
         self,
@@ -514,11 +544,12 @@ class MomentMatcher:
                 continue
             first_positions = {visual_groups[index].staff_position for index in first_staff}
             second_positions = {visual_groups[index].staff_position for index in second_staff}
-            if first_positions & second_positions:
+            if len(first_staff) == len(second_staff) and first_positions == second_positions:
                 # Parallel columns containing the same rounded staff positions are
-                # commonly alternate segmentation evidence for hollow heads, not
-                # two halves of a larger chord. Keep the columns separate so
-                # attention can select the one that represents the token moment.
+                # commonly alternate segmentation evidence for hollow heads. An
+                # unequal N+M stack may legitimately share one rounded position
+                # when touching seconds bias both detection centers toward the
+                # same line; retain that physical chord evidence.
                 continue
 
             other_staff_index = 1 - staff_index
@@ -830,6 +861,17 @@ class MomentMatcher:
                 continue
             if not staff_symbols:
                 return None
+            pitch_mapping = cls._unique_diatonic_shape_mapping(
+                staff_symbols,
+                staff_group_indices,
+                visual_groups,
+                staff_position_by_group_index,
+            )
+            if pitch_mapping is not None:
+                selected_staffs.update(dict.fromkeys(pitch_mapping, staff_index))
+                symbol_by_group_index.update(pitch_mapping)
+                pruned_any = True
+                continue
             selected_group_indices = cls._attention_selected_group_subset(
                 staff_symbols, staff_group_indices, visual_groups
             )
@@ -847,6 +889,76 @@ class MomentMatcher:
             pruned_any,
             symbol_by_group_index,
         )
+
+    @staticmethod
+    def _unique_diatonic_shape_mapping(
+        symbols: list[EncodedSymbol],
+        group_indices: list[int],
+        visual_groups: list[VisualGroup],
+        staff_position_by_group_index: dict[int, int],
+    ) -> dict[int, EncodedSymbol] | None:
+        """Select a surplus subset only when its diatonic shape is unique.
+
+        This does not need a clef or an absolute pitch offset. It compares the
+        intervals between recognized pitches with independently measured visual
+        staff positions. Extra printed notes may then remain diagnostic without
+        pulling recognized chord members onto the wrong noteheads.
+        """
+        if len(symbols) < 2 or len(group_indices) <= len(symbols):
+            return None
+        pitched_symbols: list[tuple[int, EncodedSymbol]] = []
+        for symbol in symbols:
+            pitch_index = diatonic_pitch_index(symbol.pitch)
+            if pitch_index is None:
+                return None
+            pitched_symbols.append((pitch_index, symbol))
+        pitched_symbols.sort(key=lambda item: item[0], reverse=True)
+
+        mappings_by_position_shape: dict[tuple[tuple[int, int], ...], dict[int, EncodedSymbol]] = {}
+        for group_subset in itertools.combinations(group_indices, len(symbols)):
+            ordered_groups = sorted(
+                group_subset,
+                key=lambda index: (
+                    staff_position_by_group_index.get(index, visual_groups[index].staff_position),
+                    -visual_groups[index].prediction_center[1],
+                ),
+                reverse=True,
+            )
+            offsets = [
+                staff_position_by_group_index.get(
+                    group_index, visual_groups[group_index].staff_position
+                )
+                - pitch_index
+                for group_index, (pitch_index, _symbol) in zip(
+                    ordered_groups, pitched_symbols, strict=True
+                )
+            ]
+            if len(set(offsets)) != 1:
+                continue
+            mapping = {
+                group_index: symbol
+                for group_index, (_pitch_index, symbol) in zip(
+                    ordered_groups, pitched_symbols, strict=True
+                )
+            }
+            position_shape = tuple(
+                (
+                    pitch_index,
+                    staff_position_by_group_index.get(
+                        group_index, visual_groups[group_index].staff_position
+                    ),
+                )
+                for group_index, (pitch_index, _symbol) in zip(
+                    ordered_groups, pitched_symbols, strict=True
+                )
+            )
+            # A hollow head can be segmented into left and right candidates at
+            # the same staff position. Those alternatives are one pitch shape,
+            # not independent evidence that makes the pitch subset ambiguous.
+            mappings_by_position_shape.setdefault(position_shape, mapping)
+        if len(mappings_by_position_shape) != 1:
+            return None
+        return next(iter(mappings_by_position_shape.values()))
 
     @classmethod
     def _partial_staff_symbol_group_mapping(

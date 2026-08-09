@@ -10,6 +10,113 @@ from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuil
 
 
 class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
+    def test_refits_a_misaligned_chord_member_only_when_pixels_confirm_position(
+        self,
+    ) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        image = np.full((120, 120), 255, dtype=np.uint8)
+        cv2.ellipse(image, (60, 65), (7, 5), -20, 0, 360, 0, -1)
+        cv2.ellipse(image, (60, 80), (7, 5), -20, 0, 360, 0, -1)
+        staff = Staff(
+            [
+                StaffPoint(0, [40, 50, 60, 70, 80], 0),
+                StaffPoint(120, [40, 50, 60, 70, 80], 0),
+            ]
+        )
+
+        def make_note(y: int, position: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((60, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((60, y), (14, 10), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        anchor = make_note(65, 4, "anchor")
+        # Segmentation centers this head in the adjacent space even though the
+        # source pixels contain it on the bottom line.
+        target = make_note(75, 2, "target")
+        builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
+        builder.add_staff_visual_notes(0, [anchor, target], [anchor.copy(), target.copy()])
+        anchor_symbol = EncodedSymbol("note_2", "A4", position="upper", coordinates=(60, 65))
+        target_symbol = EncodedSymbol("note_2", "E4", position="upper", coordinates=(60, 75))
+
+        builder.add_staff_matches(
+            [
+                EncodedSymbol("clef_G2", position="upper"),
+                anchor_symbol,
+                EncodedSymbol("chord"),
+                target_symbol,
+            ],
+            0,
+            source_staff=staff,
+        )
+
+        repaired = builder.visual_groups["target"]
+        self.assertEqual(repaired.staff_position, 1)
+        self.assertAlmostEqual(repaired.prediction_center[1], 80, delta=2)
+        self.assertIn("pixel_staff_position_repaired", repaired.repair_actions)
+
+    def test_does_not_refit_chord_pitch_when_pixels_remain_in_the_space(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(120, 120),
+            autocrop_box=(0, 0, 120, 120),
+            cropped_size=(120, 120),
+            resized_size=(120, 120),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(120, 120),
+        )
+        image = np.full((120, 120), 255, dtype=np.uint8)
+        cv2.ellipse(image, (60, 65), (7, 5), -20, 0, 360, 0, -1)
+        cv2.ellipse(image, (60, 75), (7, 5), -20, 0, 360, 0, 2)
+        staff = Staff(
+            [
+                StaffPoint(0, [40, 50, 60, 70, 80], 0),
+                StaffPoint(120, [40, 50, 60, 70, 80], 0),
+            ]
+        )
+
+        def make_note(y: int, position: int, visual_id: str) -> Note:
+            contour = cv2.ellipse2Poly((60, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            return Note(
+                BoundingEllipse(((60, y), (14, 10), -20), contour),
+                position=position,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+
+        anchor = make_note(65, 4, "anchor")
+        target = make_note(75, 2, "target")
+        builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
+        builder.add_staff_visual_notes(0, [anchor, target], [anchor.copy(), target.copy()])
+        anchor_symbol = EncodedSymbol("note_2", "A4", position="upper", coordinates=(60, 65))
+        target_symbol = EncodedSymbol("note_2", "E4", position="upper", coordinates=(60, 75))
+
+        builder.add_staff_matches(
+            [
+                EncodedSymbol("clef_G2", position="upper"),
+                anchor_symbol,
+                EncodedSymbol("chord"),
+                target_symbol,
+            ],
+            0,
+            source_staff=staff,
+        )
+
+        unchanged = builder.visual_groups["target"]
+        self.assertEqual(unchanged.staff_position, 2, unchanged.prediction_center)
+        self.assertNotIn("pixel_staff_position_repaired", unchanged.repair_actions)
+
     def test_recovers_unique_displaced_chord_candidate_after_attention_misses_it(
         self,
     ) -> None:
