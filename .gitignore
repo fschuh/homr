@@ -64,6 +64,7 @@ _build/
 /*.org
 /*.html
 /temp
+/.tmp
 
 # test images
 /images/
