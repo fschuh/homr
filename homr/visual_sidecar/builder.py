@@ -18,6 +18,7 @@ from homr.visual_sidecar.models import (
     sounding_pitch,
 )
 from homr.visual_sidecar.moments import MomentMatcher
+from homr.visual_sidecar.notehead_refit import NoteheadRefitter
 from homr.visual_sidecar.noteheads import NoteheadGeometry
 from homr.visual_sidecar.recovery import RecoveryManager
 from homr.visual_sidecar.sequence import SequenceMatcher
@@ -59,6 +60,7 @@ class VisualSidecarBuilder:
             self.stems,
             source_image,
         )
+        self.notehead_refitter = NoteheadRefitter(self.state, self.noteheads)
         self.candidate_cleaner = CandidateCleaner(self.state, coordinate_transform)
         self.moments = MomentMatcher(self.state)
         self.sequence = SequenceMatcher()
@@ -169,6 +171,8 @@ class VisualSidecarBuilder:
                 visual_status="fallback",
                 provenance=provenance,
                 repair_actions=repair_actions,
+                split_clump_id=original.split_clump_id,
+                split_clump_bounds=original.split_clump_bounds,
             )
             self.unmatched_visual_group_ids.add(original.visual_id)
 
@@ -356,11 +360,12 @@ class VisualSidecarBuilder:
             if symbol.visual_match_id not in cross_staff_symbol_ids
         ]
 
-        self.chords.refine_misaligned_chord_members(
+        self.notehead_refitter.refit(
             symbols,
             staff_group_index,
             source_staff=source_staff,
             expected_staff_positions=self.moments.expected_staff_positions(symbols),
+            physical_staff_lines=self.recovery.physical_staff_lines_at_x,
         )
 
         for symbol in pending_symbols:

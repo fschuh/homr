@@ -140,6 +140,9 @@ class Note(SymbolOnStaff):
         stem: RotatedBoundingBox | None,
         stem_direction: StemDirection | None,
         visual_id: str | None = None,
+        *,
+        split_clump_id: str | None = None,
+        split_clump_bounds: tuple[int, int, int, int] | None = None,
     ):
         super().__init__(box.center)
         self.box = box
@@ -149,6 +152,8 @@ class Note(SymbolOnStaff):
         self.stem = stem
         self.circle_of_fifth = 0
         self.stem_direction = stem_direction
+        self.split_clump_id = split_clump_id
+        self.split_clump_bounds = split_clump_bounds
         self.beams: list[RotatedBoundingBox] = []
         self.flags: list[RotatedBoundingBox] = []
 
@@ -179,7 +184,15 @@ class Note(SymbolOnStaff):
         return str(self)
 
     def copy(self) -> "Note":
-        result = Note(self.box, self.position, self.stem, self.stem_direction, self.visual_id)
+        result = Note(
+            self.box,
+            self.position,
+            self.stem,
+            self.stem_direction,
+            self.visual_id,
+            split_clump_id=self.split_clump_id,
+            split_clump_bounds=self.split_clump_bounds,
+        )
         result.has_dot = self.has_dot
         result.circle_of_fifth = self.circle_of_fifth
         result.beams = self.beams.copy()

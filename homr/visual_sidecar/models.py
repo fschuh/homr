@@ -42,6 +42,11 @@ class VisualGroup:
     repair_actions: list[str] = field(default_factory=list)
     duration: str | None = None
     musicxml_id: str | None = None
+    # Internal-only provenance and ownership.  The serializer deliberately does
+    # not expose these implementation details or change the v3 schema.
+    split_clump_id: str | None = None
+    split_clump_bounds: tuple[int, int, int, int] | None = None
+    notehead_core_pixels: frozenset[int] = field(default_factory=frozenset, repr=False)
 
     @property
     def bbox(self) -> list[float]:

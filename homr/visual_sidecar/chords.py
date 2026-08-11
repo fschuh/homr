@@ -12,6 +12,7 @@ from homr.visual_sidecar.matching_utils import (
     diatonic_pitch_index,
     local_staff_unit,
     noteheads_can_share_chord_stem,
+    source_notehead_bounds,
     token_moments,
 )
 from homr.visual_sidecar.models import SidecarState, StemOwnershipCache, VisualGroup
@@ -19,6 +20,7 @@ from homr.visual_sidecar.noteheads import NoteheadGeometry
 from homr.visual_sidecar.stems import StemGeometry
 
 VISUAL_MOMENT_NOTEHEAD_WIDTH_RATIO = 0.65
+REFITTED_STAGGERED_HEAD_GAP_RATIO = 0.4
 
 
 class ChordResolver:
@@ -497,11 +499,45 @@ class ChordResolver:
                 and candidate.duration is not None
                 and candidate.duration.rstrip(".") == duration_class
                 and component_id in candidate.owned_stem_component_ids
-                and noteheads_can_share_chord_stem(group, candidate)
+                and self._noteheads_can_share_refitted_stem(group, candidate)
                 for candidate in self.visual_groups.values()
             ):
                 result.append(f"{component_id}-duration-{duration_class}")
         return result
+
+    @staticmethod
+    def _noteheads_can_share_refitted_stem(first: VisualGroup, second: VisualGroup) -> bool:
+        """Retain shared-stem proof when a pixel refit reveals a staggered second.
+
+        The ordinary bound is intentionally strict because stem components can
+        touch neighboring notes.  A joint pixel refit can move a clump member a
+        few pixels beyond that bound, however.  In that case a shared moment and
+        a shared detected stem remain independent physical chord evidence.
+        """
+        if noteheads_can_share_chord_stem(first, second):
+            return True
+        if (
+            "joint_notehead_refit" not in first.repair_actions
+            and "joint_notehead_refit" not in second.repair_actions
+        ):
+            return False
+        if first.moment_id is None or first.moment_id != second.moment_id:
+            return False
+        first_bounds = source_notehead_bounds(first)
+        second_bounds = source_notehead_bounds(second)
+        if first_bounds is None or second_bounds is None:
+            return False
+        first_left, _first_top, first_right, _first_bottom = first_bounds
+        second_left, _second_top, second_right, _second_bottom = second_bounds
+        first_width = max(first_right - first_left, 1.0)
+        second_width = max(second_right - second_left, 1.0)
+        horizontal_gap = max(
+            0.0,
+            max(first_left, second_left) - min(first_right, second_right),
+        )
+        return horizontal_gap <= min(first_width, second_width) * (
+            REFITTED_STAGGERED_HEAD_GAP_RATIO
+        )
 
     def _stem_component_bounds(self) -> dict[int, tuple[float, float, float, float]]:
         if self._stem_component_bounds_cache is not None:
@@ -720,7 +756,7 @@ class ChordResolver:
         for group in groups[1:]:
             common_stem_components.intersection_update(group.owned_stem_component_ids)
         stem_proven = bool(common_stem_components) and all(
-            noteheads_can_share_chord_stem(first, second)
+            self._noteheads_can_share_refitted_stem(first, second)
             for first, second in zip(groups, groups[1:], strict=False)
         )
         compact_chord_geometry = all(

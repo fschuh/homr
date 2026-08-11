@@ -161,6 +161,8 @@ class RecoveryManager:
                         split_candidate.stem,
                         split_candidate.stem_direction,
                         visual_id,
+                        split_clump_id=split_candidate.split_clump_id,
+                        split_clump_bounds=split_candidate.split_clump_bounds,
                     )
                 )
         all_visual_notes = [note for staff in staffs for note in staff.get_notes()]
@@ -171,6 +173,16 @@ class RecoveryManager:
 
     def recovery_notes_for_staff(self, staff: Staff) -> list[Note]:
         return self._recovery_notes_by_staff_id.get(id(staff), [])
+
+    def physical_staff_lines_at_x(self, staff: Staff, x: float, staff_index: int) -> list[float]:
+        """Expose the robust physical grid to geometry-only sidecar repair stages."""
+        return self._physical_staff_lines_at_x(staff, x, staff_index)
+
+    def staff_position_for_center(
+        self, staff: Staff, center: tuple[float, float], staff_index: int
+    ) -> int:
+        """Derive a position from physical staff pixels, never from recognized pitch."""
+        return self._staff_position_for_center(staff, center, staff_index)
 
     @staticmethod
     def _grid_staff_lines_at_x(staff: Staff, x: float, staff_index: int) -> list[float]:

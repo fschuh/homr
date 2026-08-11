@@ -14,10 +14,17 @@ class NoteheadWithStem(DebugDrawable):
         notehead: BoundingEllipse,
         stem: RotatedBoundingBox | None,
         stem_direction: StemDirection | None = None,
+        split_clump_id: str | None = None,
+        split_clump_bounds: tuple[int, int, int, int] | None = None,
     ):
         self.notehead = notehead
         self.stem = stem
         self.stem_direction = stem_direction
+        # Sidecar-only provenance.  Recognition continues to consume the same
+        # split ellipses, while the visual repair stage can reason about all
+        # synthetic members of the original connected component together.
+        self.split_clump_id = split_clump_id
+        self.split_clump_bounds = split_clump_bounds
 
     def draw_onto_image(self, img: NDArray, color: tuple[int, int, int] = (255, 0, 0)) -> None:
         self.notehead.draw_onto_image(img, color)
@@ -102,6 +109,11 @@ def split_clumps_of_noteheads(
     split_boxes = check_bbox_size(bbox, noteheads, staff.average_unit_size)
     if len(split_boxes) <= 1:
         return [notehead]
+    clump_bounds = (bbox[0], bbox[1], bbox[2], bbox[3])
+    clump_id = "split-clump-{}-{}-{}-{}-{}".format(
+        notehead.notehead.debug_id,
+        *clump_bounds,
+    )
     result = []
     for box in split_boxes:
         center = get_center(box)
@@ -114,6 +126,8 @@ def split_clumps_of_noteheads(
             ),
             notehead.stem,
             notehead.stem_direction,
+            clump_id,
+            clump_bounds,
         )
         result.append(split_notehead)
     return result
@@ -184,6 +198,8 @@ def add_notes_to_staffs(
                     notehead.stem,
                     notehead.stem_direction,
                     f"vnote-{next_visual_id}",
+                    split_clump_id=notehead.split_clump_id,
+                    split_clump_bounds=notehead.split_clump_bounds,
                 )
                 next_visual_id += 1
                 result.append(note)

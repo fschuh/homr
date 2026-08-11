@@ -1,12 +1,29 @@
+from dataclasses import dataclass
 from typing import Any
 
 import cv2
 import numpy as np
 
+from homr import constants
+from homr.bounding_boxes import BoundingEllipse
 from homr.model import Note
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
 
 STRETCHED_NOTEHEAD_ASPECT_RATIO = 2.0
+
+
+@dataclass(frozen=True)
+class NoteheadPixelFit:
+    prediction_center: tuple[float, float]
+    prediction_size: tuple[float, float]
+    prediction_angle: float
+    source_contour: list[list[float]]
+    source_ellipse: dict[str, Any]
+    core_pixels: frozenset[int]
+    core_support: float
+    boundary_support: float
+    confidence: float
+    is_hollow: bool
 
 
 class NoteheadGeometry:
@@ -19,6 +36,7 @@ class NoteheadGeometry:
         self.coordinate_transform = coordinate_transform
         self.notehead_mask = notehead_mask
         self.source_image = source_image
+        self._ink_evidence_cache: dict[int, np.ndarray] = {}
 
     def detected_notehead_contour(self, note: Note) -> list[list[float]]:
         return self._detected_notehead_contour(note)
@@ -39,6 +57,280 @@ class NoteheadGeometry:
 
     def notehead_ellipse(self, note: Note) -> dict[str, Any]:
         return self._notehead_ellipse_for_visual_sidecar(note)
+
+    def fit_notehead_hypothesis(
+        self,
+        center: tuple[float, float],
+        unit_size: float,
+        staff_lines: list[float],
+        visual_id: str,
+    ) -> NoteheadPixelFit | None:
+        """Fit and score a notehead near a pitch-guided search seed.
+
+        Pitch chooses only ``center``.  The returned fit is backed by independently
+        observed mask/image ink after long horizontal and vertical runs have been
+        removed, so a staff line, stem, or beam cannot prove the hypothesis alone.
+        """
+        if self.source_image is None or unit_size < 4:
+            return None
+        width = constants.NOTEHEAD_SIZE_RATIO * unit_size
+        height = unit_size
+        contour = np.asarray(
+            cv2.ellipse2Poly(
+                (int(round(center[0])), int(round(center[1]))),
+                (max(2, int(round(width / 2))), max(2, int(round(height / 2)))),
+                -20,
+                0,
+                360,
+                5,
+            )
+        ).reshape(-1, 1, 2)
+        guessed = Note(
+            BoundingEllipse((center, (width, height), -20), contour),
+            0,
+            None,
+            None,
+            visual_id,
+        )
+        source_contour = self.refined_notehead_contour(guessed, [guessed])
+        if source_contour is None:
+            return None
+        prediction_contour = np.asarray(
+            [
+                self.coordinate_transform.source_point_to_prediction(
+                    (float(point[0]), float(point[1]))
+                )
+                for point in source_contour
+            ],
+            dtype=np.float32,
+        ).reshape(-1, 1, 2)
+        if len(prediction_contour) < 5:
+            return None
+        fitted_center, fitted_size, fitted_angle = self._canonical_prediction_ellipse(
+            cv2.fitEllipse(prediction_contour)
+        )
+        # A straight run can occasionally attract the generic boundary fitter.
+        # Reject shapes that no longer resemble a local notehead at staff scale.
+        if not (
+            0.7 * unit_size <= fitted_size[0] <= 2.0 * unit_size
+            and 0.55 * unit_size <= fitted_size[1] <= 1.45 * unit_size
+        ):
+            return None
+        support = self._prediction_ellipse_support(
+            fitted_center,
+            fitted_size,
+            fitted_angle,
+            unit_size,
+            staff_lines,
+        )
+        if support is None:
+            return None
+        core_pixels, core_support, boundary_support, confidence = support
+        fitted_contour = np.asarray(
+            cv2.ellipse2Poly(
+                (int(round(fitted_center[0])), int(round(fitted_center[1]))),
+                (
+                    max(2, int(round(fitted_size[0] / 2))),
+                    max(2, int(round(fitted_size[1] / 2))),
+                ),
+                int(round(fitted_angle)),
+                0,
+                360,
+                3,
+            )
+        ).reshape(-1, 1, 2)
+        fitted_note = Note(
+            BoundingEllipse(
+                (fitted_center, fitted_size, fitted_angle),
+                fitted_contour,
+            ),
+            0,
+            None,
+            None,
+            visual_id,
+        )
+        source_ellipse = self.ellipse_from_source_contour(source_contour)
+        is_hollow = self.is_hollow_notehead(fitted_note)
+        source_ellipse["_is_hollow"] = is_hollow
+        return NoteheadPixelFit(
+            prediction_center=fitted_center,
+            prediction_size=fitted_size,
+            prediction_angle=fitted_angle,
+            source_contour=source_contour,
+            source_ellipse=source_ellipse,
+            core_pixels=core_pixels,
+            core_support=core_support,
+            boundary_support=boundary_support,
+            confidence=confidence,
+            is_hollow=is_hollow,
+        )
+
+    def score_prediction_geometry(
+        self,
+        center: tuple[float, float],
+        size: tuple[float, float],
+        unit_size: float,
+        staff_lines: list[float],
+        angle: float = -20.0,
+    ) -> tuple[frozenset[int], float] | None:
+        """Return exclusive core pixels and confidence for existing geometry."""
+        support = self._prediction_ellipse_support(
+            center,
+            size,
+            angle,
+            unit_size,
+            staff_lines,
+        )
+        if support is None:
+            return None
+        core_pixels, _core_support, _boundary_support, confidence = support
+        return core_pixels, confidence
+
+    @staticmethod
+    def _canonical_prediction_ellipse(
+        ellipse: Any,
+    ) -> tuple[tuple[float, float], tuple[float, float], float]:
+        center, size, angle = ellipse
+        width, height = float(size[0]), float(size[1])
+        normalized_angle = float(angle)
+        if width < height:
+            width, height = height, width
+            normalized_angle += 90
+        while normalized_angle > 90:
+            normalized_angle -= 180
+        while normalized_angle <= -90:
+            normalized_angle += 180
+        return (
+            (float(center[0]), float(center[1])),
+            (width, height),
+            normalized_angle,
+        )
+
+    def _ink_evidence(self, unit_size: float) -> np.ndarray | None:
+        if self.source_image is None:
+            return None
+        cache_key = int(round(unit_size))
+        cached = self._ink_evidence_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        image = self.source_image
+        if image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        evidence = image < 200
+        if self.notehead_mask is not None and self.notehead_mask.shape[:2] == image.shape[:2]:
+            evidence &= self.notehead_mask > 0
+
+        binary = evidence.astype(np.uint8)
+        long_run = max(7, int(round(1.75 * unit_size)))
+        horizontal = cv2.morphologyEx(
+            binary,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (long_run, 1)),
+        )
+        vertical = cv2.morphologyEx(
+            binary,
+            cv2.MORPH_OPEN,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (1, long_run)),
+        )
+        straight_runs = (horizontal > 0) | (vertical > 0)
+        # Preserve genuinely thick two-dimensional ink inside a touching head.
+        # Long opening kernels can otherwise mistake the shared spine of a
+        # vertical notehead stack for a stem.  Thin staff/stem/beam runs remain
+        # suppressed and, by themselves, still lack elliptical boundary support.
+        distance = cv2.distanceTransform(binary, cv2.DIST_L2, 3)
+        thick_ink = distance >= max(1.5, 0.18 * unit_size)
+        evidence = (evidence & ~straight_runs) | thick_ink
+
+        self._ink_evidence_cache[cache_key] = evidence
+        return evidence
+
+    def _prediction_ellipse_support(
+        self,
+        center: tuple[float, float],
+        size: tuple[float, float],
+        angle: float,
+        unit_size: float,
+        staff_lines: list[float],
+    ) -> tuple[frozenset[int], float, float, float] | None:
+        evidence = self._ink_evidence(unit_size)
+        if evidence is None:
+            return None
+        height, width = evidence.shape[:2]
+        center_int = (int(round(center[0])), int(round(center[1])))
+        axes = (
+            max(2, int(round(float(size[0]) / 2))),
+            max(2, int(round(float(size[1]) / 2))),
+        )
+        if (
+            center_int[0] + axes[0] < 0
+            or center_int[0] - axes[0] >= width
+            or center_int[1] + axes[1] < 0
+            or center_int[1] - axes[1] >= height
+        ):
+            return None
+
+        margin = 2
+        left = max(0, center_int[0] - axes[0] - margin)
+        right = min(width, center_int[0] + axes[0] + margin + 1)
+        top = max(0, center_int[1] - axes[1] - margin)
+        bottom = min(height, center_int[1] + axes[1] + margin + 1)
+        if right <= left or bottom <= top:
+            return None
+        local_evidence = evidence[top:bottom, left:right].copy()
+        half_thickness = max(0, int(round(0.08 * unit_size)))
+        for line in staff_lines:
+            line_top = max(top, int(round(line)) - half_thickness)
+            line_bottom = min(bottom, int(round(line)) + half_thickness + 1)
+            if line_top < line_bottom:
+                local_evidence[line_top - top : line_bottom - top, :] = False
+
+        local_shape = (bottom - top, right - left)
+        local_center = (center_int[0] - left, center_int[1] - top)
+        outer = np.zeros(local_shape, dtype=np.uint8)
+        inner = np.zeros_like(outer)
+        core = np.zeros_like(outer)
+        cv2.ellipse(outer, local_center, axes, angle, 0, 360, 1, -1)
+        cv2.ellipse(
+            inner,
+            local_center,
+            (max(1, int(round(axes[0] * 0.72))), max(1, int(round(axes[1] * 0.72)))),
+            angle,
+            0,
+            360,
+            1,
+            -1,
+        )
+        cv2.ellipse(
+            core,
+            local_center,
+            (max(1, int(round(axes[0] * 0.45))), max(1, int(round(axes[1] * 0.45)))),
+            angle,
+            0,
+            360,
+            1,
+            -1,
+        )
+        boundary = (outer > 0) & (inner == 0)
+        core_region = core > 0
+        core_ink = core_region & local_evidence
+        boundary_ink = boundary & local_evidence
+        core_area = int(np.count_nonzero(core_region))
+        boundary_area = int(np.count_nonzero(boundary))
+        if core_area == 0 or boundary_area == 0:
+            return None
+        core_support = float(np.count_nonzero(core_ink)) / core_area
+        boundary_support = float(np.count_nonzero(boundary_ink)) / boundary_area
+        ys, xs = np.where(core_ink)
+        core_pixels = frozenset(((ys + top) * width + xs + left).tolist())
+        minimum_core_pixels = max(4, int(round(unit_size * unit_size * 0.035)))
+        if len(core_pixels) < minimum_core_pixels:
+            confidence = 0.0
+        else:
+            confidence = 0.55 * min(1.0, core_support / 0.42) + 0.45 * min(
+                1.0, boundary_support / 0.38
+            )
+        return core_pixels, core_support, boundary_support, float(confidence)
 
     def _detected_notehead_contour(self, note: Note) -> list[list[float]]:
         """Return the segmentation contour while preserving the legacy polygon separately."""
