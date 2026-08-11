@@ -234,6 +234,85 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         self.assertIn("pitch_divergence", divergence_kinds(report))
         self.assertIn("visual_pitch_divergence", divergence_kinds(report))
 
+    def test_adjacent_note_centers_override_one_skewed_rounded_position(self) -> None:
+        clef = "<clef number='1'><sign>F</sign><line>4</line></clef>"
+        xml = musicxml_document(
+            "".join(
+                [
+                    xml_note("homr-note-1", "A", 3),
+                    xml_note("homr-note-2", "F", 3),
+                    xml_note("homr-note-3", "D", 3),
+                    xml_note("homr-note-4", "E", 3),
+                ]
+            ),
+            clef,
+        )
+        groups = [
+            visual_group("vnote-1", "homr-note-1", 9, moment_id="moment-1-1"),
+            visual_group("vnote-2", "homr-note-2", 7, moment_id="moment-1-2"),
+            visual_group("vnote-3", "homr-note-3", 5, moment_id="moment-1-3"),
+            visual_group("vnote-4", "homr-note-4", 7, moment_id="moment-1-4"),
+        ]
+        groups[0]["center"] = [10.0, 80.75]
+        groups[1]["center"] = [10.0, 100.0]
+        groups[2]["center"] = [10.0, 119.25]
+        # E3 is visibly one local staff step below F3 even though the skewed
+        # terminal grid sample rounded both noteheads to position 7.
+        groups[3]["center"] = [40.0, 109.625]
+        sidecar = {
+            "version": 3,
+            "notes": [
+                sidecar_note("homr-note-1", "A3", "vnote-1"),
+                sidecar_note("homr-note-2", "F3", "vnote-2"),
+                sidecar_note("homr-note-3", "D3", "vnote-3"),
+                sidecar_note("homr-note-4", "E3", "vnote-4"),
+            ],
+            "visual_groups": groups,
+        }
+
+        report = evaluate_musicxml_sidecar(xml, sidecar)
+
+        self.assertTrue(report.passed, report.to_dict())
+
+    def test_adjacent_position_exception_preserves_a_real_pitch_divergence(self) -> None:
+        clef = "<clef number='1'><sign>F</sign><line>4</line></clef>"
+        xml = musicxml_document(
+            "".join(
+                [
+                    xml_note("homr-note-1", "A", 3),
+                    xml_note("homr-note-2", "F", 3),
+                    xml_note("homr-note-3", "D", 3),
+                    xml_note("homr-note-4", "E", 3),
+                ]
+            ),
+            clef,
+        )
+        groups = [
+            visual_group("vnote-1", "homr-note-1", 9, moment_id="moment-1-1"),
+            visual_group("vnote-2", "homr-note-2", 7, moment_id="moment-1-2"),
+            visual_group("vnote-3", "homr-note-3", 5, moment_id="moment-1-3"),
+            visual_group("vnote-4", "homr-note-4", 7, moment_id="moment-1-4"),
+        ]
+        groups[0]["center"] = [10.0, 80.75]
+        groups[1]["center"] = [10.0, 100.0]
+        groups[2]["center"] = [10.0, 119.25]
+        # The E3-linked geometry actually remains at F3's pixel position.
+        groups[3]["center"] = [40.0, 100.0]
+        sidecar = {
+            "version": 3,
+            "notes": [
+                sidecar_note("homr-note-1", "A3", "vnote-1"),
+                sidecar_note("homr-note-2", "F3", "vnote-2"),
+                sidecar_note("homr-note-3", "D3", "vnote-3"),
+                sidecar_note("homr-note-4", "E3", "vnote-4"),
+            ],
+            "visual_groups": groups,
+        }
+
+        report = evaluate_musicxml_sidecar(xml, sidecar)
+
+        self.assertEqual(divergence_kinds(report), {"visual_pitch_divergence"})
+
     def test_accidental_is_checked_between_artifacts_but_not_by_position(self) -> None:
         xml = musicxml_document(xml_note("homr-note-1", "F", 4, alter=1))
         sidecar = valid_sidecar(pitch="F#4", staff_position=2)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
+from statistics import median
 from typing import Any
 from xml.etree import ElementTree
 
@@ -296,6 +298,159 @@ def _has_notehead_geometry(group: dict[str, Any]) -> bool:
         and isinstance(bbox, list)
         and len(bbox) == 4
     )
+
+
+def _visual_center(group: dict[str, Any]) -> tuple[float, float] | None:
+    center = group.get("center")
+    if not isinstance(center, list) or len(center) != 2:
+        return None
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in center):
+        return None
+    point = (float(center[0]), float(center[1]))
+    return point if all(math.isfinite(value) for value in point) else None
+
+
+def _notehead_size(group: dict[str, Any]) -> tuple[float, float] | None:
+    ellipses = group.get("notehead_ellipses")
+    if isinstance(ellipses, list) and ellipses:
+        ellipse = _mapping(ellipses[0])
+        if ellipse is not None:
+            rx = ellipse.get("rx")
+            ry = ellipse.get("ry")
+            if (
+                isinstance(rx, (int, float))
+                and not isinstance(rx, bool)
+                and isinstance(ry, (int, float))
+                and not isinstance(ry, bool)
+                and math.isfinite(rx)
+                and math.isfinite(ry)
+                and rx > 0
+                and ry > 0
+            ):
+                return 2 * float(rx), 2 * float(ry)
+    bbox = group.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in bbox):
+        return None
+    width = float(bbox[2]) - float(bbox[0])
+    height = float(bbox[3]) - float(bbox[1])
+    if not math.isfinite(width) or not math.isfinite(height) or width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _pixel_centers_prove_adjacent_staff_position(
+    group: dict[str, Any],
+    sidecar_note: dict[str, Any],
+    expected_position: int,
+    *,
+    groups_by_id: dict[str, dict[str, Any]],
+    groups_by_musicxml_id: dict[str, list[str]],
+    sidecar_notes_by_id: dict[str, dict[str, Any]],
+    xml_notes_by_id: dict[str, MusicXmlNote],
+) -> bool:
+    """Recognize one narrow staff-grid rounding false positive from source geometry.
+
+    A skewed final grid sample can round two visibly adjacent notes to the same
+    integer staff position. Suppress that mismatch only when structural, canonical
+    links on the same physical staff independently establish the local pixel step,
+    and a nearby correctly rounded note at the reported position is exactly one
+    pixel-space step away in the MusicXML-required direction.
+    """
+    actual_position = _integer(group.get("staff_position"))
+    target_center = _visual_center(group)
+    if (
+        actual_position is None
+        or abs(actual_position - expected_position) != 1
+        or target_center is None
+        or group.get("visual_status") != "canonical"
+        or _string(sidecar_note.get("alignment_method")) != "structural"
+    ):
+        return False
+    staff_group_index = _integer(group.get("staff_group_index"))
+    staff_index = _integer(group.get("staff_index"))
+    if staff_group_index is None or staff_index is None:
+        return False
+
+    anchors: list[tuple[float, float, int, float, float]] = []
+    for anchor in groups_by_id.values():
+        if (
+            anchor is group
+            or anchor.get("visual_status") != "canonical"
+            or _integer(anchor.get("staff_group_index")) != staff_group_index
+            or _integer(anchor.get("staff_index")) != staff_index
+        ):
+            continue
+        musicxml_id = _string(anchor.get("musicxml_id"))
+        if musicxml_id is None or groups_by_musicxml_id.get(musicxml_id) != [
+            anchor.get("visual_group_id")
+        ]:
+            continue
+        xml_note = xml_notes_by_id.get(musicxml_id)
+        anchor_note = sidecar_notes_by_id.get(musicxml_id)
+        if (
+            xml_note is None
+            or anchor_note is None
+            or xml_note.musicxml_staff_number - 1 != staff_index
+            or _string(anchor_note.get("alignment_method")) != "structural"
+        ):
+            continue
+        anchor_position = _integer(anchor.get("staff_position"))
+        anchor_expected = expected_staff_position(xml_note)
+        anchor_center = _visual_center(anchor)
+        anchor_size = _notehead_size(anchor)
+        if (
+            anchor_position is None
+            or anchor_position != anchor_expected
+            or anchor_center is None
+            or anchor_size is None
+        ):
+            continue
+        anchors.append(
+            (
+                anchor_center[0],
+                anchor_center[1],
+                anchor_position,
+                anchor_size[0],
+                anchor_size[1],
+            )
+        )
+
+    target_size = _notehead_size(group)
+    if target_size is None or len(anchors) < 3:
+        return False
+    typical_width = median([target_size[0], *(anchor[3] for anchor in anchors)])
+    typical_height = median([target_size[1], *(anchor[4] for anchor in anchors)])
+    pair_x_tolerance = 3 * typical_width
+    step_candidates: list[float] = []
+    for index, first in enumerate(anchors):
+        for second in anchors[index + 1 :]:
+            position_delta = first[2] - second[2]
+            if position_delta == 0 or abs(first[0] - second[0]) > pair_x_tolerance:
+                continue
+            step = abs((first[1] - second[1]) / position_delta)
+            if 0.25 * typical_height <= step <= 1.5 * typical_height:
+                step_candidates.append(step)
+    if len(step_candidates) < 3:
+        return False
+    staff_step = median(step_candidates)
+    residual_tolerance = max(1.5, 0.25 * staff_step)
+    neighbor_x_tolerance = 3 * typical_width
+    expected_delta = expected_position - actual_position
+    for anchor_x, anchor_y, anchor_position, _width, _height in anchors:
+        if (
+            anchor_position != actual_position
+            or abs(anchor_x - target_center[0]) > neighbor_x_tolerance
+        ):
+            continue
+        expected_y = anchor_y - expected_delta * staff_step
+        if (
+            abs(target_center[1] - expected_y) <= residual_tolerance
+            and 0.65 * staff_step <= abs(target_center[1] - anchor_y) <= 1.35 * staff_step
+        ):
+            return True
+    return False
 
 
 def _format_member_assignments(members: list[dict[str, str | None]], field: str) -> str:
@@ -598,7 +753,17 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
                 musicxml_id=musicxml_id,
                 visual_group_id=visual_group_id,
             )
-        elif actual_staff_position != expected_position:
+        elif actual_staff_position != expected_position and not (
+            _pixel_centers_prove_adjacent_staff_position(
+                group,
+                sidecar_note,
+                expected_position,
+                groups_by_id=groups_by_id,
+                groups_by_musicxml_id=groups_by_musicxml_id,
+                sidecar_notes_by_id=sidecar_notes_by_id,
+                xml_notes_by_id=xml_notes_by_id,
+            )
+        ):
             add(
                 "visual_pitch_divergence",
                 "Visual staff position does not match MusicXML pitch and clef",
