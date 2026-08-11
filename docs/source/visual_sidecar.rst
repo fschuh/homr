@@ -7,12 +7,12 @@ visual notehead group or is explicitly unlinked. Consumers must not infer pitch,
 repair links, or synthesize missing noteheads or stems.
 
 The sidecar is written as ``<image>.homr.visual.json`` when visual-sidecar output
-is enabled. The evaluator accepts v3 only; there is no v2 compatibility path.
+is enabled. The evaluator requires ``version: 3``.
 
 Staff fields
 ------------
 
-The v3 names distinguish three different concepts:
+The v3 names distinguish four different concepts:
 
 ``staff_group_index``
    Zero-based index of the staff group processed by one HOMR recognition pass.
@@ -54,38 +54,20 @@ An unlinked pixel candidate has ``visual_status: diagnostic`` and
 evaluation: they can indicate a real note missed by transformer recognition,
 but this tool cannot safely manufacture the corresponding MusicXML note.
 
-The v2 ``musicxml_ids``, ``unmatched_musicxml_notes``, and
-``unmatched_visual_notes`` fields are not part of v3. Unlinked MusicXML notes are
-represented by ``notes[].visual_group_id: null``; diagnostic visual candidates
-are represented directly in ``visual_groups``.
+Unlinked MusicXML notes are represented by ``notes[].visual_group_id: null``;
+diagnostic visual candidates are represented directly in ``visual_groups``.
 
-HOMR performs general, pixel-supported repairs before serialization. These
-include sequence alignment, physical chord grouping, duplicate consolidation,
-and recovery of notehead geometry from existing image candidates. Repair
-metadata remains available through ``visual_status``, ``provenance``,
-``alignment_method``, and ``repair_actions``. Recovery never creates a MusicXML
-note and never invents stem geometry without pixel evidence.
+Repair metadata
+---------------
 
-A transformer can exceptionally emit a real note in the wrong grand-staff
-branch: MusicXML then assigns the note to one staff while the existing notehead
-pixels belong to the other. HOMR links that candidate only when all of the
-following evidence is unique:
+HOMR applies pixel-supported visual repairs before serializing v3. The result is
+already authoritative: consumers must not replay ``repair_actions`` or infer a
+different link from them. The metadata explains how the effective geometry,
+link, staff membership, moment, or chord identity was obtained.
 
-* the MusicXML-side symbol is otherwise unlinked;
-* no candidate on its declared staff encodes the same diatonic pitch;
-* exactly one candidate on the other physical staff encodes its step and octave
-  under that staff's active clef; and
-* the candidate occupies the exact missing moment bracketed by the immediately
-  preceding and following linked moments, or joins an already linked visual
-  moment at the same horizontal position.
-
-The repaired visual group stays on its observed physical ``staff_index`` and is
-serialized with ``visual_status: fallback`` and
-``repair_actions: ["cross_staff_link_repaired", ...]``. Its note record uses
-``alignment_method: "cross_staff_repair"`` while retaining the unchanged
-MusicXML ``musicxml_staff_number``. Ambiguous candidates, ambiguous rhythmic
-slots, missing clefs, and cases that require accidental recognition to
-disambiguate remain unlinked rather than guessed.
+See :doc:`visual_sidecar_repairs` for the ordered repair pipeline, the complete
+``visual_status``, ``provenance``, ``alignment_method``, and ``repair_actions``
+vocabulary emitted by v3, and the evidence required by each repair.
 
 Evaluation CLI
 --------------

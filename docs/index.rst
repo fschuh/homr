@@ -16,6 +16,7 @@ API
    :maxdepth: 1
 
    source/visual_sidecar.rst
+   source/visual_sidecar_repairs.rst
    source/libs.rst
 
 
