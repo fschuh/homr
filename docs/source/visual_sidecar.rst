@@ -1,18 +1,20 @@
-Visual sidecar v3 and evaluator
-================================
+Visual sidecar and evaluator
+============================
 
-HOMR can emit a visual sidecar next to its MusicXML output. Version 3 is the
-viewer contract: each pitched MusicXML note is either linked to exactly one
-visual notehead group or is explicitly unlinked. Consumers must not infer pitch,
-repair links, or synthesize missing noteheads or stems.
+HOMR can emit a visual sidecar next to its MusicXML output.
+
+This documentation covers visual sidecar version 3 only. It is the viewer
+contract: each pitched MusicXML note is either linked to exactly one visual
+notehead group or is explicitly unlinked. Consumers must not infer pitch, repair
+links, or synthesize missing noteheads or stems.
 
 The sidecar is written as ``<image>.homr.visual.json`` when visual-sidecar output
-is enabled. The evaluator requires ``version: 3``.
+is enabled. The evaluator enforces this contract.
 
 Staff fields
 ------------
 
-The v3 names distinguish four different concepts:
+The field names distinguish four different concepts:
 
 ``staff_group_index``
    Zero-based index of the staff group processed by one HOMR recognition pass.
@@ -60,14 +62,14 @@ diagnostic visual candidates are represented directly in ``visual_groups``.
 Repair metadata
 ---------------
 
-HOMR applies pixel-supported visual repairs before serializing v3. The result is
+HOMR applies pixel-supported visual repairs before serialization. The result is
 already authoritative: consumers must not replay ``repair_actions`` or infer a
 different link from them. The metadata explains how the effective geometry,
 link, staff membership, moment, or chord identity was obtained.
 
 See :doc:`visual_sidecar_repairs` for the ordered repair pipeline, the complete
 ``visual_status``, ``provenance``, ``alignment_method``, and ``repair_actions``
-vocabulary emitted by v3, and the evidence required by each repair.
+vocabulary, and the evidence required by each repair.
 
 Evaluation CLI
 --------------
@@ -99,7 +101,7 @@ The command exits with:
 
 * ``0`` when the MusicXML and sidecar agree;
 * ``1`` when evaluation finds a note or contract divergence; or
-* ``2`` when inference, artifact loading, or v3 validation cannot run.
+* ``2`` when inference, artifact loading, or sidecar validation cannot run.
 
 The machine-readable report lists each divergence and the IDs involved. It
 distinguishes missing sidecar records, MusicXML notes without usable visual
@@ -129,8 +131,3 @@ not a ground-truth optical-recognition evaluator. In particular, a note omitted
 by transformer recognition can be absent from both MusicXML and linked sidecar
 notes. Any corresponding pixel candidate remains diagnostic and does not become
 an ``added_visual_note`` failure.
-
-Curated image-corpus evaluation and the autonomous test-and-fix loop are a
-separate follow-up. Once consumers require v3, viewer-side pitch overrides,
-link repairs, and synthetic visual fallbacks can be removed so the viewer treats
-the sidecar as authoritative.

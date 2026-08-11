@@ -1,9 +1,10 @@
-Visual sidecar v3 repairs
-=========================
+Visual sidecar repairs
+======================
 
-This page documents every repair marker emitted by the v3 visual sidecar and
-the repair behavior behind it. It also covers v3 repairs that alter serialized
-output without receiving a dedicated ``repair_actions`` entry.
+This page documents every repair marker emitted by the visual sidecar contract
+described in :doc:`visual_sidecar` and the repair behavior behind it. It also
+covers repairs that alter serialized output without receiving a dedicated
+``repair_actions`` entry.
 
 Repairs are post-inference and visual-only. They may change a visual group's
 geometry, staff ownership, MusicXML link, ``moment_id``, or ``chord_id``. They do
@@ -14,7 +15,7 @@ pixel-backed geometry for a MusicXML note that already exists.
 How to read repair metadata
 ---------------------------
 
-Four pieces of v3 metadata describe different aspects of a result:
+Four pieces of metadata describe different aspects of a result:
 
 ``notes[].alignment_method``
    Explains how a MusicXML note was linked to a visual group. It belongs to the
@@ -44,7 +45,7 @@ space.
 Repair pipeline
 ---------------
 
-The v3 builder performs repairs in this order:
+The builder performs repairs in this order:
 
 #. Recover eligible segmentation candidates that inference excluded, assign
    every candidate to a physical staff from image geometry, refine initial
@@ -301,11 +302,11 @@ Link recovery actions
      horizontal position or is the single visual moment strictly bracketed by
      the immediately previous and next linked token moments.
 
-   Accidentals do not participate because v3 does not associate accidental
-   glyphs independently with noteheads. Missing clefs, ambiguous pitches or
-   candidates, and ambiguous or unbracketed rhythmic slots remain unlinked. The
-   repaired group keeps its observed ``staff_index``; the note keeps its original
-   ``musicxml_staff_number`` and uses
+   Accidentals do not participate because the sidecar does not associate
+   accidental glyphs independently with noteheads. Missing clefs, ambiguous
+   pitches or candidates, and ambiguous or unbracketed rhythmic slots remain
+   unlinked. The repaired group keeps its observed ``staff_index``; the note
+   keeps its original ``musicxml_staff_number`` and uses
    ``alignment_method: cross_staff_repair``.
 
 Physical chord and separation actions
@@ -351,7 +352,7 @@ assigned. They are evidence and grouping decisions, not contour mutations.
 Repairs without a dedicated action
 ----------------------------------
 
-Some v3 normalizations are visible in the final fields but do not add a
+Some normalizations are visible in the final fields but do not add a
 ``repair_actions`` entry:
 
 * Physical staff lines are robustly fitted from neighboring grid samples and,
@@ -387,4 +388,4 @@ and reports diagnostic candidates without treating them as invented MusicXML
 notes. It gives ``cross_staff_repair`` special geometric handling only when the
 note method, group status, and ``cross_staff_link_repaired`` action form the
 complete required metadata combination. Other repair actions are an audit trail
-and do not relax the v3 one-to-one link or pitch-consistency rules.
+and do not relax the one-to-one link or pitch-consistency rules.
