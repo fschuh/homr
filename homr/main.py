@@ -35,7 +35,7 @@ from homr.note_detection import NoteheadWithStem, add_notes_to_staffs, combine_n
 from homr.onnx_providers import coreml_available, cuda_available
 from homr.resize import resize_image_with_metadata
 from homr.segmentation.config import segnet_path_onnx, segnet_path_onnx_fp16
-from homr.segmentation.inference_segnet import extract
+from homr.segmentation.inference_segnet import SEGNET_WINDOW_SIZE, extract
 from homr.simple_logging import eprint
 from homr.staff_detection import break_wide_fragments, detect_staff, make_lines_stronger
 from homr.staff_parsing import parse_staffs
@@ -84,11 +84,12 @@ def get_predictions(
     img_path: str,
     enable_cache: bool,
     segnet_use_gpu: bool,
+    segmentation_step_size: int = SEGNET_WINDOW_SIZE,
 ) -> InputPredictions:
     result = extract(
         preprocessed,
         img_path,
-        step_size=320,
+        step_size=segmentation_step_size,
         use_cache=enable_cache,
         use_gpu_inference=segnet_use_gpu,
     )
@@ -110,7 +111,11 @@ def replace_extension(path: str, new_extension: str) -> str:
 
 
 def load_and_preprocess_predictions(
-    image_path: str, enable_debug: bool, enable_cache: bool, segnet_use_gpu: bool
+    image_path: str,
+    enable_debug: bool,
+    enable_cache: bool,
+    segnet_use_gpu: bool,
+    segmentation_step_size: int = SEGNET_WINDOW_SIZE,
 ) -> tuple[InputPredictions, Debug, PredictionCoordinateTransform]:
     image = cv2.imread(image_path)
     if image is None:
@@ -122,7 +127,14 @@ def load_and_preprocess_predictions(
     resize_result = resize_image_with_metadata(image)
     image = resize_result.image
     preprocessed = color_adjust.apply_clahe(image)
-    predictions = get_predictions(image, preprocessed, image_path, enable_cache, segnet_use_gpu)
+    predictions = get_predictions(
+        image,
+        preprocessed,
+        image_path,
+        enable_cache,
+        segnet_use_gpu,
+        segmentation_step_size,
+    )
     coordinate_transform = PredictionCoordinateTransform(
         source_image_size=autocrop_result.original_size,
         autocrop_box=autocrop_result.crop_box,
@@ -183,6 +195,18 @@ class ProcessingConfig:
     # Only helps across many images (slow one-time MLProgram compile).
     coreml_encoder: bool
     write_visual_sidecar: bool
+    segmentation_step_size: int = SEGNET_WINDOW_SIZE
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.segmentation_step_size, int)
+            or isinstance(self.segmentation_step_size, bool)
+            or not 1 <= self.segmentation_step_size <= SEGNET_WINDOW_SIZE
+        ):
+            raise ValueError(
+                "segmentation_step_size must be an integer between "
+                f"1 and {SEGNET_WINDOW_SIZE}"
+            )
 
 
 @dataclass(frozen=True)
@@ -308,7 +332,11 @@ def detect_staffs_in_image(image_path: str, config: ProcessingConfig) -> tuple[
     list[NoteheadWithStem],
 ]:
     predictions, debug, coordinate_transform = load_and_preprocess_predictions(
-        image_path, config.enable_debug, config.enable_cache, config.segnet_use_gpu
+        image_path,
+        config.enable_debug,
+        config.enable_cache,
+        config.segnet_use_gpu,
+        config.segmentation_step_size,
     )
     symbols = predict_symbols(debug, predictions)
 
