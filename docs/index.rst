@@ -17,6 +17,7 @@ API
 
    source/visual_sidecar.rst
    source/visual_sidecar_repairs.rst
+   source/recognition_findings.rst
    source/libs.rst
 
 
