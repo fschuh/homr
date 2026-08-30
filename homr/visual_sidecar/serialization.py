@@ -7,7 +7,13 @@ import numpy as np
 from homr.bounding_boxes import RotatedBoundingBox
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
-from homr.visual_sidecar.models import VISUAL_SIDECAR_VERSION, SidecarState, VisualGroup
+from homr.visual_sidecar.models import (
+    UPSTREAM_BASE_VERSION,
+    VISUAL_SIDECAR_VERSION,
+    SidecarState,
+    VisualGroup,
+    fork_version,
+)
 
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 
@@ -89,6 +95,10 @@ class VisualSidecarSerializer:
         typical_angles_by_staff_group = self._typical_notehead_angles_by_staff_group()
         return {
             "version": VISUAL_SIDECAR_VERSION,
+            "producer": {
+                "version": fork_version(),
+                "upstream_base": UPSTREAM_BASE_VERSION,
+            },
             "source_image_size": list(self.coordinate_transform.source_image_size),
             "preprocessing": {
                 "autocrop_box": list(self.coordinate_transform.autocrop_box),

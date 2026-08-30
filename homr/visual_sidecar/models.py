@@ -1,3 +1,4 @@
+import importlib.metadata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -7,6 +8,24 @@ from homr.transformer.vocabulary import EncodedSymbol
 VISUAL_SIDECAR_VERSION = 3
 CROSS_STAFF_ALIGNMENT_METHOD = "cross_staff_repair"
 CROSS_STAFF_REPAIR_ACTION = "cross_staff_link_repaired"
+
+# The upstream liebharc/homr release this fork is branched from. Update this only
+# when rebasing onto a new upstream tag; the fork's own version is derived from git
+# tags by poetry-dynamic-versioning and must not be duplicated here.
+UPSTREAM_BASE_VERSION = "0.7.0"
+
+# Distribution names to try, in order, when reporting this fork's own version.
+_DISTRIBUTION_CANDIDATES = ("homr-visual", "homr")
+
+
+def fork_version() -> str:
+    """Return the installed version of this fork, or a marker if it is not installed."""
+    for distribution in _DISTRIBUTION_CANDIDATES:
+        try:
+            return importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return "0.0.0+unknown"
 
 
 def sounding_pitch(symbol: EncodedSymbol) -> str | None:
