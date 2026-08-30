@@ -8,6 +8,75 @@ processed using tools such as [musescore](https://musescore.com/).
 
 You might also want to check out [Andromr](https://github.com/aicelen/Andromr), an Android app for optical music recognition using homr.
 
+## About this fork
+
+This is a fork of [liebharc/homr](https://github.com/liebharc/homr), modified to
+support **interactive sheet-music viewers** — applications that need to know
+where on the page each recognized note actually is, so they can highlight it,
+select it, and follow it during playback. Upstream homr produces MusicXML; this
+fork additionally produces the geometry that ties that MusicXML back to the
+image.
+
+### Visual sidecar
+
+Running with `--output-visual-sidecar` writes `<image>.homr.visual.json` beside
+the MusicXML. It links **every pitched MusicXML note to exactly one notehead on
+the page**, or explicitly marks it as unlinked — never ambiguously, and never
+partially. A viewer can therefore highlight the correct notehead for any note it
+plays without guessing.
+
+The sidecar also reports each notehead's `staff_position` (its diatonic line or
+space) measured from the printed staff-line geometry, *independently* of what
+the transformer predicted the pitch to be. That gives consumers a way to
+cross-check recognized pitch against what is actually printed.
+
+The contract is strict by design: consumers must not infer pitch, repair links,
+or synthesize missing noteheads. All of that work happens inside homr, where the
+source image is still available.
+
+### Recognition and geometry repairs
+
+Making that one-to-one guarantee hold on real scores required fixing a number of
+cases where noteheads could not be matched reliably:
+
+- **Chords** — displaced (seconds), dense whole-note stacks, cross-staff chords,
+  shared stems, and hollow noteheads split into fragments by segmentation
+- **Staff geometry** — staff positions refit against printed staff-line pixels
+  rather than a single possibly-corrupted grid sample, which fixes false pitch
+  mismatches on skewed scans
+- **Grand staves** — recovery of a missing staff in repeated grand-staff
+  layouts, which previously caused bass-staff notes to be dropped before
+  transformer inference
+- **Accidentals** — resolved accidentals preserved in sidecar pitches, so A♭3 is
+  no longer reported as A3
+
+### Improved segmentation accuracy
+
+This one affects recognition quality for everyone, sidecar or not. SegNet runs
+on 320×320 tiles; the upstream merger picked a class *within* each tile and then
+averaged the resulting integer class labels across the page. Averaging class IDs
+is not a meaningful operation — the average of classes 1 and 3 is 2, a class
+neither tile predicted — and it discarded the per-class evidence exactly where
+tiles disagree, at their boundaries.
+
+The corrected merger accumulates full per-class score maps in page coordinates
+and applies `argmax` once, at the end. On a 31-page pitch-reference corpus with
+identical models and settings, total errors dropped from 8 to 5 and exactly
+matched pages rose from 27 to 28, **with no page regressing**. See
+`docs/source/recognition_findings.rst` for the full method and provenance.
+
+### Evaluation tooling
+
+A new `homr-visual-eval` command checks a sidecar against the v3 contract. It
+can evaluate already-generated artifacts without re-running inference, which
+makes it practical to validate a whole corpus after a change.
+
+### Upstream
+
+These changes are not endorsed by the upstream authors. This fork diverged from
+upstream at commit `8b5dcf7` and was modified between June and August 2026; the
+git history has the full record.
+
 ## Prerequisites
 
 - Python 3.11
