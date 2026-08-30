@@ -334,16 +334,11 @@ class Staff(DebugDrawable):
         angle_offset = 0.0
         if can_extend:
             line_offsets = np.median(
-                [
-                    np.subtract(grid_a[x].y, grid_b[x].y)
-                    for x in sorted(shared_x)
-                ],
+                [np.subtract(grid_a[x].y, grid_b[x].y) for x in sorted(shared_x)],
                 axis=0,
             )
             angle_offset = float(
-                np.median(
-                    [grid_a[x].angle - grid_b[x].angle for x in sorted(shared_x)]
-                )
+                np.median([grid_a[x].angle - grid_b[x].angle for x in sorted(shared_x)])
             )
 
         grid: list[StaffPoint] = []

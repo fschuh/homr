@@ -16,9 +16,7 @@ def score_patch(labels: np.ndarray, class_count: int = 4) -> np.ndarray:
     return scores
 
 
-def weighted_patch(
-    class_scores: tuple[float, ...], height: int = 2, width: int = 2
-) -> np.ndarray:
+def weighted_patch(class_scores: tuple[float, ...], height: int = 2, width: int = 2) -> np.ndarray:
     scores = np.zeros((len(class_scores), height, width), dtype=np.float32)
     for class_index, score in enumerate(class_scores):
         scores[class_index, :, :] = score
@@ -91,11 +89,7 @@ def test_shifted_final_rows_and_columns_reconstruct_correctly() -> None:
         ],
         dtype=np.int64,
     )
-    patches = [
-        score_patch(labels[y : y + 3, x : x + 3])
-        for y in (0, 2)
-        for x in (0, 2)
-    ]
+    patches = [score_patch(labels[y : y + 3, x : x + 3]) for y in (0, 2) for x in (0, 2)]
 
     reconstructed = merge_patches(patches, labels.shape, win_size=3, step_size=3)
 
@@ -114,9 +108,7 @@ def test_output_dimensions_exactly_match_input_page() -> None:
     image_shape = (7, 11)
     patch = score_patch(np.zeros((4, 4), dtype=np.int64))
 
-    reconstructed = merge_patches(
-        [patch] * 6, image_shape, win_size=4, step_size=4
-    )
+    reconstructed = merge_patches([patch] * 6, image_shape, win_size=4, step_size=4)
 
     assert reconstructed.shape == image_shape
 

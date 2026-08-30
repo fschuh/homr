@@ -31,7 +31,11 @@ from homr.debug import Debug
 from homr.model import InputPredictions, MultiStaff
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
 from homr.noise_filtering import filter_predictions
-from homr.note_detection import NoteheadWithStem, add_notes_to_staffs, combine_noteheads_with_stems
+from homr.note_detection import (
+    NoteheadWithStem,
+    add_notes_to_staffs,
+    combine_noteheads_with_stems,
+)
 from homr.onnx_providers import coreml_available, cuda_available
 from homr.resize import resize_image_with_metadata
 from homr.segmentation.config import segnet_path_onnx, segnet_path_onnx_fp16
@@ -204,8 +208,7 @@ class ProcessingConfig:
             or not 1 <= self.segmentation_step_size <= SEGNET_WINDOW_SIZE
         ):
             raise ValueError(
-                "segmentation_step_size must be an integer between "
-                f"1 and {SEGNET_WINDOW_SIZE}"
+                "segmentation_step_size must be an integer between " f"1 and {SEGNET_WINDOW_SIZE}"
             )
 
 

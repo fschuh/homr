@@ -8,7 +8,11 @@ from homr.model import Note, Staff, StaffPoint
 from homr.music_xml_generator import XmlGeneratorArguments, generate_xml
 from homr.note_detection import NoteheadWithStem
 from homr.transformer.vocabulary import EncodedSymbol
-from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder, sounding_pitch
+from homr.visual_sidecar import (
+    PredictionCoordinateTransform,
+    VisualSidecarBuilder,
+    sounding_pitch,
+)
 from tests.visual_sidecar_helpers import (
     diagnostic_visual_group_ids,
     musicxml_note_ids,

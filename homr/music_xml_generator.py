@@ -671,8 +671,8 @@ def build_note_or_rest(
         if visual_sidecar is not None:
             musicxml_id = visual_sidecar.create_musicxml_id()
             note._set_attributes({"id": musicxml_id})
-            setattr(note, "_homr_musicxml_id", musicxml_id)
-            setattr(note, "_homr_symbol", model_note)
+            note._homr_musicxml_id = musicxml_id
+            note._homr_symbol = model_note
         pitch = mxl.XMLPitch()
         pitch.add_child(mxl.XMLStep(value_=model_pitch[0]))
         pitch.add_child(mxl.XMLOctave(value_=int(model_pitch[1])))

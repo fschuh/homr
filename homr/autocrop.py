@@ -1,6 +1,7 @@
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
-from dataclasses import dataclass
 
 from homr.type_definitions import NDArray
 
