@@ -65,7 +65,7 @@ vcs = "git"
 style = "semver"
 # Fork releases are tagged under the "visual/" namespace so they cannot collide with the
 # upstream liebharc/homr tags (v0.1.0 .. v0.7.0), which are fetched into this repository
-# so the fork point stays verifiable. See tests/test_upstream_base_version.py.
+# so the contained upstream release stays verifiable. See tests/test_upstream_version.py.
 pattern  = "^visual/v(?P<base>\\d+\\.\\d+\\.\\d+)(-?((?P<stage>[a-zA-Z]+)\\.?(?P<revision>\\d+)?))?"
 
 [build-system]

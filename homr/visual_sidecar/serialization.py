@@ -8,7 +8,7 @@ from homr.bounding_boxes import RotatedBoundingBox
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
 from homr.visual_sidecar.models import (
-    UPSTREAM_BASE_VERSION,
+    UPSTREAM_VERSION,
     VISUAL_SIDECAR_VERSION,
     SidecarState,
     VisualGroup,
@@ -97,7 +97,7 @@ class VisualSidecarSerializer:
             "version": VISUAL_SIDECAR_VERSION,
             "producer": {
                 "version": fork_version(),
-                "upstream_base": UPSTREAM_BASE_VERSION,
+                "upstream": UPSTREAM_VERSION,
             },
             "source_image_size": list(self.coordinate_transform.source_image_size),
             "preprocessing": {
