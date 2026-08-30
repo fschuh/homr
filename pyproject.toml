@@ -12,6 +12,10 @@ documentation = "https://github.com/liebharc/homr"
 python = "<3.16,>=3.11"
 numpy = "^2.4.2"
 opencv-python-headless = "^4.13.0.92"
+# rapidocr requires opencv_python with no upper bound, and its 5.x major ships a cv2
+# package that overwrites the headless 4.x one, breaking "import cv2" in any freshly
+# resolved environment. Bound the transitive dependency until rapidocr constrains it.
+opencv-python = "<5"
 Pillow = "^12.1.1"
 types-Pillow = "^10.2.0.20240822"
 typing_extensions = "^4.15.0"
