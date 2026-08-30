@@ -18,7 +18,7 @@ from homr.type_definitions import NDArray
 
 
 class InputPredictions:
-    def __init__(
+    def __init__(  # noqa: PLR0917
         self,
         original: NDArray,
         preprocessed: NDArray,

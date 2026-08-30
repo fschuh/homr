@@ -78,7 +78,7 @@ class GpuSupport(Enum):
     FORCE = "force"
 
 
-def get_predictions(
+def get_predictions(  # noqa: PLR0917
     original: NDArray,
     preprocessed: NDArray,
     img_path: str,
