@@ -25,7 +25,7 @@ endif
 	@poetry config virtualenvs.in-project true
 	@poetry config virtualenvs.create true
 	@poetry self add "poetry-dynamic-versioning[plugin]"
-	@poetry install
+	@poetry install --extras cpu
 
 init: init-poetry pre-commit
 

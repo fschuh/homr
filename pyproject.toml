@@ -11,21 +11,33 @@ documentation = "https://github.com/liebharc/homr"
 [tool.poetry.dependencies]
 python = "<3.16,>=3.11"
 numpy = "^2.4.2"
-opencv-python-headless = "^4.13.0.92"
-# rapidocr requires opencv_python with no upper bound, and its 5.x major ships a cv2
-# package that overwrites the headless 4.x one, breaking "import cv2" in any freshly
-# resolved environment. Bound the transitive dependency until rapidocr constrains it.
-opencv-python = "<5"
+# opencv-python, opencv-python-headless and opencv-contrib-python all install the same
+# "cv2" import package at the same paths, so depending on two of them leaves one 70 MB
+# extension module with two owners. Poetry installs packages in parallel and lets both
+# wheels write that file at once, producing a spliced binary that segfaults on Linux and
+# is rejected by the Windows loader as "not a valid Win32 application". rapidocr requires
+# opencv_python, so depend on that same distribution and keep cv2 owned by one wheel. The
+# upper bound holds the 5.x major back until rapidocr constrains it.
+opencv-python = ">=4.13.0.92,<5"
 Pillow = "^12.1.1"
 types-Pillow = "^10.2.0.20240822"
 typing_extensions = "^4.15.0"
 musicxml = "1.4"
 rapidocr = "^3.7.0"
-onnxruntime="^1.24.1"
 requests="^2.32.5"
 
-[tool.poetry.group.gpu.dependencies]
-onnxruntime-gpu = "^1.24.1"
+# onnxruntime and onnxruntime-gpu ship the same native libraries under the same names, so an
+# environment holding both silently runs whichever wheel the installer happened to write
+# last. Declaring them as mutually exclusive extras rather than a base dependency plus a GPU
+# group means at most one can ever be installed and the caller states which. This mirrors
+# upstream 3fe86a3. Consequence: naming no extra installs no inference engine at all, so
+# every install path -- the Makefile, CI, and the viewer's worker -- must ask for one.
+onnxruntime = { version = "^1.24.1", optional = true }
+onnxruntime-gpu = { version = "^1.24.1", extras = ["cuda", "cudnn"], optional = true }
+
+[tool.poetry.extras]
+cpu = ["onnxruntime"]
+cuda = ["onnxruntime-gpu"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
