@@ -491,10 +491,8 @@ class MomentMatcher:
             ),
         )
         moments: list[list[int]] = []
-        for component in units:
-            center = float(
-                np.median([visual_groups[index].prediction_center[0] for index in component])
-            )
+        for unit in units:
+            center = float(np.median([visual_groups[index].prediction_center[0] for index in unit]))
             if moments:
                 previous_center = float(
                     np.median([visual_groups[index].prediction_center[0] for index in moments[-1]])
@@ -502,9 +500,9 @@ class MomentMatcher:
             else:
                 previous_center = float("-inf")
             if moments and abs(center - previous_center) <= x_tolerance:
-                moments[-1].extend(component)
+                moments[-1].extend(unit)
             else:
-                moments.append(list(component))
+                moments.append(list(unit))
 
         # A simultaneous second is conventionally displaced left or right by
         # roughly one notehead width. This occurs both inside stemless chords and

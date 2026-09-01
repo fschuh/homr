@@ -552,12 +552,12 @@ class NoteheadGeometry:
                 (4, angle_step, -55.0, 25.0),
             )
             for index, amount, minimum, maximum in dimensions:
-                options = []
+                options: list[tuple[float, float, float, float, float]] = []
                 for offset in (-2, -1, 0, 1, 2):
                     option = list(params)
                     option[index] = min(max(option[index] + offset * amount, minimum), maximum)
                     if option[3] * 1.05 <= option[2] <= option[3] * 1.85:
-                        options.append(tuple(option))
+                        options.append((option[0], option[1], option[2], option[3], option[4]))
                 params = max(options, key=lambda item: score(item, recovered_center))
 
         if score(params, recovered_center) < 0.34:
@@ -565,13 +565,15 @@ class NoteheadGeometry:
         center = (params[0], params[1])
         size = (params[2] * 2, params[3] * 2)
         angle = params[4]
-        contour = cv2.ellipse2Poly(
-            (int(round(center[0])), int(round(center[1]))),
-            (max(1, int(round(size[0] / 2))), max(1, int(round(size[1] / 2)))),
-            int(round(angle)),
-            0,
-            360,
-            3,
+        contour = np.asarray(
+            cv2.ellipse2Poly(
+                (int(round(center[0])), int(round(center[1]))),
+                (max(1, int(round(size[0] / 2))), max(1, int(round(size[1] / 2)))),
+                int(round(angle)),
+                0,
+                360,
+                3,
+            )
         ).reshape(-1, 1, 2)
         return self.coordinate_transform.prediction_contour_to_source(contour)
 

@@ -6,6 +6,7 @@ import numpy as np
 from homr.bounding_boxes import BoundingEllipse
 from homr.model import Note
 from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder
+from tests.visual_sidecar_helpers import ellipse_contour
 
 
 class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
@@ -45,7 +46,7 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
             resize_scale=(1.0, 1.0),
             prediction_size=(300, 300),
         )
-        contour = cv2.ellipse2Poly((100, 100), (40, 20), -30, 0, 360, 2).reshape(-1, 1, 2)
+        contour = ellipse_contour((100, 100), (40, 20), -30, 2)
         builder = VisualSidecarBuilder(coordinate_transform)
         original = Note(
             BoundingEllipse(((100, 100), (80, 40), 0), contour, 1),
@@ -107,7 +108,7 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
         image = np.full((100, 100), 255, dtype=np.uint8)
         cv2.ellipse(image, ((50, 50), (20, 12), -25), 0, 2)
         cv2.line(image, (25, 52), (75, 52), 0, 1)
-        contour = cv2.ellipse2Poly((50, 50), (10, 6), -25, 0, 360, 10).reshape(-1, 1, 2)
+        contour = ellipse_contour((50, 50), (10, 6), -25, 10)
         builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
         original = Note(
             BoundingEllipse(((50, 50), (20, 12), -25), contour, 3),
@@ -143,7 +144,7 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
         builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
 
         def make_note(center_y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((50, center_y), (9, 6), -25, 0, 360, 10).reshape(-1, 1, 2)
+            contour = ellipse_contour((50, center_y), (9, 6), -25, 10)
             return Note(
                 BoundingEllipse(((50, center_y), (18, 12), -25), contour, center_y),
                 position=4,
@@ -179,7 +180,7 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
         image = np.full((100, 120), 255, dtype=np.uint8)
         cv2.ellipse(image, ((60, 50), (18, 12), -25), 0, -1)
         cv2.line(image, (25, 50), (85, 50), 0, 1)
-        corrupted = cv2.ellipse2Poly((52, 54), (16, 6), 0, 0, 360, 10).reshape(-1, 1, 2)
+        corrupted = ellipse_contour((52, 54), (16, 6), 0, 10)
         builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
         original = Note(
             BoundingEllipse(((52, 54), (32, 12), 0), corrupted, 9),
@@ -216,7 +217,7 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
         image = np.full((100, 100), 255, dtype=np.uint8)
         cv2.ellipse(image, ((50, 50), (18, 12), -25), 0, -1)
         cv2.line(image, (15, 50), (85, 50), 0, 2)
-        contour = cv2.ellipse2Poly((50, 50), (9, 6), -25, 0, 360, 10).reshape(-1, 1, 2)
+        contour = ellipse_contour((50, 50), (9, 6), -25, 10)
         builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
         original = Note(
             BoundingEllipse(((50, 50), (18, 12), -25), contour, 10),
@@ -250,7 +251,7 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
         cv2.line(image, (10, 64), (90, 64), 0, 2)
         cv2.ellipse(image, ((50, 48), (18, 12), -25), 0, -1)
         cv2.line(image, (59, 48), (59, 78), 0, 2)
-        contour = cv2.ellipse2Poly((50, 48), (9, 6), -25, 0, 360, 10).reshape(-1, 1, 2)
+        contour = ellipse_contour((50, 48), (9, 6), -25, 10)
         builder = VisualSidecarBuilder(coordinate_transform, source_image=image)
         original = Note(
             BoundingEllipse(((50, 48), (18, 12), -25), contour, 11),
@@ -279,7 +280,7 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
             prediction_size=(300, 300),
         )
         mask = np.zeros((300, 300), dtype=np.uint8)
-        contour = cv2.ellipse2Poly((100, 100), (40, 20), -30, 0, 360, 2).reshape(-1, 1, 2)
+        contour = ellipse_contour((100, 100), (40, 20), -30, 2)
         cv2.fillPoly(mask, [contour], 255)
         builder = VisualSidecarBuilder(coordinate_transform, notehead_mask=mask)
         original = Note(
@@ -310,7 +311,7 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
             prediction_size=(300, 300),
         )
         builder = VisualSidecarBuilder(coordinate_transform)
-        reliable_contour = cv2.ellipse2Poly((100, 100), (40, 20), -30, 0, 360, 2).reshape(-1, 1, 2)
+        reliable_contour = ellipse_contour((100, 100), (40, 20), -30, 2)
         reliable = Note(
             BoundingEllipse(((100, 100), (80, 40), 0), reliable_contour, 1),
             position=4,
@@ -343,8 +344,8 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
             prediction_size=(300, 300),
         )
         mask = np.zeros((300, 300), dtype=np.uint8)
-        angled_contour = cv2.ellipse2Poly((100, 100), (20, 10), -30, 0, 360, 2).reshape(-1, 1, 2)
-        horizontal_contour = cv2.ellipse2Poly((180, 100), (24, 10), 0, 0, 360, 2).reshape(-1, 1, 2)
+        angled_contour = ellipse_contour((100, 100), (20, 10), -30, 2)
+        horizontal_contour = ellipse_contour((180, 100), (24, 10), 0, 2)
         cv2.fillPoly(mask, [angled_contour, horizontal_contour], 1)
         builder = VisualSidecarBuilder(coordinate_transform, notehead_mask=mask)
         angled = Note(
@@ -383,8 +384,8 @@ class TestVisualSidecarBuilderNoteheadGeometry(unittest.TestCase):
         )
         image = np.full((300, 300), 255, dtype=np.uint8)
         mask = np.zeros((300, 300), dtype=np.uint8)
-        angled_contour = cv2.ellipse2Poly((100, 100), (20, 10), -30, 0, 360, 2).reshape(-1, 1, 2)
-        horizontal_contour = cv2.ellipse2Poly((180, 100), (18, 12), 0, 0, 360, 2).reshape(-1, 1, 2)
+        angled_contour = ellipse_contour((100, 100), (20, 10), -30, 2)
+        horizontal_contour = ellipse_contour((180, 100), (18, 12), 0, 2)
         cv2.fillPoly(mask, [angled_contour, horizontal_contour], 1)
         cv2.ellipse(image, ((100, 100), (40, 20), -30), 0, -1)
         cv2.ellipse(image, ((180, 100), (36, 24), 0), 0, 2)

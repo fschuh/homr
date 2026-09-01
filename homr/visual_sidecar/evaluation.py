@@ -517,11 +517,11 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
 
     sidecar_notes_by_id: dict[str, dict[str, Any]] = {}
     for index, raw_note in enumerate(raw_notes):
-        note = _mapping(raw_note)
-        if note is None:
+        sidecar_note = _mapping(raw_note)
+        if sidecar_note is None:
             add("contract_error", "Sidecar note must be an object", details={"index": index})
             continue
-        musicxml_id = _string(note.get("musicxml_id"))
+        musicxml_id = _string(sidecar_note.get("musicxml_id"))
         if musicxml_id is None:
             add(
                 "contract_error",
@@ -532,7 +532,7 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
         if musicxml_id in sidecar_notes_by_id:
             add("contract_error", "Duplicate sidecar note id", musicxml_id=musicxml_id)
             continue
-        sidecar_notes_by_id[musicxml_id] = note
+        sidecar_notes_by_id[musicxml_id] = sidecar_note
 
     groups_by_id: dict[str, dict[str, Any]] = {}
     diagnostic_visual_group_ids: list[str] = []
@@ -894,13 +894,13 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
             chord_groups[chord_id].append(group)
     for chord_id, groups in chord_groups.items():
         moments = {_string(group.get("moment_id")) for group in groups}
-        staff_groups = {_integer(group.get("staff_group_index")) for group in groups}
+        staff_group_indexes = {_integer(group.get("staff_group_index")) for group in groups}
         staff_indexes = {_integer(group.get("staff_index")) for group in groups}
         if (
             len(moments) != 1
             or None in moments
-            or len(staff_groups) != 1
-            or None in staff_groups
+            or len(staff_group_indexes) != 1
+            or None in staff_group_indexes
             or len(staff_indexes) != 1
             or None in staff_indexes
         ):

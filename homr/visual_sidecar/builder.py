@@ -100,17 +100,16 @@ class VisualSidecarBuilder:
             refined_notehead_contour = self.noteheads.refined_notehead_contour(
                 original, original_notes
             )
-            recovered_stretched_notehead = (
-                self.noteheads.is_stretched_notehead(original)
-                and refined_notehead_contour is not None
-            )
+            is_stretched_notehead = self.noteheads.is_stretched_notehead(original)
             is_hollow_notehead = self.noteheads.is_hollow_notehead(original)
-            if recovered_stretched_notehead:
+            if is_stretched_notehead and refined_notehead_contour is not None:
+                recovered_stretched_notehead = True
                 notehead_contour = refined_notehead_contour
                 notehead_ellipse = self.noteheads.ellipse_from_source_contour(
                     refined_notehead_contour
                 )
             else:
+                recovered_stretched_notehead = False
                 notehead_ellipse = self.noteheads.notehead_ellipse(original)
             notehead_ellipse["_is_hollow"] = is_hollow_notehead
             detected_stem_contours = []

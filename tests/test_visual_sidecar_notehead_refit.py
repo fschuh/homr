@@ -9,6 +9,7 @@ from homr.note_detection import NoteheadWithStem, split_clumps_of_noteheads
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder
 from homr.visual_sidecar.models import VisualMatch
+from tests.visual_sidecar_helpers import ellipse_contour
 
 
 class TestVisualSidecarNoteheadRefit(unittest.TestCase):
@@ -42,7 +43,7 @@ class TestVisualSidecarNoteheadRefit(unittest.TestCase):
         split_clump_id: str | None = None,
         split_clump_bounds: tuple[int, int, int, int] | None = None,
     ) -> Note:
-        contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+        contour = ellipse_contour((x, y), (7, 5), -20, 5)
         return Note(
             BoundingEllipse(((x, y), (14, 10), -20), contour),
             position,

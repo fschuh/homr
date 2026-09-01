@@ -7,7 +7,11 @@ from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder
-from tests.visual_sidecar_helpers import diagnostic_visual_group_ids
+from tests.visual_sidecar_helpers import (
+    diagnostic_visual_group_ids,
+    ellipse_contour,
+    linked_visual_id,
+)
 
 
 class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
@@ -23,7 +27,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
 
         def make_note(position: int, *, x: int = 70, suffix: str = "") -> Note:
             y = 130 - 8 * position
-            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (14, 10), -20), contour),
                 position=position,
@@ -82,7 +86,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, position: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (10, 7), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (20, 14), -20), contour),
                 position=position,
@@ -148,7 +152,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, visual_id: str, stem: RotatedBoundingBox) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (5, 4), 0, 0, 360, 10).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (5, 4), 0, 10)
             return Note(
                 BoundingEllipse(((x, y), (10, 8), 0), contour),
                 position=4,
@@ -201,7 +205,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
 
         def make_note(y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((50, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((50, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((50, y), (14, 10), -20), contour),
                 position=4,
@@ -264,7 +268,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         downward_stem = RotatedBoundingBox(cv2.minAreaRect(downward_contour), downward_contour)
 
         def make_note(y: int, position: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((50, y), (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((50, y), (10, 7), -20, 5)
             # Reproduce segmentation assigning the visible downward stem to both
             # touching heads even though a separate upward component also exists.
             return Note(
@@ -331,7 +335,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
             width: int = 20,
             note_stem: RotatedBoundingBox | None = shared_stem,
         ) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (width // 2, 7), 0, 0, 360, 10).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (width // 2, 7), 0, 10)
             return Note(
                 BoundingEllipse(((x, y), (width, 14), 0), contour),
                 position=4,
@@ -508,7 +512,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
             )
 
         def whole(visual_id: str, center_y: int, position: int) -> Note:
-            contour = cv2.ellipse2Poly((80, center_y), (13, 9), 0, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((80, center_y), (13, 9), 0, 5)
             return Note(
                 BoundingEllipse(((80, center_y), (26, 18), 0), contour),
                 position=position,
@@ -576,7 +580,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
 
         def hollow_candidate(visual_id: str, center_x: int) -> Note:
-            contour = cv2.ellipse2Poly((center_x, 50), (10, 5), 0, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((center_x, 50), (10, 5), 0, 5)
             return Note(
                 BoundingEllipse(((center_x, 50), (20, 10), 0), contour),
                 position=9,
@@ -619,9 +623,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         image = np.full((120, 160), 255, dtype=np.uint8)
 
         def hollow_note(visual_id: str, center_x: int, center_y: int, position: int) -> Note:
-            contour = cv2.ellipse2Poly((center_x, center_y), (12, 8), 0, 0, 360, 5).reshape(
-                -1, 1, 2
-            )
+            contour = ellipse_contour((center_x, center_y), (12, 8), 0, 5)
             cv2.ellipse(image, (center_x, center_y), (12, 8), 0, 0, 360, 2)
             return Note(
                 BoundingEllipse(((center_x, center_y), (24, 16), 0), contour, position),
@@ -656,7 +658,9 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
 
         matched_groups = [
-            builder.visual_groups[builder.matches_by_symbol_id[symbol.visual_match_id].visual_id]
+            builder.visual_groups[
+                linked_visual_id(builder.matches_by_symbol_id[symbol.visual_match_id])
+            ]
             for symbol in (top_symbol, middle_symbol, bottom_symbol)
         ]
         self.assertEqual(
@@ -679,7 +683,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, position: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (10, 7), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (20, 14), -20), contour),
                 position=position,
@@ -713,7 +717,9 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         builder.add_staff_matches(symbols, 0)
 
         matched_groups = [
-            builder.visual_groups[builder.matches_by_symbol_id[symbol.visual_match_id].visual_id]
+            builder.visual_groups[
+                linked_visual_id(builder.matches_by_symbol_id[symbol.visual_match_id])
+            ]
             for symbol in symbols
             if symbol.rhythm.startswith("note")
         ]
@@ -742,7 +748,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, position: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (10, 7), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (20, 14), -20), contour),
                 position=position,
@@ -814,7 +820,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (14, 10), -20), contour),
                 position=4,
@@ -893,11 +899,11 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
                 visual_id=visual_id,
             )
 
-        full_first_contour = cv2.ellipse2Poly((40, 60), (10, 7), 0, 0, 360, 10).reshape(-1, 1, 2)
+        full_first_contour = ellipse_contour((40, 60), (10, 7), 0, 10)
         fragment_contour = np.array(
             [[[58, 58]], [[63, 58]], [[63, 62]], [[58, 62]]], dtype=np.float32
         )
-        full_second_contour = cv2.ellipse2Poly((110, 60), (10, 7), 0, 0, 360, 10).reshape(-1, 1, 2)
+        full_second_contour = ellipse_contour((110, 60), (10, 7), 0, 10)
         notes = [
             note("full-first", 40, shared_stem, full_first_contour),
             note("fragment", 61, shared_stem, fragment_contour),
@@ -949,7 +955,7 @@ class TestVisualSidecarBuilderChordGeometry(unittest.TestCase):
             visual_id: str,
             stem: RotatedBoundingBox,
         ) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (10, 7), 0, 0, 360, 10).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (10, 7), 0, 10)
             return Note(
                 BoundingEllipse(((x, y), (20, 14), 0), contour),
                 position=4,

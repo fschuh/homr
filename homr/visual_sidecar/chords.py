@@ -393,13 +393,15 @@ class ChordResolver:
             return existing_candidates[0]
 
         axes = (max(2, int(round(width / 2))), max(2, int(round(height / 2))))
-        contour = cv2.ellipse2Poly(
-            (int(round(center[0])), int(round(center[1]))),
-            axes,
-            -20,
-            0,
-            360,
-            5,
+        contour = np.asarray(
+            cv2.ellipse2Poly(
+                (int(round(center[0])), int(round(center[1]))),
+                axes,
+                -20,
+                0,
+                360,
+                5,
+            )
         ).reshape(-1, 1, 2)
         box = BoundingEllipse((center, (width, height), -20), contour)
         visual_id = f"vnote-transformer-recovered-{self._next_transformer_recovered_visual_id}"

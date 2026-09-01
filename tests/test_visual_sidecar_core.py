@@ -1,6 +1,5 @@
 import unittest
 
-import cv2
 import numpy as np
 
 from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
@@ -15,6 +14,7 @@ from homr.visual_sidecar import (
 )
 from tests.visual_sidecar_helpers import (
     diagnostic_visual_group_ids,
+    ellipse_contour,
     musicxml_note_ids,
     unmatched_musicxml_note_ids,
 )
@@ -219,7 +219,7 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         )
 
         def make_note(y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((70, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((70, y), (7, 5), -20, 5)
             note = Note(
                 BoundingEllipse(((70, y), (14, 10), -20), contour),
                 position=0,
@@ -259,7 +259,7 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
                 StaffPoint(100, [100, 110, 120, 130, 140], 0),
             ]
         )
-        contour = cv2.ellipse2Poly((50, 50), (4, 3), 0, 0, 360, 10).reshape(-1, 1, 2)
+        contour = ellipse_contour((50, 50), (4, 3), 0, 10)
         notehead = BoundingEllipse(((50, 50), (8, 6), 0), contour, 1)
         candidate = NoteheadWithStem(notehead, None)
         existing_notehead = BoundingEllipse(
@@ -288,7 +288,7 @@ class TestVisualSidecarBuilderCore(unittest.TestCase):
         )
 
         def note(x: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, 50), (5, 4), 0, 0, 360, 10).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, 50), (5, 4), 0, 10)
             return Note(
                 BoundingEllipse(((x, 50), (10, 8), 0), contour),
                 position=4,

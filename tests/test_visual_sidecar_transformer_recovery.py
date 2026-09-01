@@ -7,6 +7,7 @@ from homr.bounding_boxes import BoundingEllipse
 from homr.model import Note, Staff, StaffPoint
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder
+from tests.visual_sidecar_helpers import ellipse_contour
 
 
 class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
@@ -32,7 +33,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         )
 
         def make_note(y: int, position: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((60, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((60, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((60, y), (14, 10), -20), contour),
                 position=position,
@@ -86,7 +87,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         )
 
         def make_note(y: int, position: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((60, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((60, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((60, y), (14, 10), -20), contour),
                 position=position,
@@ -139,7 +140,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         )
 
         def make_note(center: tuple[int, int], position: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly(center, (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour(center, (7, 5), -20, 5)
             return Note(
                 BoundingEllipse((center, (14, 10), -20), contour),
                 position=position,
@@ -202,7 +203,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
             center: tuple[int, int],
             position: int,
         ) -> Note:
-            contour = cv2.ellipse2Poly(center, (8, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour(center, (8, 5), -20, 5)
             return Note(
                 BoundingEllipse((center, (16, 10), -20), contour),
                 position=position,
@@ -279,7 +280,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         )
 
         def make_note(center: tuple[int, int], position: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly(center, (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour(center, (10, 7), -20, 5)
             return Note(
                 BoundingEllipse((center, (20, 14), -20), contour),
                 position=position,
@@ -334,7 +335,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
                 StaffPoint(120, [20, 30, 40, 50, 60, 80, 90, 100, 110, 120], 0),
             ]
         )
-        lower_contour = cv2.ellipse2Poly((60, 50), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+        lower_contour = ellipse_contour((60, 50), (7, 5), -20, 5)
         lower = Note(
             BoundingEllipse(((60, 50), (14, 10), -20), lower_contour),
             position=3,
@@ -392,7 +393,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
         )
 
         def make_note(y: int, visual_id: str, position: int) -> Note:
-            contour = cv2.ellipse2Poly((60, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((60, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((60, y), (14, 10), -20), contour),
                 position=position,
@@ -486,7 +487,7 @@ class TestVisualSidecarBuilderTransformerRecovery(unittest.TestCase):
                 StaffPoint(120, [30, 40, 50, 60, 70], 0),
             ]
         )
-        anchor_contour = cv2.ellipse2Poly((60, 50), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+        anchor_contour = ellipse_contour((60, 50), (7, 5), -20, 5)
         anchor = Note(
             BoundingEllipse(((60, 50), (14, 10), -20), anchor_contour),
             position=5,

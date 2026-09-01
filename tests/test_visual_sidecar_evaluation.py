@@ -259,7 +259,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         # E3 is visibly one local staff step below F3 even though the skewed
         # terminal grid sample rounded both noteheads to position 7.
         groups[3]["center"] = [40.0, 109.625]
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-1", "A3", "vnote-1"),
@@ -298,7 +298,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         groups[2]["center"] = [10.0, 119.25]
         # The E3-linked geometry actually remains at F3's pixel position.
         groups[3]["center"] = [40.0, 100.0]
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-1", "A3", "vnote-1"),
@@ -332,7 +332,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         note["alignment_method"] = "cross_staff_repair"
         group = visual_group("vnote-1", "homr-note-1", -5, status="fallback", staff=0)
         group["repair_actions"].append("cross_staff_link_repaired")
-        sidecar = {"version": 3, "notes": [note], "visual_groups": [group]}
+        sidecar: dict[str, Any] = {"version": 3, "notes": [note], "visual_groups": [group]}
 
         report = evaluate_musicxml_sidecar(xml, sidecar)
 
@@ -348,7 +348,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         note = sidecar_note("homr-note-1", "F3", "vnote-1", staff=2)
         note["alignment_method"] = "cross_staff_repair"
         group = visual_group("vnote-1", "homr-note-1", -5, status="fallback", staff=0)
-        sidecar = {"version": 3, "notes": [note], "visual_groups": [group]}
+        sidecar: dict[str, Any] = {"version": 3, "notes": [note], "visual_groups": [group]}
 
         report = evaluate_musicxml_sidecar(xml, sidecar)
 
@@ -364,7 +364,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         note["alignment_method"] = "cross_staff_repair"
         group = visual_group("vnote-1", "homr-note-1", -4, status="fallback", staff=0)
         group["repair_actions"].append("cross_staff_link_repaired")
-        sidecar = {"version": 3, "notes": [note], "visual_groups": [group]}
+        sidecar: dict[str, Any] = {"version": 3, "notes": [note], "visual_groups": [group]}
 
         report = evaluate_musicxml_sidecar(xml, sidecar)
 
@@ -403,7 +403,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
   <note id="homr-note-2"><pitch><step>F</step><octave>3</octave></pitch>
     <duration>1</duration><voice>1</voice><staff>1</staff></note>
 </measure></part></score-partwise>"""
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-1", "E4", "vnote-1"),
@@ -425,7 +425,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
             "<clef number='2'><sign>F</sign><line>4</line></clef>"
         )
         xml = musicxml_document(xml_note("homr-note-1", "C", 4, voice=5, staff=2), clefs)
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [sidecar_note("homr-note-1", "C4", "vnote-1", voice=5, staff=2)],
             "visual_groups": [visual_group("vnote-1", "homr-note-1", 11, staff=1)],
@@ -459,7 +459,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
 
     def test_many_musicxml_notes_cannot_share_one_visual_group(self) -> None:
         xml = musicxml_document(xml_note("homr-note-1", "E", 4) + xml_note("homr-note-2", "F", 4))
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-1", "E4", "vnote-1"),
@@ -508,7 +508,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         xml = musicxml_document(
             xml_note("homr-note-1", "E", 4) + xml_note("homr-note-2", "G", 4, chord=True)
         )
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-1", "E4", "vnote-1"),
@@ -528,7 +528,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         xml = musicxml_document(
             xml_note("homr-note-21", "E", 4) + xml_note("homr-note-22", "G", 4, chord=True)
         )
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-21", "E4", "vnote-21"),
@@ -553,7 +553,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
             + xml_note("homr-note-2", "C", 4, voice=2)
             + xml_note("homr-note-3", "A", 3, chord=True, voice=2)
         )
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-1", "F4", "vnote-1", voice=1),
@@ -578,7 +578,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         xml = musicxml_document(
             xml_note("homr-note-31", "E", 4) + xml_note("homr-note-32", "G", 4, chord=True)
         )
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-31", "E4", "vnote-31"),
@@ -615,7 +615,7 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
 
     def test_consecutive_beamed_notes_cannot_share_a_visual_moment(self) -> None:
         xml = musicxml_document(xml_note("homr-note-1", "E", 4) + xml_note("homr-note-2", "F", 4))
-        sidecar = {
+        sidecar: dict[str, Any] = {
             "version": 3,
             "notes": [
                 sidecar_note("homr-note-1", "E4", "vnote-1"),

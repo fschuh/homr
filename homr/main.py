@@ -251,7 +251,7 @@ def process_image(
             stem_fragments: list[RotatedBoundingBox] = []
             notehead_mask = None
             notehead_candidates: list[NoteheadWithStem] = []
-            title_future = Future()
+            title_future: Future[str] = Future()
             title_future.set_result("")
         else:
             (

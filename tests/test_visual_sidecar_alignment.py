@@ -7,7 +7,11 @@ from homr.bounding_boxes import BoundingEllipse, RotatedBoundingBox
 from homr.model import Note, Staff, StaffPoint
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar import PredictionCoordinateTransform, VisualSidecarBuilder
-from tests.visual_sidecar_helpers import diagnostic_visual_group_ids
+from tests.visual_sidecar_helpers import (
+    diagnostic_visual_group_ids,
+    ellipse_contour,
+    linked_visual_id,
+)
 
 
 class TestVisualSidecarBuilderAlignment(unittest.TestCase):
@@ -22,7 +26,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (5, 4), 0, 0, 360, 10).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (5, 4), 0, 10)
             return Note(
                 BoundingEllipse(((x, y), (10, 8), 0), contour),
                 position=4,
@@ -69,7 +73,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         shared_stem = RotatedBoundingBox(cv2.minAreaRect(stem_contour), stem_contour)
 
         def make_note(x: int, y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (10, 7), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (20, 14), -20), contour),
                 position=4,
@@ -133,7 +137,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
             resize_scale=(1.0, 1.0),
             prediction_size=(100, 100),
         )
-        contour = cv2.ellipse2Poly((50, 40), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+        contour = ellipse_contour((50, 40), (7, 5), -20, 5)
         note = Note(
             BoundingEllipse(((50, 40), (14, 10), -20), contour),
             position=4,
@@ -177,7 +181,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
             visual_id: str,
             stem: RotatedBoundingBox | None = None,
         ) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (14, 10), -20), contour),
                 position=4,
@@ -252,7 +256,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
             visual_id: str,
             note_stem: RotatedBoundingBox,
         ) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (10, 7), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (10, 7), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (20, 14), -20), contour),
                 position=4,
@@ -327,7 +331,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (14, 10), -20), contour),
                 position=4,
@@ -399,7 +403,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         ) -> Note:
             notehead = box or BoundingEllipse(
                 ((80, y), (14, 10), -20),
-                cv2.ellipse2Poly((80, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2),
+                ellipse_contour((80, y), (7, 5), -20, 5),
             )
             return Note(
                 notehead,
@@ -413,7 +417,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         upper_bottom = make_note(50, "upper-bottom", upper_point)
         shared_boundary_box = BoundingEllipse(
             ((80, 85), (14, 10), -20),
-            cv2.ellipse2Poly((80, 85), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2),
+            ellipse_contour((80, 85), (7, 5), -20, 5),
         )
         boundary_upper = make_note(85, "boundary-a-upper", upper_point, shared_boundary_box)
         boundary_lower = make_note(85, "boundary-b-lower", lower_point, shared_boundary_box)
@@ -468,7 +472,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         self.assertEqual(
             {
                 builder.visual_groups[
-                    builder.matches_by_symbol_id[symbol.visual_match_id].visual_id
+                    linked_visual_id(builder.matches_by_symbol_id[symbol.visual_match_id])
                 ].moment_id
                 for symbol in (
                     upper_top_symbol,
@@ -494,7 +498,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (14, 10), -20), contour),
                 position=4,
@@ -550,7 +554,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (14, 10), -20), contour),
                 position=4,
@@ -629,7 +633,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (14, 10), -20), contour),
                 position=4,
@@ -700,7 +704,7 @@ class TestVisualSidecarBuilderAlignment(unittest.TestCase):
         )
 
         def make_note(x: int, y: int, visual_id: str) -> Note:
-            contour = cv2.ellipse2Poly((x, y), (7, 5), -20, 0, 360, 5).reshape(-1, 1, 2)
+            contour = ellipse_contour((x, y), (7, 5), -20, 5)
             return Note(
                 BoundingEllipse(((x, y), (14, 10), -20), contour),
                 position=4,
