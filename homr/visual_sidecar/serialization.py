@@ -5,14 +5,16 @@ from typing import Any
 import numpy as np
 
 from homr.bounding_boxes import RotatedBoundingBox
+from homr.segmentation.config import model_name as segmentation_model_name
+from homr.transformer.configs import model_name as transformer_model_name
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
 from homr.visual_sidecar.models import (
-    UPSTREAM_VERSION,
+    PRODUCER_NAME,
     VISUAL_SIDECAR_VERSION,
     SidecarState,
     VisualGroup,
-    fork_version,
+    homr_version,
 )
 
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
@@ -96,8 +98,15 @@ class VisualSidecarSerializer:
         return {
             "version": VISUAL_SIDECAR_VERSION,
             "producer": {
-                "version": fork_version(),
-                "upstream": UPSTREAM_VERSION,
+                "name": PRODUCER_NAME,
+                "version": homr_version(),
+                # The weights decide the geometry in this file, so they are the provenance
+                # that matters. They also move independently of any homr release: upstream
+                # shipped three transformer models within v0.7.0 alone.
+                "models": {
+                    "transformer": transformer_model_name,
+                    "segmentation": segmentation_model_name,
+                },
             },
             "source_image_size": list(self.coordinate_transform.source_image_size),
             "preprocessing": {

@@ -42,6 +42,11 @@ class FilePaths:
         self.pitchtokenizer = os.path.join(workspace, "tokenizer_pitch.json")
         self.notetokenizer = os.path.join(workspace, "tokenizer_note.json")
 
+        # Published for sidecar provenance. Kept away from the model_name assignment
+        # above, which upstream rewrites on every model update, so their change and
+        # this one never land in the same merge hunk.
+        self.model_name = model_name
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "checkpoint": self.checkpoint,
@@ -161,3 +166,9 @@ class Config:
 
 # Initialize the Config class
 default_config = Config()
+
+# The transformer weights this build runs, as published in the onnx_checkpoints release.
+# The trailing hash identifies the exact checkpoint, so it changes whenever the model is
+# retrained even if the run number does not. Mirrors homr/segmentation/config.py, and is
+# reported in every visual sidecar as the provenance of its geometry.
+model_name = default_config.filepaths.model_name

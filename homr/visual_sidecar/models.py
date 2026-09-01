@@ -9,18 +9,25 @@ VISUAL_SIDECAR_VERSION = 3
 CROSS_STAFF_ALIGNMENT_METHOD = "cross_staff_repair"
 CROSS_STAFF_REPAIR_ACTION = "cross_staff_link_repaired"
 
-# The most recent upstream liebharc/homr release contained in this history. Update it
-# in the same commit that merges a newer upstream release, so no sidecar is ever written
-# claiming an upstream version this build does not contain. The fork's own version is
-# derived from git tags by poetry-dynamic-versioning and must not be duplicated here.
-UPSTREAM_VERSION = "0.7.0"
+# Sidecars name their producer explicitly. The version alone cannot: it is derived from
+# the fork's visual/v* tags with the namespace stripped, so "0.1.0" is indistinguishable
+# from upstream liebharc/homr's own v0.1.0 release, and an untagged build reports 0.0.0,
+# which reads as stock homr of unknown vintage. Only this name separates the two.
+PRODUCER_NAME = "homr-visual"
 
-# Distribution names to try, in order, when reporting this fork's own version.
+# Distribution names to try, in order, when reporting the installed homr version.
 _DISTRIBUTION_CANDIDATES = ("homr-visual", "homr")
 
 
-def fork_version() -> str:
-    """Return the installed version of this fork, or a marker if it is not installed."""
+def homr_version() -> str:
+    """Return the installed homr version, or a marker if it is not installed.
+
+    poetry-dynamic-versioning derives this from the git tags at build time. A build made
+    at a visual/v* tag reports that release ("0.1.0"); one made past it appends the commit
+    distance and hash ("0.1.0-post.4+13c68f3"); one made before any release tag exists
+    still carries the hash, with 0.0.0 as the base ("0.0.0-post.473+e2eb29e"). The hash
+    identifies the source exactly in every case.
+    """
     for distribution in _DISTRIBUTION_CANDIDATES:
         try:
             return importlib.metadata.version(distribution)
