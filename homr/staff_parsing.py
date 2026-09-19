@@ -291,7 +291,12 @@ def parse_staff_image(
     regions: StaffRegions,
     config: Config,
     visual_sidecar: VisualSidecarBuilder | None = None,
+    system_index: int | None = None,
 ) -> list[EncodedSymbol]:
+    if visual_sidecar is not None:
+        visual_sidecar.add_staff_geometry(
+            index, staff, index if system_index is None else system_index
+        )
     original_notes = [symbol for symbol in staff.symbols if isinstance(symbol, Note)]
     sidecar_notes = (
         visual_sidecar.recovery_notes_for_staff(staff) if visual_sidecar is not None else []
@@ -374,7 +379,7 @@ def parse_staffs(
                 i += 1
                 continue
             result_staff = parse_staff_image(
-                debug, i, staff, image, regions, config, visual_sidecar
+                debug, i, staff, image, regions, config, visual_sidecar, system_index=staff_index
             )
             if len(result_staff) == 0:
                 eprint("Skipping empty staff", i)

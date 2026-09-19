@@ -131,3 +131,25 @@ not a ground-truth optical-recognition evaluator. In particular, a note omitted
 by transformer recognition can be absent from both MusicXML and linked sidecar
 notes. Any corresponding pixel candidate remains diagnostic and does not become
 an ``added_visual_note`` failure.
+Optional annotation geometry
+----------------------------
+
+Schema v3 may additionally contain ``annotation_geometry`` with ``version: 1``
+and a nonempty ``staffs`` array. Each physical staff has ``staff_id``,
+``staff_group_index``, ``staff_index``, and ``system_index``. The first two
+numeric staff fields match visual-group physical membership; ``system_index``
+groups staffs by printed system independently of voice traversal order.
+
+``lines`` contains five top-to-bottom polylines sharing an increasing-x sample
+grid. ``spacing`` contains [x, vertical staff-space] samples on the same grid.
+``extent`` is [left, top, right, bottom]. All coordinates use the original source
+raster, through the same crop/resize transform as note geometry. Consumers must
+not extrapolate outside the extent. A display raster resized independently in x
+and y must scale line coordinates, extents and spacing (spacing uses y scale).
+
+The optional capability is ``physical-staff-curves-v1``. Absence does not
+invalidate v3 note links or normal viewing; it makes annotation layout
+unavailable. Cache readiness must inspect this capability, not just sidecar v3
+or the HOMR package version. Targeted page regeneration can upgrade old pages;
+blanket cache invalidation is not required. Invalid advertised geometry is a
+contract error, including missing staff identities referenced by visual groups.

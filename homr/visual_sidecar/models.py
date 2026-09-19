@@ -131,6 +131,7 @@ class StemOwnershipCache:
 
 @dataclass
 class SidecarState:
+    annotation_staffs: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     recovery_notes_by_staff_id: dict[int, list[Note]] = field(default_factory=dict)
     staff_index_by_visual_id: dict[str, int] = field(default_factory=dict)
     staff_position_by_visual_id: dict[str, int] = field(default_factory=dict)

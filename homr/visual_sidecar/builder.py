@@ -81,6 +81,13 @@ class VisualSidecarBuilder:
     def prepare_recovery_notes(self, staffs: list[Staff]) -> None:
         self.recovery.prepare(staffs)
 
+    def add_staff_geometry(self, group_index: int, staff: Staff, system_index: int) -> None:
+        from homr.visual_sidecar.annotation_geometry import export_staff_geometry
+
+        self.state.annotation_staffs[group_index] = export_staff_geometry(
+            staff, group_index, system_index, self.coordinate_transform
+        )
+
     def recovery_notes_for_staff(self, staff: Staff) -> list[Note]:
         return self.recovery.for_staff(staff)
 

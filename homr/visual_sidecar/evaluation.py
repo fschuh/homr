@@ -260,7 +260,9 @@ def expected_staff_position(
     note: MusicXmlNote, *, musicxml_staff_number: int | None = None
 ) -> int | None:
     clef = (
-        note.clef if musicxml_staff_number is None else note.active_clefs.get(musicxml_staff_number)
+        note.clef
+        if musicxml_staff_number is None
+        else note.active_clefs.get(musicxml_staff_number)
     )
     if clef is None or clef.sign not in CLEF_REFERENCE_PITCHES or not 1 <= clef.line <= 5:
         return None
@@ -487,6 +489,13 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
                 details=details or {},
             )
         )
+
+    from homr.visual_sidecar.annotation_geometry import validate_annotation_geometry
+
+    try:
+        validate_annotation_geometry(sidecar)
+    except (ValueError, KeyError, TypeError) as error:
+        add("contract_error", f"Invalid annotation geometry: {error}")
 
     xml_notes_by_id: dict[str, MusicXmlNote] = {}
     for note in parsed_xml.notes:

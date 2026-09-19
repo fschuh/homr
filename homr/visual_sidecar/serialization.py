@@ -95,8 +95,18 @@ class VisualSidecarSerializer:
 
     def to_json_dict(self) -> dict[str, Any]:
         typical_angles_by_staff_group = self._typical_notehead_angles_by_staff_group()
+        annotation_staffs = [
+            staff
+            for index in sorted(self.state.annotation_staffs)
+            for staff in self.state.annotation_staffs[index]
+        ]
         return {
             "version": VISUAL_SIDECAR_VERSION,
+            **(
+                {"annotation_geometry": {"version": 1, "staffs": annotation_staffs}}
+                if annotation_staffs
+                else {}
+            ),
             "producer": {
                 "name": PRODUCER_NAME,
                 "version": homr_version(),
