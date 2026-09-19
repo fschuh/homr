@@ -100,7 +100,7 @@ class VisualSidecarSerializer:
             for index in sorted(self.state.annotation_staffs)
             for staff in self.state.annotation_staffs[index]
         ]
-        return {
+        result = {
             "version": VISUAL_SIDECAR_VERSION,
             **(
                 {"annotation_geometry": {"version": 1, "staffs": annotation_staffs}}
@@ -186,6 +186,17 @@ class VisualSidecarSerializer:
                 for group in sorted(self.visual_groups.values(), key=lambda g: g.visual_id)
             ],
         }
+        if annotation_staffs:
+            from homr.visual_sidecar.annotation_geometry import validate_annotation_geometry
+
+            try:
+                validate_annotation_geometry(result)
+            except ValueError as error:
+                # Annotation capability is optional. A malformed detection grid
+                # must not invalidate otherwise usable authoritative note links.
+                result.pop("annotation_geometry", None)
+                result["annotation_geometry_error"] = str(error)
+        return result
 
 
 def write_visual_sidecar(path: str, document: dict[str, Any]) -> None:

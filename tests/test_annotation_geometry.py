@@ -85,3 +85,15 @@ def test_old_sidecars_remain_valid_and_degenerate_grids_do_not_advertise_geometr
     transform, _ = geometry()
     staff = Staff([StaffPoint(10, [10, 20, 30, 40, 50], 0)])
     assert export_staff_geometry(staff, 0, 0, transform) == []
+
+
+def test_invalid_detected_curves_disable_only_optional_annotation_capability():
+    transform, _ = geometry()
+    staff = Staff([StaffPoint(x, [10, 20, 30, 40, 90], 0) for x in [10, 100]])
+    builder = VisualSidecarBuilder(transform)
+    builder.add_staff_geometry(0, staff, 0)
+    output = builder.to_json_dict()
+    assert output["version"] == 3
+    assert output["notes"] == []
+    assert "annotation_geometry" not in output
+    assert "spacing" in output["annotation_geometry_error"]
