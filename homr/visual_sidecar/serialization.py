@@ -7,6 +7,7 @@ import numpy as np
 from homr.bounding_boxes import RotatedBoundingBox
 from homr.segmentation.config import model_name as segmentation_model_name
 from homr.transformer.configs import model_name as transformer_model_name
+from homr.visual_sidecar.annotation_geometry import GeometryDiagnostic
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
 from homr.visual_sidecar.models import (
@@ -100,6 +101,7 @@ class VisualSidecarSerializer:
             for index in sorted(self.state.annotation_staffs)
             for staff in self.state.annotation_staffs[index]
         ]
+        annotation_diagnostics = list(self.state.annotation_diagnostics)
         result = {
             "version": VISUAL_SIDECAR_VERSION,
             **(
@@ -186,17 +188,52 @@ class VisualSidecarSerializer:
                 for group in sorted(self.visual_groups.values(), key=lambda g: g.visual_id)
             ],
         }
-        if annotation_staffs:
-            from homr.visual_sidecar.annotation_geometry import validate_annotation_geometry
+        self._apply_annotation_geometry_status(result, annotation_staffs, annotation_diagnostics)
+        return result
 
+    def _apply_annotation_geometry_status(
+        self,
+        result: dict[str, Any],
+        annotation_staffs: list[dict[str, Any]],
+        diagnostics: list["GeometryDiagnostic"],
+    ) -> None:
+        """Validate the advertised geometry and record why it was withdrawn.
+
+        The capability is optional: a malformed detection grid must not invalidate
+        otherwise usable authoritative note links. What changes here is that the
+        reason survives, in a form a consumer can act on rather than match strings against.
+        """
+        from homr.visual_sidecar.annotation_capture import write_annotation_capture
+        from homr.visual_sidecar.annotation_geometry import (
+            geometry_diagnostic,
+            originating_diagnostic,
+            rejection_payload,
+            validate_annotation_geometry,
+        )
+
+        primary: GeometryDiagnostic | None = None
+        if annotation_staffs:
             try:
                 validate_annotation_geometry(result)
             except ValueError as error:
-                # Annotation capability is optional. A malformed detection grid
-                # must not invalidate otherwise usable authoritative note links.
+                failure = geometry_diagnostic(error)
+                diagnostics.append(failure)
+                primary = originating_diagnostic(failure, diagnostics)
                 result.pop("annotation_geometry", None)
-                result["annotation_geometry_error"] = str(error)
-        return result
+        elif diagnostics:
+            # Nothing was exported at all. Without this the page would look like an
+            # ordinary score that simply carries no optional geometry.
+            primary = diagnostics[0]
+        if primary is not None:
+            result["annotation_geometry_error"] = primary.message
+            result["annotation_geometry_rejection"] = rejection_payload(primary, diagnostics)
+        write_annotation_capture(
+            staffs=annotation_staffs,
+            diagnostics=diagnostics,
+            transform=self.coordinate_transform,
+            source_image_size=result["source_image_size"],
+            label="rejected" if primary is not None else "accepted",
+        )
 
 
 def write_visual_sidecar(path: str, document: dict[str, Any]) -> None:

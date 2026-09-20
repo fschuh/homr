@@ -82,11 +82,29 @@ class VisualSidecarBuilder:
         self.recovery.prepare(staffs)
 
     def add_staff_geometry(self, group_index: int, staff: Staff, system_index: int) -> None:
-        from homr.visual_sidecar.annotation_geometry import export_staff_geometry
-
-        self.state.annotation_staffs[group_index] = export_staff_geometry(
-            staff, group_index, system_index, self.coordinate_transform
+        from homr.visual_sidecar.annotation_geometry import (
+            STAGE_EXPORT,
+            GeometryDiagnostic,
+            export_staff_geometry,
         )
+
+        # Staff parsing numbers its staffs monotonically across every voice, so a
+        # repeated index means the caller changed, not that a staff was re-exported.
+        # Silently overwriting would drop a whole staff's geometry without a reason.
+        if group_index in self.state.annotation_staffs:
+            self.state.annotation_diagnostics.append(
+                GeometryDiagnostic(
+                    reason="export-duplicate-staff-group",
+                    stage=STAGE_EXPORT,
+                    message="Physical staff geometry was registered twice",
+                    staff_group_index=group_index,
+                    system_index=system_index,
+                )
+            )
+            return
+        export = export_staff_geometry(staff, group_index, system_index, self.coordinate_transform)
+        self.state.annotation_staffs[group_index] = export.staffs
+        self.state.annotation_diagnostics.extend(export.diagnostics)
 
     def recovery_notes_for_staff(self, staff: Staff) -> list[Note]:
         return self.recovery.for_staff(staff)
