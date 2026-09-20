@@ -362,6 +362,16 @@ def _validate_staff(
         )
 
 
+def validate_physical_staff(staff: dict[str, Any], width: float, height: float) -> None:
+    """Validate one physical staff on its own, with the same rules as a sidecar.
+
+    Recovery needs to ask whether a single staff is in contract without inventing
+    a surrounding document, and it must get that answer from the same code that
+    gates publication rather than from a second, drifting copy of the rules.
+    """
+    _validate_staff(staff, width, height, set(), set())
+
+
 def validate_annotation_geometry(sidecar: dict[str, Any]) -> None:
     """Absent geometry is supported; malformed advertised geometry is an error."""
     geometry = sidecar.get("annotation_geometry")

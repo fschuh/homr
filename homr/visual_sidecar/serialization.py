@@ -7,7 +7,10 @@ import numpy as np
 from homr.bounding_boxes import RotatedBoundingBox
 from homr.segmentation.config import model_name as segmentation_model_name
 from homr.transformer.configs import model_name as transformer_model_name
-from homr.visual_sidecar.annotation_geometry import GeometryDiagnostic
+from homr.visual_sidecar.annotation_geometry import (
+    ANNOTATION_DIAGNOSTICS_VERSION,
+    GeometryDiagnostic,
+)
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
 from homr.visual_sidecar.models import (
@@ -227,6 +230,13 @@ class VisualSidecarSerializer:
         if primary is not None:
             result["annotation_geometry_error"] = primary.message
             result["annotation_geometry_rejection"] = rejection_payload(primary, diagnostics)
+        if self.state.annotation_repairs and result.get("annotation_geometry"):
+            # Provenance sits beside the geometry rather than inside it, so the v1
+            # staff schema a reader already parses stays exactly as it was.
+            result["annotation_geometry_repairs"] = {
+                "version": ANNOTATION_DIAGNOSTICS_VERSION,
+                "staffs": [repair.to_dict() for repair in self.state.annotation_repairs],
+            }
         write_annotation_capture(
             staffs=annotation_staffs,
             diagnostics=diagnostics,

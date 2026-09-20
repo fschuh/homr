@@ -7,6 +7,7 @@ from homr.transformer.vocabulary import EncodedSymbol
 
 if TYPE_CHECKING:
     from homr.visual_sidecar.annotation_geometry import GeometryDiagnostic
+    from homr.visual_sidecar.annotation_recovery import StaffRepair
 
 VISUAL_SIDECAR_VERSION = 3
 CROSS_STAFF_ALIGNMENT_METHOD = "cross_staff_repair"
@@ -136,6 +137,7 @@ class StemOwnershipCache:
 class SidecarState:
     annotation_staffs: dict[int, list[dict[str, Any]]] = field(default_factory=dict)
     annotation_diagnostics: list["GeometryDiagnostic"] = field(default_factory=list)
+    annotation_repairs: list["StaffRepair"] = field(default_factory=list)
     recovery_notes_by_staff_id: dict[int, list[Note]] = field(default_factory=dict)
     staff_index_by_visual_id: dict[str, int] = field(default_factory=dict)
     staff_position_by_visual_id: dict[str, int] = field(default_factory=dict)

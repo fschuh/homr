@@ -103,8 +103,38 @@ class VisualSidecarBuilder:
             )
             return
         export = export_staff_geometry(staff, group_index, system_index, self.coordinate_transform)
-        self.state.annotation_staffs[group_index] = export.staffs
         self.state.annotation_diagnostics.extend(export.diagnostics)
+        self.state.annotation_staffs[group_index] = [
+            self._recovered_annotation_staff(exported) for exported in export.staffs
+        ]
+
+    def _recovered_annotation_staff(self, staff: dict[str, Any]) -> dict[str, Any]:
+        """Repair an exported staff in place of rejecting the whole page.
+
+        Only the copy exported for annotation is touched here: the detected
+        ``Staff.grid``, the recognition geometry and every note link are already
+        complete and stay exactly as they are. A staff that is already in contract
+        is returned unchanged, and a declined recovery keeps the original reason.
+        """
+        from homr.visual_sidecar.annotation_geometry import (
+            AnnotationGeometryError,
+            validate_physical_staff,
+        )
+        from homr.visual_sidecar.annotation_recovery import recover_staff
+
+        width, height = self.coordinate_transform.source_image_size
+        try:
+            validate_physical_staff(staff, width, height)
+            return staff
+        except AnnotationGeometryError as error:
+            original = error.diagnostic
+        outcome = recover_staff(staff, width=width, height=height)
+        self.state.annotation_diagnostics.extend(outcome.diagnostics)
+        if outcome.staff is None or outcome.repair is None:
+            self.state.annotation_diagnostics.append(original)
+            return staff
+        self.state.annotation_repairs.append(outcome.repair)
+        return outcome.staff
 
     def recovery_notes_for_staff(self, staff: Staff) -> list[Note]:
         return self.recovery.for_staff(staff)
