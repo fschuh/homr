@@ -7,6 +7,7 @@ from statistics import median
 from typing import Any
 from xml.etree import ElementTree
 
+from homr.visual_sidecar.annotation_geometry import validate_annotation_geometry
 from homr.visual_sidecar.models import (
     CROSS_STAFF_ALIGNMENT_METHOD,
     CROSS_STAFF_REPAIR_ACTION,
@@ -260,9 +261,7 @@ def expected_staff_position(
     note: MusicXmlNote, *, musicxml_staff_number: int | None = None
 ) -> int | None:
     clef = (
-        note.clef
-        if musicxml_staff_number is None
-        else note.active_clefs.get(musicxml_staff_number)
+        note.clef if musicxml_staff_number is None else note.active_clefs.get(musicxml_staff_number)
     )
     if clef is None or clef.sign not in CLEF_REFERENCE_PITCHES or not 1 <= clef.line <= 5:
         return None
@@ -489,8 +488,6 @@ def evaluate_musicxml_sidecar(musicxml: str, sidecar: dict[str, Any]) -> VisualE
                 details=details or {},
             )
         )
-
-    from homr.visual_sidecar.annotation_geometry import validate_annotation_geometry
 
     try:
         validate_annotation_geometry(sidecar)

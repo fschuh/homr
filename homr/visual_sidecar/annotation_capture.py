@@ -41,7 +41,7 @@ def _runtime_provenance() -> dict[str, Any]:
     """
     providers: list[str] = []
     try:
-        import onnxruntime as ort
+        import onnxruntime as ort  # noqa: PLC0415 - optional extra, absence is tolerated
 
         providers = list(ort.get_available_providers())
     except Exception:  # pragma: no cover - inference engine is an optional extra

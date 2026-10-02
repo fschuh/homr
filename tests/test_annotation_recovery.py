@@ -305,14 +305,10 @@ def test_removal_matches_an_exactly_interpolated_knot_over_the_retained_domain()
     They differ only at the ends, which is why the extent and boundary effects of
     a removal are checked on their own rather than folded into this equivalence.
     """
-    from homr.visual_sidecar.annotation_geometry import (
-        validate_physical_staff as validate,
-    )
-
     staff = displace(grid(count=40), 15, 2)
     result = recovered(staff)
     assert result is not None
-    validate(result, WIDTH, HEIGHT)
+    validate_physical_staff(result, WIDTH, HEIGHT)
 
     removed_x = staff["lines"][0][15][0]
     with_knot = copy.deepcopy(result)

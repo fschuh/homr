@@ -5,6 +5,14 @@ import numpy as np
 from homr.bounding_boxes import RotatedBoundingBox
 from homr.model import Note, Staff
 from homr.transformer.vocabulary import EncodedSymbol, remove_duplicated_symbols
+from homr.visual_sidecar.annotation_geometry import (
+    STAGE_EXPORT,
+    AnnotationGeometryError,
+    GeometryDiagnostic,
+    export_staff_geometry,
+    validate_physical_staff,
+)
+from homr.visual_sidecar.annotation_recovery import recover_staff
 from homr.visual_sidecar.candidate_cleanup import CandidateCleaner
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
@@ -82,12 +90,6 @@ class VisualSidecarBuilder:
         self.recovery.prepare(staffs)
 
     def add_staff_geometry(self, group_index: int, staff: Staff, system_index: int) -> None:
-        from homr.visual_sidecar.annotation_geometry import (
-            STAGE_EXPORT,
-            GeometryDiagnostic,
-            export_staff_geometry,
-        )
-
         # Staff parsing numbers its staffs monotonically across every voice, so a
         # repeated index means the caller changed, not that a staff was re-exported.
         # Silently overwriting would drop a whole staff's geometry without a reason.
@@ -116,12 +118,6 @@ class VisualSidecarBuilder:
         complete and stay exactly as they are. A staff that is already in contract
         is returned unchanged, and a declined recovery keeps the original reason.
         """
-        from homr.visual_sidecar.annotation_geometry import (
-            AnnotationGeometryError,
-            validate_physical_staff,
-        )
-        from homr.visual_sidecar.annotation_recovery import recover_staff
-
         width, height = self.coordinate_transform.source_image_size
         try:
             validate_physical_staff(staff, width, height)

@@ -7,9 +7,14 @@ import numpy as np
 from homr.bounding_boxes import RotatedBoundingBox
 from homr.segmentation.config import model_name as segmentation_model_name
 from homr.transformer.configs import model_name as transformer_model_name
+from homr.visual_sidecar.annotation_capture import write_annotation_capture
 from homr.visual_sidecar.annotation_geometry import (
     ANNOTATION_DIAGNOSTICS_VERSION,
     GeometryDiagnostic,
+    geometry_diagnostic,
+    originating_diagnostic,
+    rejection_payload,
+    validate_annotation_geometry,
 )
 from homr.visual_sidecar.chords import ChordResolver
 from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransform
@@ -198,7 +203,7 @@ class VisualSidecarSerializer:
         self,
         result: dict[str, Any],
         annotation_staffs: list[dict[str, Any]],
-        diagnostics: list["GeometryDiagnostic"],
+        diagnostics: list[GeometryDiagnostic],
     ) -> None:
         """Validate the advertised geometry and record why it was withdrawn.
 
@@ -206,14 +211,6 @@ class VisualSidecarSerializer:
         otherwise usable authoritative note links. What changes here is that the
         reason survives, in a form a consumer can act on rather than match strings against.
         """
-        from homr.visual_sidecar.annotation_capture import write_annotation_capture
-        from homr.visual_sidecar.annotation_geometry import (
-            geometry_diagnostic,
-            originating_diagnostic,
-            rejection_payload,
-            validate_annotation_geometry,
-        )
-
         primary: GeometryDiagnostic | None = None
         if annotation_staffs:
             try:
