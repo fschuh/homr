@@ -26,6 +26,12 @@ class ConversionState:
         self.beats = 4 * constants.duration_of_quarter
         self.division = division
         self.nominator = nominator
+        # The bar length a lone rest is written to fill: the time signature's once one is
+        # written, until then the typical bar length of this voice if it is a whole number
+        # of eighths. Misread bars can push the typical length to values no meter has.
+        self.bar_length: Fraction | None = (
+            nominator if nominator > 0 and (nominator * 8).denominator == 1 else None
+        )
         self.tremolo_state = "stop"
         self.volta_number = 1
         self.last_volta_measure = -10
@@ -47,6 +53,23 @@ class ConversionState:
         else:
             self.tremolo_state = "start"
         return self.tremolo_state
+
+
+class _MeasureRest(EncodedSymbol):
+    """A staff's only rest in a bar, written to fill the bar whatever glyph was read."""
+
+    def __init__(self, rest: EncodedSymbol, bar_length: Fraction) -> None:
+        super().__init__(
+            rest.rhythm,
+            rest.pitch,
+            rest.lift,
+            rest.articulation,
+            rest.slur,
+            rest.position,
+            rest.coordinates,
+        )
+        self.visual_match_id = rest.visual_match_id
+        self._duration = SymbolDuration(bar_length, 0, 1, 1, 1)
 
 
 class SymbolChord:
@@ -175,6 +198,7 @@ def build_measures(
     groups = add_tuplet_start_stop(group_into_chords(voice))
     division, nominator = find_division_and_time_signature_nominator(groups)
     state = ConversionState(division, nominator)
+    lone_rests = _lone_rest_ids(groups)
     measures: list[mxl.XMLMeasure] = []
     current_measure = mxl.XMLMeasure(number=str(measure_number))
     first_attributes = build_or_get_attributes(current_measure, None)
@@ -197,8 +221,14 @@ def build_measures(
                 attributes = build_or_get_attributes(current_measure, last_attributes)
                 build_multi_measure_rest(symbol, attributes)
             else:
-                staff_positions = group.into_positions()
-                advance = _advance_to_next_group(group, clock, sounding)
+                # A measure rest starts its bar; a lone rest read later stays as read.
+                written = (
+                    _with_measure_rests(group, lone_rests, state.bar_length)
+                    if clock == Fraction(0) and state.bar_length is not None
+                    else group
+                )
+                staff_positions = written.into_positions()
+                advance = _advance_to_next_group(written, clock, sounding)
                 clock += advance
                 sounding = [end for end in sounding if end > clock]
                 for pos_no, staff_pos in enumerate(staff_positions):
@@ -305,6 +335,41 @@ def _lone_rest_staves(chords: list[list[EncodedSymbol]]) -> set[str]:
         for position, symbols in timed_by_staff.items()
         if len(symbols) == 1 and symbols[0].rhythm.startswith("rest")
     }
+
+
+def _lone_rest_ids(groups: list[SymbolChord]) -> set[int]:
+    """Identify, by object, every rest that is its staff's only timed symbol in its bar."""
+    result: set[int] = set()
+    bar: list[list[EncodedSymbol]] = []
+    for group in [*groups, SymbolChord([EncodedSymbol("barline")])]:
+        if not group.is_barline():
+            bar.append(group.symbols)
+            continue
+        lone = _lone_rest_staves(bar)
+        result.update(
+            id(symbol)
+            for chord in bar
+            for symbol in chord
+            if symbol.position in lone
+            and symbol.rhythm.startswith("rest")
+            and not symbol.rhythm.endswith("m")
+        )
+        bar = []
+    return result
+
+
+def _with_measure_rests(
+    group: SymbolChord, lone_rests: set[int], bar_length: Fraction
+) -> SymbolChord:
+    if not any(id(symbol) in lone_rests for symbol in group.symbols):
+        return group
+    return SymbolChord(
+        [
+            _MeasureRest(symbol, bar_length) if id(symbol) in lone_rests else symbol
+            for symbol in group.symbols
+        ],
+        group.tuplet_mark,
+    )
 
 
 def _bar_length_evidence(chords: list[list[EncodedSymbol]]) -> Fraction:
@@ -569,6 +634,7 @@ def build_time_signature(
     time.add_child(mxl.XMLBeats(value_=str(beats)))
     time.add_child(mxl.XMLBeatType(value_=denominator))
     state.beats = beats
+    state.bar_length = Fraction(beats, int(denominator))
 
 
 def build_barline_style(barline: EncodedSymbol, xml: mxl.XMLBarline) -> None:
@@ -730,7 +796,7 @@ def build_note_or_rest(
     model_pitch = model_note.pitch
     model_duration = model_note.get_duration()
     if model_pitch == empty:
-        if model_duration.fraction.numerator == 0:
+        if model_duration.fraction.numerator == 0 or isinstance(model_note, _MeasureRest):
             note.add_child(mxl.XMLRest(measure="yes"))
         else:
             note.add_child(mxl.XMLRest())
@@ -910,6 +976,9 @@ def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tupl
                     frac = symbol.get_duration().fraction
                     if frac > Fraction(0):
                         durations.append(frac)
+                elif symbol.rhythm.startswith("timeSignature/"):
+                    # A measure rest lasts a whole bar of this time signature.
+                    durations.append(Fraction(1, int(symbol.rhythm.split("/")[1])))
             measure_chords.append(chord.symbols)
 
     length = _bar_length_evidence(measure_chords)

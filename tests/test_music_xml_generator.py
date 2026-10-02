@@ -462,6 +462,117 @@ barline . . . . ."""
         _, nominator = find_division_and_time_signature_nominator(rest_bar + rest_bar + full_bar)
         self.assertEqual(nominator, Fraction(1))
 
+    def test_lone_rest_is_written_as_a_measure_rest(self) -> None:
+        """
+        Super Mario Bros Coin: the bass's only symbol in the 1/4 bar is a rest read as a
+        half rest. Written as read it overfills the bar; as a measure rest it fills it.
+        """
+        coin = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_8 B4 _ _ _ upper&rest_2 _ _ _ _ lower
+note_8 E5 _ _ _ upper
+bolddoublebarline . . . . ."""
+        root = self._generate_root(coin)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        rests = [n for n in root.iter("note") if n.find("rest") is not None]
+        self.assertEqual(len(rests), 1)
+        self.assertEqual(rests[0].find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+        self.assertEqual(int(rests[0].findtext("duration", "0")), divisions)
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "1")
+
+    def test_lone_rest_after_the_bar_start_stays_as_read(self) -> None:
+        """A measure rest starts its bar, so a staff's only rest read mid-bar keeps its value."""
+        late_rest = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2 C5 _ _ _ upper
+note_2 D5 _ _ _ upper&rest_2 _ _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(late_rest)
+        rests = [n for n in root.iter("note") if n.find("rest") is not None]
+        self.assertEqual(len(rests), 1)
+        self.assertIsNone(rests[0].find("rest").get("measure"))  # type: ignore[union-attr]
+        self.assertEqual(rests[0].findtext("type"), "half")
+
+    def test_lone_rest_without_time_signature_fills_a_plausible_typical_bar(self) -> None:
+        """
+        Pages after the first carry no time signature, so the typical bar length stands in,
+        but only when it is a whole number of eighths: misread bars can push it elsewhere.
+        """
+        three_four = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+note_2. C5 _ _ _ upper&note_2. C3 _ _ _ lower
+barline . . . . .
+note_2. D5 _ _ _ upper&rest_1 _ _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(three_four)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+        self.assertEqual(int(rest.findtext("duration", "0")), 3 * divisions)
+
+        seventeen_sixteenths = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+note_1 C5 _ _ _ upper&note_1 C3 _ _ _ lower
+note_16 E5 _ _ _ upper
+barline . . . . .
+note_1 D5 _ _ _ upper&rest_1 _ _ _ _ lower
+note_16 F5 _ _ _ upper
+barline . . . . ."""
+        root = self._generate_root(seventeen_sixteenths)
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertIsNone(rest.find("rest").get("measure"))  # type: ignore[union-attr]
+        self.assertEqual(rest.findtext("type"), "whole")
+
+    def test_written_time_signature_sets_the_measure_rest_length(self) -> None:
+        """
+        Once a time signature is written its bar is what a measure rest fills, even when
+        the typical bar read from the page (here 15/16, one sixteenth missing per bar) is
+        no length a meter has.
+        """
+        missing_sixteenth = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2. C5 _ _ _ upper&note_2. C3 _ _ _ lower
+note_8. D5 _ _ _ upper
+barline . . . . .
+note_2. E5 _ _ _ upper&rest_1 _ _ _ _ lower
+note_8. F5 _ _ _ upper
+barline . . . . ."""
+        root = self._generate_root(missing_sixteenth)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "3")
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+        self.assertEqual(int(rest.findtext("duration", "0")), 3 * divisions)
+
+    def test_divisions_represent_the_measure_rest_of_the_written_time_signature(self) -> None:
+        """
+        Bars of a half, a quarter and a triplet quarter need only 12 divisions per whole
+        note, but in eighths they make a 7/8 bar, and a measure rest of 7/8 needs 24.
+        """
+        triplet_bars = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/8 . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+note_4 D5 _ _ _ upper&note_4 D3 _ _ _ lower
+note_6 E5 _ _ _ upper&note_6 E3 _ _ _ lower
+barline . . . . .
+note_2 C5 _ _ _ upper&rest_2 _ _ _ _ lower
+note_4 D5 _ _ _ upper
+note_6 E5 _ _ _ upper
+barline . . . . ."""
+        root = self._generate_root(triplet_bars)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "7")
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+        self.assertEqual(2 * int(rest.findtext("duration", "0")), 7 * divisions)
+
+    def _generate_root(self, token_lines: str) -> ET.Element:
+        tokens = read_token_lines(token_lines.splitlines())
+        xml = generate_xml(XmlGeneratorArguments(), [tokens], "")
+        return ET.fromstring(xml.to_string())  # noqa: S314 - generated by the test itself
+
     def test_triplets_over_eighths_start_on_their_beats(self) -> None:
         """
         A triplet quarter beside an eighth: the next eighth starts under the held triplet,
