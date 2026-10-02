@@ -26,6 +26,9 @@ class ConversionState:
         self.beats = 4 * constants.duration_of_quarter
         self.division = division
         self.nominator = nominator
+        # The typical bar length of the bars each time signature governs, keyed by the
+        # identity of its token; a piece that changes meter has one per section.
+        self.section_nominators: dict[int, Fraction] = {}
         # The bar length a lone rest is written to fill: the time signature's once one is
         # written, until then the typical bar length of this voice if it is a whole number
         # of eighths. Misread bars can push the typical length to values no meter has.
@@ -198,6 +201,7 @@ def build_measures(
     groups = add_tuplet_start_stop(group_into_chords(voice))
     division, nominator = find_division_and_time_signature_nominator(groups)
     state = ConversionState(division, nominator)
+    state.section_nominators = time_signature_section_nominators(groups)
     lone_rests = _lone_rest_ids(groups)
     measures: list[mxl.XMLMeasure] = []
     current_measure = mxl.XMLMeasure(number=str(measure_number))
@@ -630,7 +634,8 @@ def build_time_signature(
 
     denominator = model_time_signature.rhythm.split("/")[1]
     attributes.add_child(time)
-    beats = max(int(state.nominator * int(denominator)), 1)
+    nominator = state.section_nominators.get(id(model_time_signature), state.nominator)
+    beats = max(int(nominator * int(denominator)), 1)
     time.add_child(mxl.XMLBeats(value_=str(beats)))
     time.add_child(mxl.XMLBeatType(value_=denominator))
     state.beats = beats
@@ -991,6 +996,39 @@ def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tupl
     nominator: Fraction = np.median(measure_duration)  # type: ignore
 
     return find_common_division(durations), nominator
+
+
+def time_signature_section_nominators(voice: list[SymbolChord]) -> dict[int, Fraction]:
+    """The typical bar length of each time signature's section, keyed by token identity.
+
+    The token carries only the beat type, so the beat count comes from the bars it
+    governs: those up to the next time signature. Sections without a bar that says how
+    long it is are left out, and fall back to the voice's typical bar length.
+    """
+    lengths: dict[int, list[Fraction]] = defaultdict(list)
+    section: int | None = None
+    bar: list[list[EncodedSymbol]] = []
+    for chord in [*voice, SymbolChord([EncodedSymbol("barline")])]:
+        if chord.is_barline():
+            length = _bar_length_evidence(bar)
+            if section is not None and length > Fraction(0):
+                lengths[section].append(length)
+            bar = []
+            continue
+        for symbol in chord.symbols:
+            if symbol.rhythm.startswith("timeSignature/"):
+                section = id(symbol)
+        bar.append(chord.symbols)
+    return {key: _median(values) for key, values in lengths.items()}
+
+
+def _median(values: list[Fraction]) -> Fraction:
+    """np.median's value, kept exact: the middle value, or the mean of the middle two."""
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 
 def group_into_chords(voice: list[EncodedSymbol]) -> list[SymbolChord]:

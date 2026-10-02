@@ -568,6 +568,41 @@ barline . . . . ."""
         self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
         self.assertEqual(2 * int(rest.findtext("duration", "0")), 7 * divisions)
 
+    def test_each_time_signature_counts_the_beats_of_its_own_section(self) -> None:
+        """
+        Chrono Trigger's Lucca's Theme opens in 6/8 and changes to 2/4. One typical bar for
+        the whole page gave both sections the same length; each section has its own.
+        """
+        six_eight_then_two_four = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_2 . . . . .
+timeSignature/8 . . . . .
+note_4. D5 _ _ _ upper&note_4. D3 _ _ _ lower
+note_4. E5 _ _ _ upper&note_4. E3 _ _ _ lower
+barline . . . . .
+note_4. F5 _ _ _ upper&note_4. F3 _ _ _ lower
+note_4. G5 _ _ _ upper&note_4. G3 _ _ _ lower
+barline . . . . .
+timeSignature/4 . . . . .
+note_2 A5 _ _ _ upper&note_2 A3 _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(six_eight_then_two_four)
+        times = [(t.findtext("beats"), t.findtext("beat-type")) for t in root.iter("time")]
+        self.assertEqual(times, [("6", "8"), ("2", "4")])
+
+    def test_time_signature_without_measured_bars_uses_the_typical_bar(self) -> None:
+        """A section whose bars hold only rests says nothing about its own bar length."""
+        resting_section = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_1 C5 _ _ _ upper&note_1 C3 _ _ _ lower
+barline . . . . .
+timeSignature/8 . . . . .
+rest_1 _ _ _ _ upper&rest_1 _ _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(resting_section)
+        times = [(t.findtext("beats"), t.findtext("beat-type")) for t in root.iter("time")]
+        self.assertEqual(times, [("4", "4"), ("8", "8")])
+
     def _generate_root(self, token_lines: str) -> ET.Element:
         tokens = read_token_lines(token_lines.splitlines())
         xml = generate_xml(XmlGeneratorArguments(), [tokens], "")
