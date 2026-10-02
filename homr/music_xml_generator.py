@@ -287,6 +287,37 @@ def _measure_length(chords: list[list[EncodedSymbol]]) -> Fraction:
     return max([clock, *sounding])
 
 
+def _lone_rest_staves(chords: list[list[EncodedSymbol]]) -> set[str]:
+    """The staves whose only timed symbol in this bar is a single rest.
+
+    Such a rest fills the bar whatever glyph was read: engravers write a whole rest for
+    an empty bar in any meter, and the transformer may read it as a half rest.
+    """
+    timed_by_staff: dict[str, list[EncodedSymbol]] = defaultdict(list)
+    for chord in chords:
+        for symbol in chord:
+            if symbol.rhythm.startswith(
+                ("note", "rest")
+            ) and symbol.get_duration().fraction > Fraction(0):
+                timed_by_staff[symbol.position].append(symbol)
+    return {
+        position
+        for position, symbols in timed_by_staff.items()
+        if len(symbols) == 1 and symbols[0].rhythm.startswith("rest")
+    }
+
+
+def _bar_length_evidence(chords: list[list[EncodedSymbol]]) -> Fraction:
+    """The length a bar's content gives it, or zero when nothing in the bar says.
+
+    A staff whose only content is one rest fills the bar, so it shows nothing about how
+    long the bar is; only the other staves do.
+    """
+    lone = _lone_rest_staves(chords)
+    kept = [[symbol for symbol in chord if symbol.position not in lone] for chord in chords]
+    return _measure_length([chord for chord in kept if chord])
+
+
 def _advance_to_next_group(
     group: SymbolChord, clock: Fraction, sounding: list[Fraction]
 ) -> Fraction:
@@ -868,8 +899,10 @@ def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tupl
     measure_chords: list[list[EncodedSymbol]] = []
     measure_duration = []
     for chord in voice:
-        if chord.is_barline() and _measure_length(measure_chords) > Fraction(0):
-            measure_duration.append(_measure_length(measure_chords))
+        if chord.is_barline():
+            length = _bar_length_evidence(measure_chords)
+            if length > Fraction(0):
+                measure_duration.append(length)
             measure_chords = []
         else:
             for symbol in chord.symbols:
@@ -879,8 +912,9 @@ def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tupl
                         durations.append(frac)
             measure_chords.append(chord.symbols)
 
-    if _measure_length(measure_chords) > Fraction(0):
-        measure_duration.append(_measure_length(measure_chords))
+    length = _bar_length_evidence(measure_chords)
+    if length > Fraction(0):
+        measure_duration.append(length)
 
     if len(measure_duration) == 0:
         return find_common_division(durations), Fraction(1)

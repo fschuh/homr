@@ -411,6 +411,57 @@ barline . . . . ."""
         _, nominator = find_division_and_time_signature_nominator(groups)
         self.assertEqual(nominator, Fraction(1))
 
+    def test_lone_rest_does_not_set_the_beat_count(self) -> None:
+        """
+        Super Mario Bros Coin: two treble eighths over a bass whose bar is a single rest,
+        read as a half rest. That rest fills the 1/4 bar whatever glyph was read, so only
+        the treble says how long the bar is.
+        """
+        coin = [
+            SymbolChord(
+                [
+                    EncodedSymbol("note_8", "B4", position="upper"),
+                    EncodedSymbol("rest_2", "_", position="lower"),
+                ]
+            ),
+            SymbolChord([EncodedSymbol("note_8", "E5", position="upper")]),
+            SymbolChord([EncodedSymbol("bolddoublebarline")]),
+        ]
+        _, nominator = find_division_and_time_signature_nominator(coin)
+        self.assertEqual(nominator, Fraction(1, 4))
+
+    def test_bars_of_only_rests_do_not_vote_on_the_beat_count(self) -> None:
+        """
+        A bar in which every staff holds a single rest says nothing about the bar length;
+        it must neither count as a bar nor run into the next one.
+        """
+        full_bar = [
+            SymbolChord(
+                [
+                    EncodedSymbol("note_2", "C5", position="upper"),
+                    EncodedSymbol("note_2", "C3", position="lower"),
+                ]
+            ),
+            SymbolChord(
+                [
+                    EncodedSymbol("note_2", "D5", position="upper"),
+                    EncodedSymbol("note_2", "D3", position="lower"),
+                ]
+            ),
+            SymbolChord([EncodedSymbol("barline")]),
+        ]
+        rest_bar = [
+            SymbolChord(
+                [
+                    EncodedSymbol("rest_8", "_", position="upper"),
+                    EncodedSymbol("rest_8", "_", position="lower"),
+                ]
+            ),
+            SymbolChord([EncodedSymbol("barline")]),
+        ]
+        _, nominator = find_division_and_time_signature_nominator(rest_bar + rest_bar + full_bar)
+        self.assertEqual(nominator, Fraction(1))
+
     def test_triplets_over_eighths_start_on_their_beats(self) -> None:
         """
         A triplet quarter beside an eighth: the next eighth starts under the held triplet,
