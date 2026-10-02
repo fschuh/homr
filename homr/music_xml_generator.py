@@ -158,10 +158,18 @@ def build_measures(
     part_number: int = 1,
     visual_sidecar: "VisualSidecarBuilder | None" = None,
 ) -> list[mxl.XMLMeasure]:
+    # Tokens say which notes start together, not when each group starts. A group starts
+    # when the earliest still-sounding note ends (that is how training data is grouped),
+    # so track the end times of sounding notes instead of only the last group's shortest note.
+    clock = Fraction(0)
+    sounding: list[Fraction] = []
+
     def close_current_measure() -> None:
+        nonlocal clock, sounding
         rebalance_measure_voices(current_measure)
         record_visual_sidecar_note_ids(current_measure, part_number, measure_number, visual_sidecar)
         measures.append(current_measure)
+        clock, sounding = Fraction(0), []
 
     measure_number = 1
     groups = add_tuplet_start_stop(group_into_chords(voice))
@@ -190,10 +198,11 @@ def build_measures(
                 build_multi_measure_rest(symbol, attributes)
             else:
                 staff_positions = group.into_positions()
+                advance = _advance_to_next_group(group, clock, sounding)
+                clock += advance
+                sounding = [end for end in sounding if end > clock]
                 for pos_no, staff_pos in enumerate(staff_positions):
-                    chord_duration = (
-                        group.get_duration() if pos_no == len(staff_positions) - 1 else Fraction(0)
-                    )
+                    chord_duration = advance if pos_no == len(staff_positions) - 1 else Fraction(0)
                     for note_xml in build_note_chord(
                         staff_pos, state, chord_duration, visual_sidecar
                     ):
@@ -260,6 +269,36 @@ def build_measures(
     if len(current_measure.get_children()) > 0:
         close_current_measure()
     return measures
+
+
+def _measure_length(chords: list[list[EncodedSymbol]]) -> Fraction:
+    """When the last note of a bar's chord groups ends, placing groups as build_measures does.
+
+    Summing each group's shortest note instead overstates every bar in which one hand moves
+    under a note the other hand holds, and the time signature's beat count is taken from
+    the typical bar length.
+    """
+    clock = Fraction(0)
+    sounding: list[Fraction] = []
+    for chord in chords:
+        advance = _advance_to_next_group(SymbolChord(chord), clock, sounding)
+        clock += advance
+        sounding = [end for end in sounding if end > clock]
+    return max([clock, *sounding])
+
+
+def _advance_to_next_group(
+    group: SymbolChord, clock: Fraction, sounding: list[Fraction]
+) -> Fraction:
+    """How far the next group starts after this one, updating the sounding notes in place."""
+    durations = [
+        s.get_duration().fraction for s in group.symbols if s.rhythm.startswith(("note", "rest"))
+    ]
+    timed = [d for d in durations if d > 0]  # grace notes have no duration and take no time
+    if not timed:
+        return Fraction(0)
+    sounding.extend(clock + d for d in timed)
+    return min(end for end in sounding if end > clock) - clock
 
 
 def build_work(title_text: str) -> mxl.XMLWork:
@@ -691,7 +730,9 @@ def build_note_or_rest(
         base_duration = 1 if model_duration.kern == 0 else model_duration.kern
         duration_name = DURATION_NAMES[base_duration]
         note.add_child(mxl.XMLType(value_=duration_name))
-        note.add_child(mxl.XMLDuration(value_=int(model_duration.fraction * state.division)))
+        note.add_child(
+            mxl.XMLDuration(value_=max(1, int(model_duration.fraction * state.division)))
+        )
     else:
         duration_name = DURATION_NAMES[0]
         note.add_child(mxl.XMLType(value_=duration_name))
@@ -753,7 +794,7 @@ def build_note_chord(
             is_first = False
         if i != len(sorted_durations) - 1 and group_duration > Fraction(0):
             backup = mxl.XMLBackup()
-            backup.add_child(mxl.XMLDuration(value_=int(group_duration * state.division)))
+            backup.add_child(mxl.XMLDuration(value_=max(1, int(group_duration * state.division))))
             result.append(backup)
 
         final_duration = group_duration
@@ -762,7 +803,7 @@ def build_note_chord(
     if chord_duration < final_duration:
         backup = mxl.XMLBackup()
         backup.add_child(
-            mxl.XMLDuration(value_=int((final_duration - chord_duration) * state.division))
+            mxl.XMLDuration(value_=max(1, int((final_duration - chord_duration) * state.division)))
         )
         result.append(backup)
     return result
@@ -824,21 +865,22 @@ def find_common_division(durations: list[Fraction]) -> int:
 
 def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tuple[int, Fraction]:
     durations = [Fraction(1, 4)]
-    duration_in_measure = Fraction(0)
+    measure_chords: list[list[EncodedSymbol]] = []
     measure_duration = []
     for chord in voice:
-        if chord.is_barline() and duration_in_measure > Fraction(0):
-            measure_duration.append(duration_in_measure)
-            duration_in_measure = Fraction(0)
+        if chord.is_barline() and _measure_length(measure_chords) > Fraction(0):
+            measure_duration.append(_measure_length(measure_chords))
+            measure_chords = []
         else:
-            duration = chord.get_duration()
-            if duration > Fraction(0):
-                durations.append(duration)
-                duration_in_measure += duration
+            for symbol in chord.symbols:
+                if symbol.rhythm.startswith(("note", "rest")):
+                    frac = symbol.get_duration().fraction
+                    if frac > Fraction(0):
+                        durations.append(frac)
+            measure_chords.append(chord.symbols)
 
-    if duration_in_measure > Fraction(0):
-        measure_duration.append(duration_in_measure)
-        duration_in_measure = Fraction(0)
+    if _measure_length(measure_chords) > Fraction(0):
+        measure_duration.append(_measure_length(measure_chords))
 
     if len(measure_duration) == 0:
         return find_common_division(durations), Fraction(1)
