@@ -603,6 +603,22 @@ barline . . . . ."""
         times = [(t.findtext("beats"), t.findtext("beat-type")) for t in root.iter("time")]
         self.assertEqual(times, [("4", "4"), ("8", "8")])
 
+    def test_symbols_chorded_with_notes_are_not_written_as_rests(self) -> None:
+        """
+        The transformer sometimes chords a barline with a note. Only notes and rests are
+        written from a chord group; the barline used to come out as a rest.
+        """
+        barline_in_chord = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+note_2 D5 _ _ _ upper&barline . . . . .&note_2 D3 _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(barline_in_chord)
+        self.assertEqual([n for n in root.iter("note") if n.find("rest") is not None], [])
+        pitches = sorted(n.findtext("pitch/step", "") for n in root.iter("note"))
+        self.assertEqual(pitches, ["C", "C", "D", "D"])
+
     def _generate_root(self, token_lines: str) -> ET.Element:
         tokens = read_token_lines(token_lines.splitlines())
         xml = generate_xml(XmlGeneratorArguments(), [tokens], "")

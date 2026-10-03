@@ -225,11 +225,17 @@ def build_measures(
                 attributes = build_or_get_attributes(current_measure, last_attributes)
                 build_multi_measure_rest(symbol, attributes)
             else:
+                # Only notes and rests take part: anything else the transformer chorded
+                # with them, such as a barline, would otherwise be written as a rest.
+                timed = SymbolChord(
+                    [s for s in group.symbols if s.rhythm.startswith(("note", "rest"))],
+                    group.tuplet_mark,
+                )
                 # A measure rest starts its bar; a lone rest read later stays as read.
                 written = (
-                    _with_measure_rests(group, lone_rests, state.bar_length)
+                    _with_measure_rests(timed, lone_rests, state.bar_length)
                     if clock == Fraction(0) and state.bar_length is not None
-                    else group
+                    else timed
                 )
                 staff_positions = written.into_positions()
                 advance = _advance_to_next_group(written, clock, sounding)
