@@ -613,6 +613,16 @@ def record_visual_sidecar_note_ids(
         voice_nodes = child.get_children_of_type(mxl.XMLVoice)
         staff = int(staff_nodes[0].value_) if staff_nodes else 1
         voice = int(voice_nodes[0].value_) if voice_nodes else 1
+        if child.get_children_of_type(mxl.XMLRest):
+            visual_sidecar.record_musicxml_rest(
+                musicxml_id,
+                symbol,
+                part=part_number,
+                measure=measure_number,
+                musicxml_staff_number=staff,
+                voice=voice,
+            )
+            continue
         visual_sidecar.record_musicxml_note(
             musicxml_id,
             symbol,
@@ -793,6 +803,18 @@ def build_slurs(note: mxl.XMLNote, slurs: str, slur_number: int) -> None:
         raise ValueError("Unsupported slur " + slurs)
 
 
+def _identify_rest(
+    note: mxl.XMLNote, model_note: EncodedSymbol, visual_sidecar: "VisualSidecarBuilder | None"
+) -> None:
+    """Give a written rest an ID so the visual sidecar can report whether it is printed."""
+    if visual_sidecar is None:
+        return
+    rest_id = visual_sidecar.create_musicxml_rest_id()
+    note._set_attributes({"id": rest_id})
+    note._homr_musicxml_id = rest_id
+    note._homr_symbol = model_note
+
+
 def build_note_or_rest(
     model_note: EncodedSymbol,
     rhythmic_layer: int,
@@ -807,12 +829,14 @@ def build_note_or_rest(
     model_pitch = model_note.pitch
     model_duration = model_note.get_duration()
     if model_pitch == empty:
+        _identify_rest(note, model_note, visual_sidecar)
         if model_duration.fraction.numerator == 0 or isinstance(model_note, _MeasureRest):
             note.add_child(mxl.XMLRest(measure="yes"))
         else:
             note.add_child(mxl.XMLRest())
     elif model_pitch == nonote:
         eprint("WARNING note without pitch", model_note)
+        _identify_rest(note, model_note, visual_sidecar)
         note.add_child(mxl.XMLRest())
     else:
         if visual_sidecar is not None:

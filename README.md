@@ -34,6 +34,12 @@ The contract is strict by design: consumers must not infer pitch, repair links,
 or synthesize missing noteheads. All of that work happens inside homr, where the
 source image is still available.
 
+The sidecar also reports, for every rest in the MusicXML, whether a printed rest
+backs it. Segmentation has no rest class, so homr looks for free-standing ink of a
+rest's shape where the transformer placed the rest. Rests without such ink, and
+notes read without a pitch that MusicXML would otherwise write as rests, are marked
+unsupported, so a viewer can show them as rests the page does not print.
+
 ### Recognition and geometry repairs
 
 Making that one-to-one guarantee hold on real scores required fixing a number of

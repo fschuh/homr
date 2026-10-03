@@ -153,3 +153,46 @@ unavailable. Cache readiness must inspect this capability, not just sidecar v3
 or the HOMR package version. Targeted page regeneration can upgrade old pages;
 blanket cache invalidation is not required. Invalid advertised geometry is a
 contract error, including missing staff identities referenced by visual groups.
+
+Rest verification
+-----------------
+
+Schema v3 may additionally contain ``rest_verification`` with ``version: 1`` and a
+``rests`` array: one record for every rest in the MusicXML, linked by ``rest_id`` to
+the ``id`` of its ``<note>``. Rest IDs are distinct from note IDs. A record says
+whether a printed rest backs that MusicXML rest.
+
+``status`` is one of:
+
+``supported``
+   Free-standing ink of a rest's shape was found where the transformer placed the
+   rest. ``center`` is that ink's centre.
+
+``unsupported``
+   No such ink was found, or the rest exists only because a note was read without a
+   pitch. ``center`` is where the transformer placed it, on the staff's middle line.
+   A consumer can show it as a rest that is not printed.
+
+``unverified``
+   The rest could not be checked; ``reason`` says why.
+
+``reason`` is ``rest_shaped_ink``, ``no_rest_shaped_ink``,
+``ink_claimed_by_another_rest`` (the only nearby rest ink was the better match for
+another rest), ``note_without_pitch``, ``multi_measure_rest``,
+``no_attention_coordinates``, ``no_staff_lines``, ``no_staff_geometry``,
+``no_segmentation``, or ``not_verified`` (the rest never reached the verifier).
+
+``duration`` is the transformer token, for example ``rest_8``, or ``note_16`` for a
+note read without pitch. ``staff_lines`` holds the five line heights of the rest's
+physical staff at its ``center`` x, top to bottom, and ``unit_size`` one staff space;
+both are empty or null when the rest could not be placed. ``position_estimated`` is
+true when the transformer gave the symbol no position and its x was taken midway
+between its neighbours in reading order. ``part``, ``measure``,
+``musicxml_staff_number``, ``voice``, ``staff_group_index`` and ``staff_index`` have
+their meanings above. Coordinates use the original source raster, like note geometry;
+a display raster resized independently in x and y scales ``unit_size`` and
+``staff_lines`` by the y scale.
+
+Segnet has no rest class, so the verifier looks for ink that no segmentation class
+explains. The block is diagnostic only: beyond the rest IDs that link its records, it
+never changes the MusicXML or any note link, and its absence does not affect them.

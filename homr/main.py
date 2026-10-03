@@ -52,6 +52,7 @@ from homr.visual_sidecar import (
     VisualSidecarBuilder,
     write_visual_sidecar,
 )
+from homr.visual_sidecar.rests import SegmentationMasks
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
@@ -251,6 +252,7 @@ def process_image(
             stem_fragments: list[RotatedBoundingBox] = []
             notehead_mask = None
             notehead_candidates: list[NoteheadWithStem] = []
+            segmentation_masks: SegmentationMasks | None = None
             title_future: Future[str] = Future()
             title_future.set_result("")
         else:
@@ -263,6 +265,7 @@ def process_image(
                 stem_fragments,
                 notehead_mask,
                 notehead_candidates,
+                segmentation_masks,
             ) = detect_staffs_in_image(image_path, config)
         debug_cleanup = debug
 
@@ -277,6 +280,7 @@ def process_image(
                 notehead_mask,
                 notehead_candidates,
                 source_image=image,
+                segmentation_masks=segmentation_masks,
             )
             if config.write_visual_sidecar
             else None
@@ -333,6 +337,7 @@ def detect_staffs_in_image(image_path: str, config: ProcessingConfig) -> tuple[
     list[RotatedBoundingBox],
     NDArray,
     list[NoteheadWithStem],
+    SegmentationMasks,
 ]:
     predictions, debug, coordinate_transform = load_and_preprocess_predictions(
         image_path,
@@ -408,6 +413,13 @@ def detect_staffs_in_image(image_path: str, config: ProcessingConfig) -> tuple[
         symbols.stems_rest,
         predictions.notehead,
         noteheads_with_stems,
+        SegmentationMasks(
+            staff=predictions.staff,
+            stems_rest=predictions.stems_rest,
+            notehead=predictions.notehead,
+            clefs_keys=predictions.clefs_keys,
+            symbols=predictions.symbols,
+        ),
     )
 
 

@@ -8,6 +8,7 @@ from homr.debug import Debug
 from homr.image_utils import crop_image_and_return_new_top
 from homr.model import MultiStaff, Note, Staff
 from homr.simple_logging import eprint
+from homr.staff_canvas_transform import StaffCanvasTransform
 from homr.staff_dewarping import StaffDewarping, dewarp_staff_image
 from homr.staff_parsing_tromr import parse_staff_tromr
 from homr.staff_regions import StaffRegions
@@ -162,7 +163,7 @@ def prepare_staff_image(
     staff_image: NDArray,
     regions: StaffRegions,
     sidecar_notes: list[Note] | None = None,
-) -> tuple[NDArray, Staff, Staff, list[Note]]:
+) -> tuple[NDArray, Staff, Staff, list[Note], StaffCanvasTransform]:
     transformed_sidecar_notes = sidecar_notes or []
     region = _calculate_region(staff, regions)
     image_dimensions = get_tr_omr_canvas_size(
@@ -179,6 +180,8 @@ def prepare_staff_image(
     staff_image, top_left = crop_image_and_return_new_top(staff_image, *region_step1)
     region_step2 = np.array(region) - np.array([*top_left, *top_left])
     top_left = top_left / scaling_factor
+    region_top_left = top_left
+    region_scaling = scaling_factor
     staff = _dewarp_staff(staff, None, top_left, scaling_factor)
     transformed_sidecar_notes = _dewarp_notes(
         transformed_sidecar_notes, None, top_left, scaling_factor
@@ -204,6 +207,14 @@ def prepare_staff_image(
     transformed_sidecar_notes = _transform_notes_for_canvas(
         transformed_sidecar_notes, canvas_scaling_x, canvas_scaling_y, canvas_y_offset
     )
+    canvas_transform = StaffCanvasTransform(
+        region_top_left=(float(region_top_left[0]), float(region_top_left[1])),
+        region_scaling=float(region_scaling),
+        dewarp=dewarp,
+        crop_top_left=(float(top_left[0]), float(top_left[1])),
+        canvas_scaling=(float(canvas_scaling_x), float(canvas_scaling_y)),
+        canvas_y_offset=float(canvas_y_offset),
+    )
     staff_image = center_image_on_canvas(staff_image, image_dimensions)
     debug.write_image_with_fixed_suffix(f"_staff-{index}_input.jpg", staff_image)
     if debug.debug:
@@ -223,7 +234,7 @@ def prepare_staff_image(
         debug.write_image_with_fixed_suffix(
             f"_staff-{index}_debug_annotated.jpg", transformed_staff_image
         )
-    return staff_image, staff, transformed_staff, transformed_sidecar_notes
+    return staff_image, staff, transformed_staff, transformed_sidecar_notes, canvas_transform
 
 
 def _transform_staff_for_canvas(
@@ -306,6 +317,7 @@ def parse_staff_image(
         transformed_staff,
         final_transformed_staff,
         transformed_sidecar_notes,
+        canvas_transform,
     ) = prepare_staff_image(
         debug, index, staff, image, regions=regions, sidecar_notes=sidecar_notes
     )
@@ -322,6 +334,7 @@ def parse_staff_image(
             result,
             index,
             source_staff=staff,
+            canvas_transform=canvas_transform,
         )
     if debug.debug:
         result_image = staff_image.copy()

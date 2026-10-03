@@ -4,6 +4,7 @@ import numpy as np
 
 from homr.bounding_boxes import RotatedBoundingBox
 from homr.model import Note, Staff
+from homr.staff_canvas_transform import StaffCanvasTransform
 from homr.transformer.vocabulary import EncodedSymbol, remove_duplicated_symbols
 from homr.visual_sidecar.annotation_geometry import (
     STAGE_EXPORT,
@@ -20,6 +21,7 @@ from homr.visual_sidecar.models import (
     CROSS_STAFF_ALIGNMENT_METHOD,
     CROSS_STAFF_REPAIR_ACTION,
     MusicXmlNoteRecord,
+    MusicXmlRestRecord,
     SidecarState,
     VisualGroup,
     VisualMatch,
@@ -29,6 +31,7 @@ from homr.visual_sidecar.moments import MomentMatcher
 from homr.visual_sidecar.notehead_refit import NoteheadRefitter
 from homr.visual_sidecar.noteheads import NoteheadGeometry
 from homr.visual_sidecar.recovery import RecoveryManager
+from homr.visual_sidecar.rests import RestVerifier, SegmentationMasks
 from homr.visual_sidecar.sequence import SequenceMatcher
 from homr.visual_sidecar.serialization import (
     VisualSidecarSerializer,
@@ -45,6 +48,7 @@ class VisualSidecarBuilder:
         notehead_mask: Any | None = None,
         notehead_candidates: list[Any] | None = None,
         source_image: Any | None = None,
+        segmentation_masks: SegmentationMasks | None = None,
     ) -> None:
         self.coordinate_transform = coordinate_transform
         self.stem_fragments = stem_fragments or []
@@ -67,6 +71,16 @@ class VisualSidecarBuilder:
             notehead_mask,
             self.stems,
             source_image,
+        )
+        self.rests = RestVerifier(
+            source_image,
+            segmentation_masks,
+            self.recovery.physical_staff_lines_at_x,
+            [
+                candidate.stem
+                for candidate in self.notehead_candidates
+                if getattr(candidate, "stem", None) is not None
+            ],
         )
         self.notehead_refitter = NoteheadRefitter(self.state, self.noteheads)
         self.candidate_cleaner = CandidateCleaner(self.state, coordinate_transform)
@@ -231,6 +245,7 @@ class VisualSidecarBuilder:
         symbols: list[EncodedSymbol],
         staff_group_index: int,
         source_staff: Staff | None = None,
+        canvas_transform: StaffCanvasTransform | None = None,
     ) -> None:
         """Repair, organize, and align one staff without changing recognition.
 
@@ -240,6 +255,10 @@ class VisualSidecarBuilder:
         """
         # Match the same cleaned symbol identities that MusicXML generation retains.
         symbols = remove_duplicated_symbols(symbols, cleanup_tuplets=False)
+        for verdict in self.rests.verify_staff(
+            symbols, staff_group_index, source_staff, canvas_transform
+        ):
+            self.state.rest_verdicts_by_symbol_id[verdict.symbol_id] = verdict
         self.candidate_cleaner.repair(symbols, staff_group_index)
         # Stage 3 constructs physical chord units and normalized visual moments;
         # stage 4 performs the order-preserving global sequence alignment.
@@ -447,6 +466,33 @@ class VisualSidecarBuilder:
         musicxml_id = f"homr-note-{self.state.next_musicxml_note_id}"
         self.state.next_musicxml_note_id += 1
         return musicxml_id
+
+    def create_musicxml_rest_id(self) -> str:
+        rest_id = f"homr-rest-{self.state.next_musicxml_rest_id}"
+        self.state.next_musicxml_rest_id += 1
+        return rest_id
+
+    def record_musicxml_rest(
+        self,
+        rest_id: str,
+        symbol: EncodedSymbol,
+        *,
+        part: int,
+        measure: int,
+        musicxml_staff_number: int,
+        voice: int,
+    ) -> None:
+        self.state.musicxml_rests.append(
+            MusicXmlRestRecord(
+                rest_id=rest_id,
+                part=part,
+                measure=measure,
+                musicxml_staff_number=musicxml_staff_number,
+                voice=voice,
+                duration=symbol.rhythm,
+                verdict=self.state.rest_verdicts_by_symbol_id.get(symbol.visual_match_id),
+            )
+        )
 
     def record_musicxml_note(
         self,

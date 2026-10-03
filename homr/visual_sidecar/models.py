@@ -8,6 +8,7 @@ from homr.transformer.vocabulary import EncodedSymbol
 if TYPE_CHECKING:
     from homr.visual_sidecar.annotation_geometry import GeometryDiagnostic
     from homr.visual_sidecar.annotation_recovery import StaffRepair
+    from homr.visual_sidecar.rests import RestVerdict
 
 VISUAL_SIDECAR_VERSION = 3
 CROSS_STAFF_ALIGNMENT_METHOD = "cross_staff_repair"
@@ -106,6 +107,17 @@ class MusicXmlNoteRecord:
 
 
 @dataclass
+class MusicXmlRestRecord:
+    rest_id: str
+    part: int
+    measure: int
+    musicxml_staff_number: int
+    voice: int
+    duration: str
+    verdict: "RestVerdict | None"
+
+
+@dataclass
 class VisualMatch:
     symbol: EncodedSymbol
     visual_id: str | None
@@ -149,5 +161,8 @@ class SidecarState:
     unmatched_visual_group_ids: set[str] = field(default_factory=set)
     moment_id_by_symbol_id: dict[int, str] = field(default_factory=dict)
     next_musicxml_note_id: int = 1
+    rest_verdicts_by_symbol_id: dict[int, "RestVerdict"] = field(default_factory=dict)
+    musicxml_rests: list[MusicXmlRestRecord] = field(default_factory=list)
+    next_musicxml_rest_id: int = 1
     next_recovered_visual_id: int = 1
     next_transformer_recovered_visual_id: int = 1

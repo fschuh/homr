@@ -21,10 +21,12 @@ from homr.visual_sidecar.coordinate_transform import PredictionCoordinateTransfo
 from homr.visual_sidecar.models import (
     PRODUCER_NAME,
     VISUAL_SIDECAR_VERSION,
+    MusicXmlRestRecord,
     SidecarState,
     VisualGroup,
     homr_version,
 )
+from homr.visual_sidecar.rests import REST_VERIFICATION_VERSION, UNVERIFIED
 
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 
@@ -197,7 +199,49 @@ class VisualSidecarSerializer:
             ],
         }
         self._apply_annotation_geometry_status(result, annotation_staffs, annotation_diagnostics)
+        if self.state.musicxml_rests:
+            result["rest_verification"] = {
+                "version": REST_VERIFICATION_VERSION,
+                "rests": [self._rest_for_output(record) for record in self.state.musicxml_rests],
+            }
         return result
+
+    def _source_point(self, point: tuple[float, float]) -> list[float]:
+        x, y = self.coordinate_transform.prediction_point_to_source(point)
+        return [round(x, 3), round(y, 3)]
+
+    def _rest_for_output(self, record: MusicXmlRestRecord) -> dict[str, Any]:
+        """Describe one MusicXML rest and the ink, if any, that backs it.
+
+        Positions are in source-image pixels like every other geometry here. A rest
+        without a verdict never reached the verifier and is reported as unverified.
+        """
+        verdict = record.verdict
+        output: dict[str, Any] = {
+            "rest_id": record.rest_id,
+            "part": record.part,
+            "measure": record.measure,
+            "musicxml_staff_number": record.musicxml_staff_number,
+            "voice": record.voice,
+            "duration": record.duration,
+            "status": verdict.status if verdict is not None else UNVERIFIED,
+            "reason": verdict.reason if verdict is not None else "not_verified",
+            "staff_group_index": verdict.staff_group_index if verdict is not None else None,
+            "staff_index": verdict.staff_index if verdict is not None else None,
+            "center": None,
+            "staff_lines": [],
+            "unit_size": None,
+            "position_estimated": verdict.position_estimated if verdict is not None else False,
+        }
+        if verdict is None or verdict.center is None or verdict.unit_size is None:
+            return output
+        center_x = verdict.center[0]
+        output["center"] = self._source_point(verdict.center)
+        output["staff_lines"] = [self._source_point((center_x, y))[1] for y in verdict.staff_lines]
+        top = self._source_point((center_x, verdict.center[1]))[1]
+        bottom = self._source_point((center_x, verdict.center[1] + verdict.unit_size))[1]
+        output["unit_size"] = round(bottom - top, 3)
+        return output
 
     def _apply_annotation_geometry_status(
         self,
