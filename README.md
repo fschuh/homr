@@ -40,6 +40,12 @@ rest's shape where the transformer placed the rest. Rests without such ink, and
 notes read without a pitch that MusicXML would otherwise write as rests, are marked
 unsupported, so a viewer can show them as rests the page does not print.
 
+It likewise reads each linked note's value from the page — a hollow or filled
+notehead, a stem, the flags or beams at the stem's end, an augmentation dot — and
+reports where that printed value disagrees with the recognized one. The reader
+reports nothing where any of its checks is in doubt, such as two voices sharing a
+notehead. Like the rest report, it never changes the MusicXML.
+
 ### Recognition and geometry repairs
 
 Making that one-to-one guarantee hold on real scores required fixing a number of

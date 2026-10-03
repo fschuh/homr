@@ -6,8 +6,10 @@ from homr.model import Note
 from homr.transformer.vocabulary import EncodedSymbol
 
 if TYPE_CHECKING:
+    from homr.model import Staff
     from homr.visual_sidecar.annotation_geometry import GeometryDiagnostic
     from homr.visual_sidecar.annotation_recovery import StaffRepair
+    from homr.visual_sidecar.note_values import NoteValueReading
     from homr.visual_sidecar.rests import RestVerdict
 
 VISUAL_SIDECAR_VERSION = 3
@@ -162,6 +164,8 @@ class SidecarState:
     moment_id_by_symbol_id: dict[int, str] = field(default_factory=dict)
     next_musicxml_note_id: int = 1
     rest_verdicts_by_symbol_id: dict[int, "RestVerdict"] = field(default_factory=dict)
+    source_staffs: dict[int, "Staff"] = field(default_factory=dict)
+    note_value_readings: list["NoteValueReading"] = field(default_factory=list)
     musicxml_rests: list[MusicXmlRestRecord] = field(default_factory=list)
     next_musicxml_rest_id: int = 1
     next_recovered_visual_id: int = 1

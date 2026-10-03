@@ -196,3 +196,43 @@ a display raster resized independently in x and y scales ``unit_size`` and
 Segnet has no rest class, so the verifier looks for ink that no segmentation class
 explains. The block is diagnostic only: beyond the rest IDs that link its records, it
 never changes the MusicXML or any note link, and its absence does not affect them.
+
+Note value verification
+-----------------------
+
+Schema v3 may additionally contain ``note_value_verification`` with ``version: 1`` and
+a ``notes`` array: one record for every MusicXML note linked to a visual group that is
+not ``diagnostic``, keyed by ``musicxml_id``. A record compares the note's recognized
+value with the value printed on the page.
+
+``printed`` is the value read from the page, one of ``whole``, ``half``, ``quarter``,
+``eighth``, ``16th`` and ``32nd``, or null when the reader is not sure. ``dotted`` says
+whether an augmentation dot is printed, or is null when that is not sure. Tuplets are
+compared by their plain value: a triplet eighth is an eighth.
+
+``status`` is one of:
+
+``agrees``
+   The printed value is the recognized one, and so is the dot when it was read.
+
+``disagrees``
+   The printed value, or a dot that was read, differs from the recognized one. A
+   consumer can mark the note.
+
+``unknown``
+   The printed value was not read; ``reason`` says why.
+
+``reason`` names the evidence for a reading: ``0_bands`` to ``3_bands`` (flags or beams
+counted at a filled notehead's stem), ``hollow_head_with_stem`` or
+``hollow_head_without_stem``. Otherwise it says why there is none:
+``not_a_plain_note`` (a grace note), ``notehead_unclear`` (neither clearly hollow nor
+clearly filled), ``no_stem``, ``stem_unclear`` (no single stem leaves the notehead, as
+where two voices share it), ``bands_unclear``, ``too_many_bands``, ``two_voices``
+(hollow and filled heads at one moment), ``no_staff_lines``, ``staff_too_small`` or
+``no_segmentation``.
+
+The notes of a chord share a stem, its flags or beams and its dots, so they are read
+together and get the same ``printed`` and ``dotted``. The reader reports a value only
+when every check it relies on agrees, and abstains otherwise. The block is diagnostic
+only: it never changes the MusicXML or any note link, and its absence does not affect
+them.

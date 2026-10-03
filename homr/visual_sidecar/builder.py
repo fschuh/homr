@@ -28,6 +28,7 @@ from homr.visual_sidecar.models import (
     sounding_pitch,
 )
 from homr.visual_sidecar.moments import MomentMatcher
+from homr.visual_sidecar.note_values import ChordMember, NoteValueReader, NoteValueReading
 from homr.visual_sidecar.notehead_refit import NoteheadRefitter
 from homr.visual_sidecar.noteheads import NoteheadGeometry
 from homr.visual_sidecar.recovery import RecoveryManager
@@ -81,6 +82,12 @@ class VisualSidecarBuilder:
                 for candidate in self.notehead_candidates
                 if getattr(candidate, "stem", None) is not None
             ],
+        )
+        self.note_values = NoteValueReader(
+            source_image,
+            segmentation_masks,
+            coordinate_transform,
+            self.recovery.physical_staff_lines_at_x,
         )
         self.notehead_refitter = NoteheadRefitter(self.state, self.noteheads)
         self.candidate_cleaner = CandidateCleaner(self.state, coordinate_transform)
@@ -255,6 +262,8 @@ class VisualSidecarBuilder:
         """
         # Match the same cleaned symbol identities that MusicXML generation retains.
         symbols = remove_duplicated_symbols(symbols, cleanup_tuplets=False)
+        if source_staff is not None:
+            self.state.source_staffs[staff_group_index] = source_staff
         for verdict in self.rests.verify_staff(
             symbols, staff_group_index, source_staff, canvas_transform
         ):
@@ -543,7 +552,25 @@ class VisualSidecarBuilder:
         )
 
     def to_json_dict(self) -> dict[str, Any]:
+        self.state.note_value_readings = self._read_note_values()
         return self.serializer.to_dict()
+
+    def _read_note_values(self) -> list[NoteValueReading]:
+        """Read every linked note's printed value, a chord at a time: its notes share a
+        stem, which may be recorded on only one of them."""
+        chords: dict[str, list[ChordMember]] = {}
+        for record in self.musicxml_notes:
+            linked = self.visual_groups.get(record.visual_group_id or "")
+            if linked is None or linked.visual_status == "diagnostic":
+                continue
+            chords.setdefault(linked.chord_id or linked.visual_id, []).append(
+                ChordMember(record.musicxml_id, linked, record.duration)
+            )
+        readings: list[NoteValueReading] = []
+        for members in chords.values():
+            staff = self.state.source_staffs.get(members[0].group.staff_group_index)
+            readings.extend(self.note_values.read_chord(members, staff))
+        return readings
 
     def _score_match(self, symbol: EncodedSymbol, visual_group: VisualGroup) -> float:
         score = 0.65

@@ -26,6 +26,7 @@ from homr.visual_sidecar.models import (
     VisualGroup,
     homr_version,
 )
+from homr.visual_sidecar.note_values import NOTE_VALUE_VERIFICATION_VERSION
 from homr.visual_sidecar.rests import REST_VERIFICATION_VERSION, UNVERIFIED
 
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
@@ -199,6 +200,20 @@ class VisualSidecarSerializer:
             ],
         }
         self._apply_annotation_geometry_status(result, annotation_staffs, annotation_diagnostics)
+        if self.state.note_value_readings:
+            result["note_value_verification"] = {
+                "version": NOTE_VALUE_VERIFICATION_VERSION,
+                "notes": [
+                    {
+                        "musicxml_id": reading.musicxml_id,
+                        "printed": reading.printed,
+                        "dotted": reading.dotted,
+                        "status": reading.status,
+                        "reason": reading.reason,
+                    }
+                    for reading in self.state.note_value_readings
+                ],
+            }
         if self.state.musicxml_rests:
             result["rest_verification"] = {
                 "version": REST_VERIFICATION_VERSION,
