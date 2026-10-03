@@ -71,6 +71,22 @@ identical models and settings, total errors dropped from 8 to 5 and exactly
 matched pages rose from 27 to 28, **with no page regressing**. See
 `docs/source/recognition_findings.rst` for the full method and provenance.
 
+### Note timing in MusicXML
+
+This also affects everyone. The transformer's tokens say which notes start
+together, not when. The MusicXML writer started each group after the shortest
+note it had just written, ignoring notes the other hand still held, so wherever
+one hand moved under a held note every later note started late: staves got gaps
+that score editors fill with rests the score does not have, and bars overflowed.
+Groups now start when the earliest sounding note ends.
+
+The same measurement now decides the time signature's beat count, separately for
+each meter section, without counting a staff whose only content in a bar is a
+rest. Such a rest is written as a measure rest filling the bar, whatever glyph
+was read, and symbols the transformer chords with notes, such as a barline, are
+no longer written as rests. On a 240-page corpus, bars with a staff gap or
+overflow fell from 1,740 to 1,371 of 3,865, with no page regressing.
+
 ### Evaluation tooling
 
 A new `homr-visual-eval` command checks a sidecar against the v3 contract. It
