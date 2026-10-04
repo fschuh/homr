@@ -16,6 +16,7 @@ from homr.visual_sidecar.note_values import (
     ChordMember,
     NoteValueReader,
     NoteValueReading,
+    SharedNoteheadReading,
     recognized_value,
 )
 from homr.visual_sidecar.rests import SegmentationMasks
@@ -462,6 +463,108 @@ class TestTwoVoices(unittest.TestCase):
         readings = page.read((eighth, "note_8"), (hollow, "note_1"))
         self.assertEqual(outcome(readings[0]), ("eighth", False, AGREES))
         self.assertEqual((readings[1].printed, readings[1].reason), (None, "two_voices"))
+
+
+class TestSharedNotehead(unittest.TestCase):
+    """A head two voices share: an eighth rising from it, a 16th run falling from it."""
+
+    def shared_head(self, y: int = 130, hollow: bool = False) -> tuple[Page, VisualGroup]:
+        page = Page()
+        note = page.head(200, y, hollow=hollow)
+        x, free_end = page.up_stem(note)
+        page.beams(x, x + 40, free_end, 1)
+        x, free_end = page.down_stem(note)
+        page.beams(x, x + 40, free_end, 2, up=False)
+        return page, note
+
+    def read(self, page: Page, note: VisualGroup) -> SharedNoteheadReading:
+        reader = NoteValueReader(page.image, page.masks(), identity_transform(), lines_at_x)
+        return reader.read_shared_notehead(note, staff())
+
+    def summary(self, reading: SharedNoteheadReading) -> tuple[str | None, str | None, str]:
+        return reading.up, reading.down, reading.reason
+
+    def test_each_stem_of_a_shared_head_is_read(self) -> None:
+        page, note = self.shared_head()
+        reading = self.read(page, note)
+        self.assertEqual(self.summary(reading), ("eighth", "16th", "two_stems"))
+        self.assertIs(reading.dotted, False)
+
+    def test_a_dot_beside_a_shared_head_is_read(self) -> None:
+        page, note = self.shared_head()
+        page.dot(200 + HEAD[0] + 10, 125)
+        self.assertIs(self.read(page, note).dotted, True)
+
+    def test_a_head_with_one_stem_is_not_shared(self) -> None:
+        for draw in (Page.up_stem, Page.down_stem):
+            page = Page()
+            note = page.head(200, 130)
+            draw(page, note)
+            self.assertEqual(self.summary(self.read(page, note)), (None, None, "one_stem"))
+
+    def test_a_stem_too_short_to_carry_bands_is_not_a_second_stem(self) -> None:
+        page = Page()
+        note = page.head(200, 130)
+        page.up_stem(note)
+        page.down_stem(note, length=30)
+        self.assertEqual(self.read(page, note).reason, "one_stem")
+
+    def test_a_line_through_the_heads_middle_is_not_its_stem(self) -> None:
+        page = Page()
+        note = page.head(200, 130)
+        page.stem(200, 130 - STEM_LENGTH, 130)
+        page.down_stem(note)
+        # Segmentation underestimates the head, so its middle lies where a stem is looked for.
+        note.prediction_notehead_size = (12.0, 18.0)
+        self.assertEqual(self.read(page, note).reason, "one_stem")
+
+    def test_a_stem_through_another_head_belongs_to_a_chord(self) -> None:
+        page = Page()
+        note = page.head(200, 130)
+        x, free_end = page.up_stem(note)
+        page.beams(x, x + 40, free_end, 1)
+        page.head(200, 170)
+        x, free_end = page.down_stem(note, length=90)
+        page.beams(x, x + 40, free_end, 2, up=False)
+        self.assertEqual(self.summary(self.read(page, note)), (None, None, "stem_unclear"))
+
+    def test_a_hollow_head_is_not_read(self) -> None:
+        page, note = self.shared_head(hollow=True)
+        self.assertEqual(self.read(page, note).reason, "notehead_unclear")
+
+    def test_a_flag_too_thick_to_read_leaves_only_its_own_value_unread(self) -> None:
+        page = Page()
+        note = page.head(200, 130)
+        x, free_end = page.up_stem(note)
+        page.beams(x, x + 40, free_end, 1, thickness=18)
+        x, free_end = page.down_stem(note)
+        page.beams(x, x + 40, free_end, 2, up=False)
+        self.assertEqual(self.summary(self.read(page, note)), (None, "16th", "two_stems"))
+
+    def test_a_thick_stem_is_read_from_its_middle(self) -> None:
+        page = Page()
+        note = page.head(200, 130)
+        x = 200 + HEAD[0] - 2
+        cv2.line(page.image, (x, 130 - STEM_LENGTH), (x, 130), 0, 5)
+        page.beams(x, x + 40, 130 - STEM_LENGTH, 1)
+        x, free_end = page.down_stem(note)
+        page.beams(x, x + 40, free_end, 2, up=False)
+        self.assertEqual(self.summary(self.read(page, note)), ("eighth", "16th", "two_stems"))
+
+    def test_more_bands_than_a_32nd_leave_that_value_unread(self) -> None:
+        page = Page()
+        note = page.head(200, 130)
+        x, free_end = page.up_stem(note)
+        page.beams(x, x + 40, free_end, 1)
+        x, free_end = page.down_stem(note, length=90)
+        page.beams(x, x + 40, free_end, 4, up=False, thickness=7, step=11)
+        self.assertEqual(self.summary(self.read(page, note)), ("eighth", None, "two_stems"))
+
+    def test_without_segmentation_nothing_is_read(self) -> None:
+        page, note = self.shared_head()
+        reader = NoteValueReader(page.image, None, identity_transform(), lines_at_x)
+        reading = reader.read_shared_notehead(note, staff())
+        self.assertEqual(self.summary(reading), (None, None, "no_segmentation"))
 
 
 class TestSidecarBlock(unittest.TestCase):

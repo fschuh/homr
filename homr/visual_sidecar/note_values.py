@@ -13,6 +13,11 @@ beside any of them dots the chord.
 This is diagnostic only. A reading never changes the MusicXML or any note link; it is
 exported beside them so a consumer can show where the printed value and the recognized
 one disagree.
+
+A single notehead that two voices share carries two stems, one rising from its right
+edge and one falling from its left, each with its own flags or beams. Those are read
+separately by ``read_shared_notehead``; the shared-notehead timing repair in
+``timing_repairs`` relies on that reading.
 """
 
 import re
@@ -94,6 +99,17 @@ STACCATO_HALF_WIDTH = 0.25
 #: A vertical run at least this long, this close right of the dot, is a barline.
 REPEAT_BARLINE_REACH = 1.2
 REPEAT_BARLINE_LENGTH = 3.0
+#: A shared notehead's stems are looked for from this far inside the head's estimated
+#: edge to this far outside it: the up-stem at the right edge, the down-stem at the left.
+SHARED_STEM_SEARCH = (0.35, 0.2)
+#: Columns tracing within this of the longest one belong to the same printed stem.
+SHARED_STEM_WIDTH_TOLERANCE = 0.25
+#: A shared notehead's stem passes no other notehead within this of it, from this far
+#: past the head's centre to this far short of the stem's free end, where segmentation
+#: may label a beam's end as notehead. A stem that does belongs to a chord.
+SHARED_STEM_HALF_WIDTH = 0.3
+SHARED_STEM_HEAD_CLEARANCE = 0.8
+SHARED_STEM_END_CLEARANCE = 1.0
 
 StaffLinesAtX = Callable[[Staff, float, int], Sequence[float]]
 
@@ -121,6 +137,21 @@ class ChordMember:
 class PrintedValue:
     value: str | None
     dotted: bool | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class SharedNoteheadReading:
+    """The two values printed on a notehead that two voices share."""
+
+    #: The value on the stem rising from the head's right edge and on the stem falling
+    #: from its left edge. Each is None when its flags or beams are not read: a flag
+    #: crossing the columns at a slant, or a slur ending beside it, leaves it unread.
+    up: str | None
+    down: str | None
+    #: Whether the notehead carries an augmentation dot, or None when not sure.
+    dotted: bool | None
+    #: ``two_stems`` when the head carries both stems, otherwise why it does not.
     reason: str
 
 
@@ -222,6 +253,77 @@ class NoteValueReader:
             ]
         printed = self._read_heads(groups, lines, unit)
         return [compare(member, printed) for member in members]
+
+    def read_shared_notehead(
+        self, group: VisualGroup, staff: Staff | None
+    ) -> SharedNoteheadReading:
+        """Read both values printed on a filled notehead that carries two stems.
+
+        The caller passes a head that stands alone at its moment on its staff. Two
+        voices sounding its pitch together may share it: one voice's stem rises from
+        its right edge and the other's falls from its left, each with its own flags or
+        beams. A stem that passes another notehead belongs to a chord, not to this head.
+        """
+        lines = self._staff_lines([group], staff)
+        if isinstance(lines, str):
+            return SharedNoteheadReading(None, None, None, lines)
+        unit = float(np.median(np.diff(lines)))
+        if self._fill(group, unit) != FILLED:
+            return SharedNoteheadReading(None, None, None, "notehead_unclear")
+        stems = [self._edge_stem(group, up, unit) for up in (True, False)]
+        notehead_y = group.prediction_center[1]
+        values: list[str | None] = []
+        for stem in stems:
+            if stem is None:
+                return SharedNoteheadReading(None, None, None, "one_stem")
+            stem_x, free_end = stem
+            if self._stem_passes_a_head(stem_x, notehead_y, free_end, unit):
+                return SharedNoteheadReading(None, None, None, "stem_unclear")
+            bands = self._bands(stem_x, (free_end, notehead_y), lines, unit)
+            readable = bands is not None and bands < len(VALUES_BY_BANDS)
+            values.append(VALUES_BY_BANDS[bands] if readable and bands is not None else None)
+        dotted = self._dotted([group], lines, unit)
+        return SharedNoteheadReading(values[0], values[1], dotted, "two_stems")
+
+    def _edge_stem(self, group: VisualGroup, up: bool, unit: float) -> tuple[float, float] | None:
+        """The x and free end of the stem rising from the head's right edge, or falling
+        from its left edge, if one at least long enough to carry bands leaves it there."""
+        cx, cy = group.prediction_center
+        half_width = group.prediction_notehead_size[0] / 2
+        inside, outside = SHARED_STEM_SEARCH
+        if up:
+            first, last = cx + half_width - inside * unit, cx + half_width + outside * unit
+        else:
+            first, last = cx - half_width - outside * unit, cx - half_width + inside * unit
+        lengths = {
+            x: self._stem_length([float(x)], cy, up, unit)
+            for x in range(int(np.floor(first)), int(np.ceil(last)) + 1)
+        }
+        longest = max(lengths.values(), default=0.0)
+        if longest < MIN_STEM_LENGTH * unit:
+            return None
+        # A printed stem is a few columns wide, and each traces about as far.
+        tolerance = SHARED_STEM_WIDTH_TOLERANCE * unit
+        columns = [x for x, length in lengths.items() if length >= longest - tolerance]
+        stem_x = float(np.median(columns))
+        side = 1 if up else -1
+        if side * (stem_x - cx) < STEM_SIDE * unit:
+            return None
+        return stem_x, cy - longest if up else cy + longest
+
+    def _stem_passes_a_head(
+        self, stem_x: float, notehead_y: float, free_end: float, unit: float
+    ) -> bool:
+        if self.masks is None:
+            raise ValueError("Reading note values needs the page and its segmentation")
+        # Stems shorter than MIN_STEM_LENGTH are not read, so the span is never empty.
+        step = 1 if free_end > notehead_y else -1
+        start = notehead_y + step * SHARED_STEM_HEAD_CLEARANCE * unit
+        stop = free_end - step * SHARED_STEM_END_CLEARANCE * unit
+        y0, y1 = sorted((int(start), int(stop)))
+        x0 = max(0, int(stem_x - SHARED_STEM_HALF_WIDTH * unit))
+        x1 = int(stem_x + SHARED_STEM_HALF_WIDTH * unit) + 1
+        return bool((self.masks.notehead[y0 : y1 + 1, x0:x1] > 0).any())
 
     def _staff_lines(self, groups: list[VisualGroup], staff: Staff | None) -> list[float] | str:
         """The five line ys at the chord, or why the chord cannot be read."""

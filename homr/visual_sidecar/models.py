@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from homr.visual_sidecar.annotation_recovery import StaffRepair
     from homr.visual_sidecar.note_values import NoteValueReading
     from homr.visual_sidecar.rests import RestVerdict
+    from homr.visual_sidecar.timing_repairs import SharedNoteheadRecord
 
 VISUAL_SIDECAR_VERSION = 3
 CROSS_STAFF_ALIGNMENT_METHOD = "cross_staff_repair"
@@ -170,3 +171,10 @@ class SidecarState:
     next_musicxml_rest_id: int = 1
     next_recovered_visual_id: int = 1
     next_transformer_recovered_visual_id: int = 1
+    #: Whether the shared-notehead timing repair was on when the MusicXML was written,
+    #: or None when the writer never asked.
+    timing_repairs_enabled: bool | None = None
+    #: The linked visual group and what became of each token whose notehead has two stems.
+    shared_notehead_records: list[tuple[str | None, "SharedNoteheadRecord"]] = field(
+        default_factory=list
+    )

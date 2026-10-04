@@ -28,6 +28,10 @@ from homr.visual_sidecar.models import (
 )
 from homr.visual_sidecar.note_values import NOTE_VALUE_VERIFICATION_VERSION
 from homr.visual_sidecar.rests import REST_VERIFICATION_VERSION, UNVERIFIED
+from homr.visual_sidecar.timing_repairs import (
+    TIMING_REPAIRS_VERSION,
+    SharedNoteheadRecord,
+)
 
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 
@@ -219,7 +223,34 @@ class VisualSidecarSerializer:
                 "version": REST_VERIFICATION_VERSION,
                 "rests": [self._rest_for_output(record) for record in self.state.musicxml_rests],
             }
+        if self.state.timing_repairs_enabled is not None:
+            result["timing_repairs"] = {
+                "version": TIMING_REPAIRS_VERSION,
+                "enabled": self.state.timing_repairs_enabled,
+                "shared_noteheads": [
+                    self._shared_notehead_for_output(visual_id, record)
+                    for visual_id, record in self.state.shared_notehead_records
+                ],
+            }
         return result
+
+    def _shared_notehead_for_output(
+        self, visual_id: str | None, record: SharedNoteheadRecord
+    ) -> dict[str, Any]:
+        group = self.visual_groups.get(visual_id or "")
+        return {
+            "musicxml_id": group.musicxml_id if group is not None else None,
+            "visual_group_id": visual_id,
+            "part": record.part,
+            "measure": record.measure,
+            "recognized": record.symbol.rhythm,
+            "printed_up": record.reading.up,
+            "printed_down": record.reading.down,
+            "dotted": record.reading.dotted,
+            "next_notes_after": record.next_notes_after,
+            "status": record.status,
+            "reason": record.reason,
+        }
 
     def _source_point(self, point: tuple[float, float]) -> list[float]:
         x, y = self.coordinate_transform.prediction_point_to_source(point)

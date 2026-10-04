@@ -236,3 +236,55 @@ together and get the same ``printed`` and ``dotted``. The reader reports a value
 when every check it relies on agrees, and abstains otherwise. The block is diagnostic
 only: it never changes the MusicXML or any note link, and its absence does not affect
 them.
+
+Timing repairs
+--------------
+
+Two voices that sound one pitch at the same moment often share a printed notehead:
+one voice's stem rises from it and the other's falls from it, each with its own flags
+or beams, as when an eighth note sits on the first note of a 16th run. The transformer
+gives such a head one token, usually with the longer value, so the MusicXML writer
+starts the next notes when that value ends and the rest of the bar runs late.
+
+When the visual sidecar is written, the writer reads both stems of every notehead that
+stands alone on its staff at its moment. Where one stem carries a shorter value than
+the token, it starts the next notes when that shorter value ends, as if the lost note
+were still sounding. No note is added, and the token keeps its value and its notehead.
+A bar's repairs are applied together, and only when the bar does not add up to its
+time signature as recognized and adds up exactly with them. The time signature's beat
+count is itself measured from the typical bar, so the repairs may change it only to a
+length that a bar needing no repair already has. ``--no-timing-repairs`` turns the
+repair off; the MusicXML is then written exactly as without it.
+
+Schema v3 then contains ``timing_repairs`` with ``version: 1``, ``enabled`` (whether
+the repair was on) and a ``shared_noteheads`` array, with one record, in writing order,
+for every token whose notehead was read with two stems:
+
+``musicxml_id`` and ``visual_group_id``
+   The note and its notehead. ``musicxml_id`` is null when the token is not linked.
+
+``part`` and ``measure``
+   Where the note is written.
+
+``recognized``
+   The transformer's token, e.g. ``note_8``.
+
+``printed_up`` and ``printed_down``
+   The values read on the stem rising from the head's right edge and on the stem
+   falling from its left edge, or null where that stem's flags or beams were not read.
+   ``dotted`` is as in note value verification.
+
+``next_notes_after``
+   The shorter printed value the next notes start after, or null where no repair was
+   proposed.
+
+``status`` and ``reason``
+   ``applied`` with ``bar_adds_up``; ``declined`` with ``bar_already_adds_up``,
+   ``bar_still_does_not_add_up``, ``no_bar_length`` (no time signature, and the typical
+   bar is not a whole number of eighths), ``token_matches_neither`` (both stems were
+   read and the token carries neither value), ``dotted``, ``values_unclear`` or
+   ``not_a_plain_note`` (dotted, tuplet or grace tokens); or ``not_needed`` with
+   ``token_is_shortest``.
+
+The block is absent when the writer never ran with the sidecar, and holds an empty
+array with ``enabled: false`` when the repair was off.

@@ -510,6 +510,12 @@ def main() -> None:
         help="Writes input.homr.visual.json beside the MusicXML with visual note geometry.",
     )
     parser.add_argument(
+        "--no-timing-repairs",
+        action="store_true",
+        help="With --output-visual-sidecar, notes after a notehead that two voices share "
+        + "start when the shorter voice's note ends. This writes them as recognized instead.",
+    )
+    parser.add_argument(
         "--write-staff-positions",
         action="store_true",
         help="Writes the position of all detected staffs to a txt file.",
@@ -568,7 +574,10 @@ def main() -> None:
     )
 
     xml_generator_args = XmlGeneratorArguments(
-        args.output_large_page, args.output_metronome, args.output_tempo
+        args.output_large_page,
+        args.output_metronome,
+        args.output_tempo,
+        repair_shared_notehead_timing=not args.no_timing_repairs,
     )
     if args.debug:
         eprint(f"Using Log Level {2} for OnnxRuntime")

@@ -28,7 +28,12 @@ from homr.visual_sidecar.models import (
     sounding_pitch,
 )
 from homr.visual_sidecar.moments import MomentMatcher
-from homr.visual_sidecar.note_values import ChordMember, NoteValueReader, NoteValueReading
+from homr.visual_sidecar.note_values import (
+    ChordMember,
+    NoteValueReader,
+    NoteValueReading,
+    SharedNoteheadReading,
+)
 from homr.visual_sidecar.notehead_refit import NoteheadRefitter
 from homr.visual_sidecar.noteheads import NoteheadGeometry
 from homr.visual_sidecar.recovery import RecoveryManager
@@ -39,6 +44,7 @@ from homr.visual_sidecar.serialization import (
 )
 from homr.visual_sidecar.serialization import write_visual_sidecar as write_document
 from homr.visual_sidecar.stems import StemGeometry
+from homr.visual_sidecar.timing_repairs import SharedNoteheadRecord
 
 
 class VisualSidecarBuilder:
@@ -549,6 +555,27 @@ class VisualSidecarBuilder:
                 visual_group_id=visual_id,
                 alignment_method=alignment_method,
             )
+        )
+
+    def read_shared_notehead(self, symbol: EncodedSymbol) -> SharedNoteheadReading | None:
+        """Both values printed on the notehead this token is linked to, if it has two stems.
+
+        The caller makes sure the head stands alone on its staff at its moment.
+        """
+        match = self.matches_by_symbol_id.get(symbol.visual_match_id)
+        group = self.visual_groups.get(match.visual_id or "") if match is not None else None
+        if group is None or group.visual_status == "diagnostic":
+            return None
+        staff = self.state.source_staffs.get(group.staff_group_index)
+        return self.note_values.read_shared_notehead(group, staff)
+
+    def set_timing_repairs_enabled(self, enabled: bool) -> None:
+        self.state.timing_repairs_enabled = enabled
+
+    def record_shared_notehead_timing(self, record: SharedNoteheadRecord) -> None:
+        match = self.matches_by_symbol_id.get(record.symbol.visual_match_id)
+        self.state.shared_notehead_records.append(
+            (match.visual_id if match is not None else None, record)
         )
 
     def to_json_dict(self) -> dict[str, Any]:

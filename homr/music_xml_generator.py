@@ -16,6 +16,7 @@ from homr.transformer.vocabulary import (
     nonote,
     sort_token_chords,
 )
+from homr.visual_sidecar.timing_repairs import TimingRepairs
 
 if TYPE_CHECKING:
     from homr.visual_sidecar import VisualSidecarBuilder
@@ -121,11 +122,17 @@ class SymbolChord:
 
 class XmlGeneratorArguments:
     def __init__(
-        self, large_page: bool | None = None, metronome: int | None = None, tempo: int | None = None
+        self,
+        large_page: bool | None = None,
+        metronome: int | None = None,
+        tempo: int | None = None,
+        repair_shared_notehead_timing: bool = True,
     ):
         self.large_page = large_page
         self.metronome = metronome
         self.tempo = tempo
+        # Needs the visual sidecar; see homr.visual_sidecar.timing_repairs.
+        self.repair_shared_notehead_timing = repair_shared_notehead_timing
 
 
 def build_identification() -> mxl.XMLIdentification:
@@ -199,9 +206,10 @@ def build_measures(
 
     measure_number = 1
     groups = add_tuplet_start_stop(group_into_chords(voice))
-    division, nominator = find_division_and_time_signature_nominator(groups)
+    timing_repairs = TimingRepairs(groups, visual_sidecar, args.repair_shared_notehead_timing)
+    division, nominator = timing_repairs.division_and_nominator()
     state = ConversionState(division, nominator)
-    state.section_nominators = time_signature_section_nominators(groups)
+    state.section_nominators = timing_repairs.section_nominators()
     lone_rests = _lone_rest_ids(groups)
     measures: list[mxl.XMLMeasure] = []
     current_measure = mxl.XMLMeasure(number=str(measure_number))
@@ -238,6 +246,11 @@ def build_measures(
                     else timed
                 )
                 staff_positions = written.into_positions()
+                sounding.extend(
+                    timing_repairs.shared_notehead_ends(
+                        written, clock, part=part_number, measure=measure_number
+                    )
+                )
                 advance = _advance_to_next_group(written, clock, sounding)
                 clock += advance
                 sounding = [end for end in sounding if end > clock]
