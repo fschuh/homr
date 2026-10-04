@@ -93,6 +93,32 @@ was read, and symbols the transformer chords with notes, such as a barline, are
 no longer written as rests. On a 240-page corpus, bars with a staff gap or
 overflow fell from 1,740 to 1,371 of 3,865, with no page regressing.
 
+### Notes after a shared notehead
+
+Two voices that sound one pitch at the same moment often share a printed
+notehead: an eighth note on the first note of a 16th run, or a held melody note
+on the first note of an arpeggio. The transformer reads such a head once,
+usually with the longer value, so the notes after it started late and the bar
+overflowed; in Chopin's Op. 25 No. 9, 38 of 51 bars did.
+
+With `--output-visual-sidecar`, homr now reads both stems of such a head on the
+page. Where one carries a shorter value than the token, the notes after the head
+start when that shorter value ends, as printed. No note is added and none changes
+its value. A bar's repairs are applied together, and only when the bar overflows
+or falls short as recognized and adds up exactly to its time signature with
+them. Tuplets are not read, so where the shorter note is an unmarked triplet the
+notes after it start after a plain eighth, as the transformer reads the rest of
+that run. Each shared notehead and what became of it is recorded in the sidecar.
+`--no-timing-repairs` turns this off.
+
+On the 240-page corpus this changed 10 pages of 5 pieces. The 119 repairs were
+each checked against the page: every one sits on a shared notehead, and the next
+notes now start after the value printed on its shorter stem. Bars in which a
+staff runs past the time signature fell from 654 to 600, and no page gained a
+bar that runs over or falls short. On 131 engraved pages with MIDI exports of
+their source files, the 5 affected bars now start every note where the MIDI
+does, from 14–42% of notes before, and no note in any other bar moved.
+
 ### Evaluation tooling
 
 A new `homr-visual-eval` command checks a sidecar against the v3 contract. It
