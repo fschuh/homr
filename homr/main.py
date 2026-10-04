@@ -53,6 +53,7 @@ from homr.visual_sidecar import (
     write_visual_sidecar,
 )
 from homr.visual_sidecar.rests import SegmentationMasks
+from homr.visual_sidecar.tempo_marks import read_tempo_marks_in_background
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
@@ -268,6 +269,11 @@ def process_image(
                 segmentation_masks,
             ) = detect_staffs_in_image(image_path, config)
         debug_cleanup = debug
+        tempo_marks = (
+            read_tempo_marks_in_background(image_path, multi_staffs, coordinate_transform)
+            if config.write_visual_sidecar
+            else None
+        )
 
         transformer_config = Config()
         transformer_config.use_gpu_inference = config.transformer_use_gpu
@@ -299,6 +305,10 @@ def process_image(
 
         eprint("Writing XML", result_staffs)
         xml = generate_xml(xml_generator_args, result_staffs, title, visual_sidecar=visual_sidecar)
+        if visual_sidecar is not None and tempo_marks is not None:
+            visual_sidecar.write_tempo_marks(
+                xml, tempo_marks.result(60), explicit_tempo=bool(xml_generator_args.metronome)
+            )
         xml.write(xml_file)
         if visual_sidecar is not None:
             visual_sidecar_file = replace_extension(image_path, ".homr.visual.json")

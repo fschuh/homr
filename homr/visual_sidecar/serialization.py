@@ -28,6 +28,7 @@ from homr.visual_sidecar.models import (
 )
 from homr.visual_sidecar.note_values import NOTE_VALUE_VERIFICATION_VERSION
 from homr.visual_sidecar.rests import REST_VERIFICATION_VERSION, UNVERIFIED
+from homr.visual_sidecar.tempo_marks import TEMPO_MARKS_VERSION
 from homr.visual_sidecar.timing_repairs import (
     TIMING_REPAIRS_VERSION,
     SharedNoteheadRecord,
@@ -222,6 +223,11 @@ class VisualSidecarSerializer:
             result["rest_verification"] = {
                 "version": REST_VERIFICATION_VERSION,
                 "rests": [self._rest_for_output(record) for record in self.state.musicxml_rests],
+            }
+        if self.state.tempo_marks is not None:
+            result["tempo_marks"] = {
+                "version": TEMPO_MARKS_VERSION,
+                "marks": [mark.to_json_dict() for mark in self.state.tempo_marks],
             }
         if self.state.timing_repairs_enabled is not None:
             result["timing_repairs"] = {

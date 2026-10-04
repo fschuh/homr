@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from homr.visual_sidecar.annotation_recovery import StaffRepair
     from homr.visual_sidecar.note_values import NoteValueReading
     from homr.visual_sidecar.rests import RestVerdict
+    from homr.visual_sidecar.tempo_marks import TempoMark
     from homr.visual_sidecar.timing_repairs import SharedNoteheadRecord
 
 VISUAL_SIDECAR_VERSION = 3
@@ -178,3 +179,8 @@ class SidecarState:
     shared_notehead_records: list[tuple[str | None, "SharedNoteheadRecord"]] = field(
         default_factory=list
     )
+    #: The system each staff group belongs to, as staff parsing numbered them.
+    system_index_by_staff_group: dict[int, int] = field(default_factory=dict)
+    #: The page's metronome marks and what became of each, or None when the writer never
+    #: asked for them.
+    tempo_marks: list["TempoMark"] | None = None

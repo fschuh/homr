@@ -37,13 +37,23 @@ from homr.visual_sidecar.note_values import (
 from homr.visual_sidecar.notehead_refit import NoteheadRefitter
 from homr.visual_sidecar.noteheads import NoteheadGeometry
 from homr.visual_sidecar.recovery import RecoveryManager
-from homr.visual_sidecar.rests import RestVerifier, SegmentationMasks
+from homr.visual_sidecar.rests import SUPPORTED, RestVerifier, SegmentationMasks
 from homr.visual_sidecar.sequence import SequenceMatcher
 from homr.visual_sidecar.serialization import (
     VisualSidecarSerializer,
 )
 from homr.visual_sidecar.serialization import write_visual_sidecar as write_document
 from homr.visual_sidecar.stems import StemGeometry
+from homr.visual_sidecar.tempo_marks import (
+    NOT_WRITTEN,
+    PLACED,
+    PLACEMENT_TOLERANCE,
+    SYSTEM_MATCH_TOLERANCE,
+    UNPLACED,
+    TempoMark,
+    measure_at,
+    write_tempo_directions,
+)
 from homr.visual_sidecar.timing_repairs import SharedNoteheadRecord
 
 
@@ -117,6 +127,7 @@ class VisualSidecarBuilder:
         self.recovery.prepare(staffs)
 
     def add_staff_geometry(self, group_index: int, staff: Staff, system_index: int) -> None:
+        self.state.system_index_by_staff_group.setdefault(group_index, system_index)
         # Staff parsing numbers its staffs monotonically across every voice, so a
         # repeated index means the caller changed, not that a staff was re-exported.
         # Silently overwriting would drop a whole staff's geometry without a reason.
@@ -577,6 +588,85 @@ class VisualSidecarBuilder:
         self.state.shared_notehead_records.append(
             (match.visual_id if match is not None else None, record)
         )
+
+    def write_tempo_marks(
+        self, xml: Any, marks: list[TempoMark], explicit_tempo: bool = False
+    ) -> None:
+        """Places the page's metronome marks in measures and writes them into the MusicXML.
+
+        Call it after generate_xml: placement needs the notes that writing the MusicXML
+        links to measures. A tempo given to homr explicitly wins over the printed ones,
+        which are then reported but not written.
+        """
+        tops = self._system_tops()
+        positions = self._first_part_positions_by_system()
+        for mark in marks:
+            mark.measure = None
+            if mark.note is None:
+                continue
+            reach = SYSTEM_MATCH_TOLERANCE * mark.system.unit_size
+            near = [
+                (abs(top - mark.system.top), index)
+                for index, top in tops.items()
+                if abs(top - mark.system.top) <= reach
+            ]
+            if not near:
+                mark.status, mark.reason = UNPLACED, "system_not_parsed"
+                continue
+            system_index = min(near)[1]
+            mark.measure = measure_at(
+                mark.box[0],
+                positions.get(system_index, []),
+                PLACEMENT_TOLERANCE * mark.system.unit_size,
+            )
+            if mark.measure is None:
+                mark.status, mark.reason = UNPLACED, "no_measure_under_mark"
+            elif explicit_tempo:
+                mark.status, mark.reason = NOT_WRITTEN, "tempo_given_explicitly"
+            else:
+                mark.status, mark.reason = PLACED, ""
+        if not explicit_tempo:
+            write_tempo_directions(xml, marks)
+        self.state.tempo_marks = list(marks)
+
+    def _system_tops(self) -> dict[int, float]:
+        """The top line of each parsed system, in source pixels."""
+        tops: dict[int, float] = {}
+        for group_index, staff in self.state.source_staffs.items():
+            system_index = self.state.system_index_by_staff_group.get(group_index)
+            if system_index is None:
+                continue
+            _x, top = self.coordinate_transform.prediction_point_to_source(
+                (staff.min_x, staff.min_y)
+            )
+            tops[system_index] = min(top, tops.get(system_index, top))
+        return tops
+
+    def _first_part_positions_by_system(self) -> dict[int, list[tuple[int, float]]]:
+        """(measure, source x) of the first part's linked notes and printed rests."""
+        positions: dict[int, list[tuple[int, float]]] = {}
+
+        def add(group_index: int, measure: int, center: tuple[float, float]) -> None:
+            system_index = self.state.system_index_by_staff_group.get(group_index)
+            if system_index is None:
+                return
+            x = self.coordinate_transform.prediction_point_to_source(center)[0]
+            positions.setdefault(system_index, []).append((measure, x))
+
+        for record in self.musicxml_notes:
+            group = self.visual_groups.get(record.visual_group_id or "")
+            if record.part == 1 and group is not None and group.visual_status != "diagnostic":
+                add(group.staff_group_index, record.measure, group.prediction_center)
+        for rest in self.state.musicxml_rests:
+            verdict = rest.verdict
+            if (
+                rest.part == 1
+                and verdict is not None
+                and verdict.status == SUPPORTED
+                and verdict.center is not None
+            ):
+                add(verdict.staff_group_index, rest.measure, verdict.center)
+        return positions
 
     def to_json_dict(self) -> dict[str, Any]:
         self.state.note_value_readings = self._read_note_values()
