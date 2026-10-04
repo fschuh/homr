@@ -119,6 +119,36 @@ bar that runs over or falls short. On 131 engraved pages with MIDI exports of
 their source files, the 5 affected bars now start every note where the MIDI
 does, from 14–42% of notes before, and no note in any other bar moved.
 
+### Printed metronome marks
+
+The transformer reads the staff, not the text above it, so homr's MusicXML had no
+tempo and players fell back to their own default, usually quarter = 120. That
+distorted more than the speed. Lucca's Theme from Chrono Trigger prints dotted
+quarter = 140 for its 6/8 bars and quarter = 140 where it changes to 2/4, keeping
+the beat steady; at a fixed quarter rate its 6/8 bars played with a beat a third
+slower than its 2/4 bars.
+
+With `--output-visual-sidecar`, homr now reads the metronome marks printed above
+each system, such as "♩ = 120", "Allegro (♩ = 120)" or "♩. = 140", and writes
+each as a metronome with a sound tempo in quarters per minute at the start of the
+measure its text begins over; text that begins between two measures belongs to
+the next one. The note is read from its shape on the page (hollow or filled
+head, stem, flags, dot) and only the digits go to OCR. A mark whose note cannot
+be read is left out, so that part of the page has no tempo, as before. A range
+such as "64-68" plays at its first number, as notation programs play it. Marks
+without a number ("Allegro", "Met - 96") and equivalences without one
+("♩. = ♩") are not read. A tempo given with `--output-metronome` wins over the
+printed ones. Each mark and what became of it is recorded in the sidecar.
+
+On the 240-page corpus and 28 pages of 19 further pieces, 96 marks were written
+on 91 pages of 84 pieces, and each was checked against the page for its note,
+its number and its measure. Two marks of an old engraving were left unread, and
+one restated tempo was not written because its measure already had a mark.
+Nothing else in the MusicXML changed on any page. For 74 of the 80 tempos
+written in pieces with MIDI exports of their source files, the MIDI holds the
+same tempo; the other 6 match their printed marks where the MIDI plays another
+tempo, such as Super Mario Bros' 1-Up, which prints quarter = 225 and plays at 100.
+
 ### Evaluation tooling
 
 A new `homr-visual-eval` command checks a sidecar against the v3 contract. It
