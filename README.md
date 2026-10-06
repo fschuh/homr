@@ -93,6 +93,28 @@ was read, and symbols the transformer chords with notes, such as a barline, are
 no longer written as rests. On a 240-page corpus, bars with a staff gap or
 overflow fell from 1,740 to 1,371 of 3,865, with no page regressing.
 
+Starting groups when the earliest note ends trusts every length, though. Where one
+note is read shorter than printed while the other hand holds a note, such as a bass
+16th read as a 32nd under a whole-note chord, the next group starts off the beat.
+From there each group starts at whichever of two ends comes first: the rest of the
+bar rushes, and the staff falls silent before the barline. The writer now places
+every bar both ways and keeps the earliest-end placement unless starting each group
+after the shortest note of the group before leaves every staff at least as close to
+the bar's length and one staff closer. Then the misread only moves the notes after it
+a little, and they keep their spacing. No note changes its value, and a bar with a
+shared-notehead repair (below) keeps the earliest-end placement.
+
+On the corpus, with the visual sidecar, this places 78 bars of 18 pieces after the
+shortest note and changes no other bar. Bars where a staff stops at least an eighth
+before the barline, and an eighth earlier than under the old rule alone, fell from 94
+to 31. Bars with every staff within an eighth of the barline rose from 3,072 to 3,116
+of 3,816, and no bar that ended exactly on it changed. Of the changed bars, 31 are in
+pieces with MIDI exports: in 26 the notes' offsets from the MIDI spread less within
+the bar, and the other five, checked note by note against the MIDI or the page, keep
+the printed spacing where the earliest end rushed them. The changed bars match fewer
+MIDI onsets exactly, because the notes after a misread now start a little late
+instead of early and crowded.
+
 ### Notes after a shared notehead
 
 Two voices that sound one pitch at the same moment often share a printed
