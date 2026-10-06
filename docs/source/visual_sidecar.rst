@@ -253,8 +253,11 @@ were still sounding. No note is added, and the token keeps its value and its not
 A bar's repairs are applied together, and only when the bar does not add up to its
 time signature as recognized and adds up exactly with them. The time signature's beat
 count is itself measured from the typical bar, so the repairs may change it only to a
-length that a bar needing no repair already has. ``--no-timing-repairs`` turns the
-repair off; the MusicXML is then written exactly as without it.
+length that a bar needing no repair already has. A bar with an applied repair always
+places its groups when the earliest sounding note ends, the rule the repair is defined
+by, even where starting them after the shortest note would leave its staves closer to
+the barline. ``--no-timing-repairs`` turns the repair off; the MusicXML is then written
+exactly as without it.
 
 Schema v3 then contains ``timing_repairs`` with ``version: 1``, ``enabled`` (whether
 the repair was on) and a ``shared_noteheads`` array, with one record, in writing order,

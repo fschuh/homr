@@ -154,6 +154,13 @@ class TimingRepairs:
     def section_nominators(self) -> dict[int, Fraction]:
         return dict(self._sections)
 
+    def lost_note_lengths(self, group: "SymbolChord") -> list[Fraction]:
+        """How long the lost shorter notes of this group's applied repairs last.
+
+        Unlike ``shared_notehead_ends`` it records nothing, so it can be asked ahead.
+        """
+        return [self._accepted[id(s)] for s in group.symbols if id(s) in self._accepted]
+
     def shared_notehead_ends(
         self, group: "SymbolChord", clock: Fraction, *, part: int, measure: int
     ) -> list[Fraction]:

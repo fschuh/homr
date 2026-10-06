@@ -8,6 +8,7 @@ import musicxml.xmlelement.xmlelement as mxl
 import numpy as np
 
 from homr import constants
+from homr.bar_placement import BarPlacement
 from homr.simple_logging import eprint
 from homr.transformer.vocabulary import (
     EncodedSymbol,
@@ -194,6 +195,8 @@ def build_measures(
     # Tokens say which notes start together, not when each group starts. A group starts
     # when the earliest still-sounding note ends (that is how training data is grouped),
     # so track the end times of sounding notes instead of only the last group's shortest note.
+    # A bar where one misread length would rush the rest falls back to the shortest note;
+    # see homr.bar_placement.
     clock = Fraction(0)
     sounding: list[Fraction] = []
 
@@ -211,6 +214,7 @@ def build_measures(
     state = ConversionState(division, nominator)
     state.section_nominators = timing_repairs.section_nominators()
     lone_rests = _lone_rest_ids(groups)
+    placement = BarPlacement(groups, lone_rests, timing_repairs)
     measures: list[mxl.XMLMeasure] = []
     current_measure = mxl.XMLMeasure(number=str(measure_number))
     first_attributes = build_or_get_attributes(current_measure, None)
@@ -251,7 +255,7 @@ def build_measures(
                         written, clock, part=part_number, measure=measure_number
                     )
                 )
-                advance = _advance_to_next_group(written, clock, sounding)
+                advance = placement.advance(group_no, written, clock, sounding, state.bar_length)
                 clock += advance
                 sounding = [end for end in sounding if end > clock]
                 for pos_no, staff_pos in enumerate(staff_positions):
