@@ -10,14 +10,16 @@ falls silent before the barline. Starting each group after the shortest note of 
 group before, as the writer used to, turns the same misread into a small shift.
 
 The writer places every bar both ways and keeps the earliest-end placement unless the
-other leaves every staff at least as close to the bar length and some staff closer, or
-ends every staff within an eighth note of it where the earliest-end placement does not.
-The second test takes the bars the first refuses only because a staff that ended on the
-barline ends a little past it instead, as when the notes after the misread are written
-on the staff that holds the chord. No note changes its value: each bar is written as one
-of the two rules writes it. A bar whose shared-notehead repairs apply keeps the
-earliest-end placement, since the repairs are defined by it, and so does a bar without a
-bar length to measure against.
+other leaves every staff at least as close to the bar length and some staff closer, ends
+every staff within an eighth note of it where the earliest-end placement does not, or
+stops no staff an eighth note or more short of it where the earliest-end placement
+stops one. The second and third tests take the bars the first refuses only because a
+staff that ended on the barline ends past it instead, as when the notes after the
+misread are written on the staff that holds the chord. Such a bar overflows where it
+would otherwise rush; the writer used to write it that way. No note changes its value:
+each bar is written as one of the two rules writes it. A bar whose shared-notehead
+repairs apply keeps the earliest-end placement, since the repairs are defined by it, and
+so does a bar without a bar length to measure against.
 """
 
 from fractions import Fraction
@@ -32,6 +34,7 @@ EARLIEST_END = "earliest_end"
 #: The next group starts when the shortest note of the group just written ends.
 AFTER_SHORTEST = "after_shortest"
 #: How far from the bar length a staff may end for the bar to add up: less than an eighth.
+#: A staff that stops this far or farther before it stops short.
 NEAR_THE_BARLINE = Fraction(1, 8)
 
 
@@ -136,6 +139,39 @@ def after_shortest_adds_up(
     return near(after_shortest) and not near(earliest_end)
 
 
+def earliest_end_stops_short(
+    earliest_end: dict[str, Fraction],
+    after_shortest: dict[str, Fraction],
+    bar_length: Fraction,
+) -> bool:
+    """Whether the earliest-end placement stops some staff an eighth note or more before the
+    bar length while placing groups after the shortest note stops none that short.
+
+    Both must measure the same staves: they place the same notes.
+    """
+    if not earliest_end or set(earliest_end) != set(after_shortest):
+        return False
+
+    def short(ends: dict[str, Fraction]) -> bool:
+        return any(bar_length - end >= NEAR_THE_BARLINE for end in ends.values())
+
+    return short(earliest_end) and not short(after_shortest)
+
+
+def after_shortest_preferred(
+    earliest_end: dict[str, Fraction],
+    after_shortest: dict[str, Fraction],
+    bar_length: Fraction,
+) -> bool:
+    """Whether a bar whose staves end so is written after the shortest note: when any of
+    the three tests holds."""
+    return (
+        after_shortest_is_closer(earliest_end, after_shortest, bar_length)
+        or after_shortest_adds_up(earliest_end, after_shortest, bar_length)
+        or earliest_end_stops_short(earliest_end, after_shortest, bar_length)
+    )
+
+
 def _staff(position: str) -> str:
     # The writer puts every symbol that is not on the upper staff on the lower one.
     return "upper" if position == "upper" else "lower"
@@ -198,8 +234,6 @@ class BarPlacement:
         chords = self._bars[bar]
         earliest_end = staff_ends(chords, EARLIEST_END, bar_length, self._lone_rests)
         after_shortest = staff_ends(chords, AFTER_SHORTEST, bar_length, self._lone_rests)
-        if after_shortest_is_closer(
-            earliest_end, after_shortest, bar_length
-        ) or after_shortest_adds_up(earliest_end, after_shortest, bar_length):
+        if after_shortest_preferred(earliest_end, after_shortest, bar_length):
             return AFTER_SHORTEST
         return EARLIEST_END
