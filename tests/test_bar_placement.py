@@ -9,6 +9,7 @@ from homr.bar_placement import (
     AFTER_SHORTEST,
     EARLIEST_END,
     BarPlacement,
+    after_shortest_adds_up,
     after_shortest_advance,
     after_shortest_is_closer,
     staff_ends,
@@ -102,6 +103,44 @@ SHIFTED_ONSETS = sorted(
         ("2", "B3", 3.125),
         ("2", "A2", 3.125),
         ("2", "C4", 3.625),
+        ("2", "D3", 3.625),
+    ]
+)
+
+#: Bar 25 of Corridors of Time as the transformer reads it: bar 33's misread under a
+#: five-note chord, with the second half of the arpeggio written on the treble staff.
+CORRIDORS_BAR_25 = [
+    "note_8. D2 _ _ _ lower&note_8 D3 _ _ _ lower&note_1 G5 # _ _ upper&note_1 G4 # _ _ upper"
+    + "&note_1 C5 # _ _ upper&note_1 A5 _ arpeggiate _ upper&note_1 A4 _ _ _ upper",
+    "note_8 F3 # _ _ lower",
+    "note_32 D2 _ staccato _ lower",
+    "rest_8 _ _ _ _ lower&note_8 B3 _ _ _ lower",
+    "note_8 D2 _ _ slurStart lower&note_8 C4 # _ _ upper",
+    "note_8 F4 # _ _ upper&note_4 D2 _ _ slurStop lower",
+    "note_8 F3 # _ _ upper",
+    "note_8 B3 _ _ _ upper&note_8 A2 _ _ _ lower",
+    "note_8 D3 _ _ _ lower&note_8 C4 # _ _ upper",
+    "barline . . . . .",
+]
+
+#: Bar 25 with each group starting after the shortest note of the group before.
+BAR_25_SHIFTED_ONSETS = sorted(
+    [
+        *[("1", pitch, 0.0) for pitch in ("G5", "G4", "C5", "A5", "A4")],
+        ("1", "C4", 1.625),
+        ("1", "F4", 2.125),
+        ("1", "F3", 2.625),
+        ("1", "B3", 3.125),
+        ("1", "C4", 3.625),
+        ("2", "D2", 0.0),
+        ("2", "D3", 0.0),
+        ("2", "F3", 0.5),
+        ("2", "D2", 1.0),
+        ("2", "rest", 1.125),
+        ("2", "B3", 1.125),
+        ("2", "D2", 1.625),
+        ("2", "D2", 2.125),
+        ("2", "A2", 3.125),
         ("2", "D3", 3.625),
     ]
 )
@@ -249,6 +288,52 @@ class TestBarPlacement(unittest.TestCase):
         both_closer = {"upper": Fraction(7, 8), "lower": Fraction(1, 4)}
         self.assertTrue(after_shortest_is_closer(both_closer, {"upper": bar, "lower": bar}, bar))
         self.assertFalse(after_shortest_is_closer({}, {}, bar))
+
+    def test_a_rushed_bar_whose_shift_ends_a_staff_just_past_the_barline_is_shifted(
+        self,
+    ) -> None:
+        """
+        Bar 25 has bar 33's misread, but the second half of its arpeggio is on the treble
+        staff. Starting groups after the shortest note then ends the treble an eighth of a
+        beat past the barline instead of on it, so that placement is not closer on every
+        staff. It does end both staves within an eighth note of the barline, where the
+        earliest-end placement stops the bass a beat and a half short, so the bar is written
+        after the shortest note.
+        """
+        _, bars, lone = bars_of([*GRAND_STAFF_IN_A, *CORRIDORS_BAR_25])
+        bar = Fraction(1)
+        earliest_end = staff_ends(bars[0], EARLIEST_END, bar, lone)
+        after_shortest = staff_ends(bars[0], AFTER_SHORTEST, bar, lone)
+        self.assertEqual(earliest_end, {"upper": Fraction(1), "lower": Fraction(5, 8)})
+        self.assertEqual(after_shortest, {"upper": Fraction(33, 32), "lower": Fraction(33, 32)})
+        self.assertFalse(after_shortest_is_closer(earliest_end, after_shortest, bar))
+        self.assertTrue(after_shortest_adds_up(earliest_end, after_shortest, bar))
+        xml = write([*GRAND_STAFF_IN_A, *CORRIDORS_BAR_25])
+        self.assertEqual(onsets(xml), BAR_25_SHIFTED_ONSETS)
+
+    def test_adding_up_means_every_staff_within_an_eighth_where_the_earliest_end_is_not(
+        self,
+    ) -> None:
+        bar = Fraction(1)
+        rushed = {"upper": Fraction(1), "lower": Fraction(5, 8)}
+        nearly = {"upper": Fraction(1), "lower": Fraction(29, 32)}
+        cases = [
+            (
+                "both just past",
+                rushed,
+                {"upper": Fraction(33, 32), "lower": Fraction(33, 32)},
+                True,
+            ),
+            ("just short", rushed, nearly, True),
+            ("an eighth past", rushed, {"upper": Fraction(9, 8), "lower": Fraction(1)}, False),
+            ("an eighth short", rushed, {"upper": Fraction(1), "lower": Fraction(7, 8)}, False),
+            ("earliest end adds up", nearly, {"upper": Fraction(33, 32), "lower": bar}, False),
+            ("different staves", rushed, {"upper": bar}, False),
+            ("nothing measured", {}, {}, False),
+        ]
+        for name, earliest_end, after_shortest, adds_up in cases:
+            with self.subTest(case=name):
+                self.assertEqual(after_shortest_adds_up(earliest_end, after_shortest, bar), adds_up)
 
     def test_without_a_bar_length_the_earliest_end_is_kept(self) -> None:
         groups, _, lone = bars_of([*GRAND_STAFF_IN_A, *corridors_bar("note_32")])
