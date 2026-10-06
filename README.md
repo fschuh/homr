@@ -100,21 +100,30 @@ From there each group starts at whichever of two ends comes first: the rest of t
 bar rushes, and the staff falls silent before the barline. The writer now places
 every bar both ways and keeps the earliest-end placement unless starting each group
 after the shortest note of the group before leaves every staff at least as close to
-the bar's length and one staff closer, or ends every staff within an eighth note of
-it where the earliest-end placement does not. Then the misread only moves the notes
-after it a little, and they keep their spacing. No note changes its value, and a bar
-with a shared-notehead repair (below) keeps the earliest-end placement.
+the bar's length and one staff closer, ends every staff within an eighth note of it
+where the earliest-end placement does not, or stops no staff an eighth note or more
+short of it where the earliest-end placement stops one. Then the misread only moves
+the notes after it, and they keep their spacing; where that overflows the bar, it
+overflows as the writer used to instead of rushing. No note changes its value, and a
+bar with a shared-notehead repair (below) keeps the earliest-end placement.
 
-On the corpus, with the visual sidecar, this places 81 bars of 18 pieces after the
-shortest note and changes no other bar. Bars where a staff stops at least an eighth
-before the barline, and an eighth earlier than under the old rule alone, fell from 94
-to 28. Bars with every staff within an eighth of the barline rose from 3,072 to 3,119
-of 3,816, and no bar that ended exactly on it changed. Of the changed bars, 34 are in
-pieces with MIDI exports: in 28 the notes' offsets from the MIDI spread less within
-the bar, and the other six, checked note by note against the MIDI or the page, keep
-the printed spacing where the earliest end rushed them. The changed bars match fewer
-MIDI onsets exactly, because the notes after a misread now start a little late
-instead of early and crowded.
+On the corpus, with the visual sidecar, this places 97 bars of 18 pieces after the
+shortest note, each as the writer used to, and changes no other bar. Bars where a
+staff stops at least an eighth before the barline, and an eighth earlier than under
+the old rule alone, fell from 94 to 13. Bars with every staff within an eighth of the
+barline rose from 3,072 to 3,119 of 3,816, and no bar that ended exactly on it
+changed. Of the changed bars, 38 are in pieces with MIDI exports: in 30 the notes'
+offsets from the MIDI spread less within the bar. The other eight were checked note
+by note against the MIDI or the page; six keep the printed spacing where the earliest
+end rushed them, and two make one late jump and then keep it. In one of those two,
+Super Mario World's Ending Theme, the rushed version was the closer to the MIDI. The
+third test alone changes ten bars in pieces without MIDI exports; checked against the
+page, five now keep their spacing where they rushed, two are no better either way, and
+three in the Fantaisie-Impromptu were closer to the page as rushed. Two of those three
+are the same passage in two editions, where the missed left-hand sextuplets make the
+writer measure the bar at six beats instead of four. The changed bars match fewer MIDI onsets
+exactly, because the notes after a misread now start late instead of early and
+crowded.
 
 ### Notes after a shared notehead
 
