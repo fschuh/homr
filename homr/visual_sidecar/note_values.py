@@ -68,6 +68,10 @@ BAND_BEYOND = 0.75
 #: A flag or beam crossing a column is at least this thick, and at most this thick; a
 #: thinner run is a slur or tie, a thicker one another symbol in the way.
 BAND_THICKNESS = (0.12, 0.8)
+#: A run lying on segmentation's notehead mask for at least this share of its length is
+#: not counted: it may be a notehead on the stem that the chord's group left out, which
+#: crosses the columns no thicker than a beam.
+BAND_NOTEHEAD_SHARE = 0.5
 #: The stem contours recorded on a chord's notes lie within this of each other, and the
 #: stem within this of a notehead's edge.
 STEM_SPREAD = 0.5
@@ -412,8 +416,8 @@ class NoteValueReader:
 
     def _beam_ink(self) -> NDArray:
         """Lineless ink without accidentals, which may stand beside a stem's free end.
-        Noteheads stay: segmentation often labels a beam's end at the stem as notehead,
-        and a real notehead in the way is too thick to pass for a band anyway."""
+        Noteheads stay: segmentation often labels a beam's end at the stem as notehead.
+        ``_bands`` gives up where a run lies on a notehead instead of counting it."""
         if self._band_ink is None:
             if self.masks is None:
                 raise ValueError("Reading note values needs the page and its segmentation")
@@ -604,6 +608,15 @@ class NoteValueReader:
                         return False
         return True
 
+    def _on_notehead(self, start: int, length: int, x: int) -> bool:
+        """Whether a run in the column at x lies on segmentation's notehead mask. Such a run
+        may be a head on the stem that the chord's group left out, or a beam's end that
+        segmentation labelled as notehead; which one cannot be told."""
+        if self.masks is None:
+            return False
+        on_head = self.masks.notehead[start : start + length, x - 1 : x + 2] > 0
+        return float(on_head.max(axis=1).mean()) >= BAND_NOTEHEAD_SHARE
+
     def _bands(
         self, stem_x: float, free: tuple[float, float], lines: list[float], unit: float
     ) -> int | None:
@@ -636,8 +649,13 @@ class NoteValueReader:
                         and _on_a_line(top + run_start + length / 2, line_positions, unit)
                     )
                 ]
-                # A run this thick is another symbol in the way, which may hide a band.
-                if any(length > BAND_THICKNESS[1] * unit for _, length in runs):
+                # A run this thick is another symbol in the way, which may hide a band; a
+                # run lying on a notehead may be no band at all. Either way the stem is
+                # not read.
+                if any(
+                    length > BAND_THICKNESS[1] * unit or self._on_notehead(start, length, x)
+                    for start, length in runs
+                ):
                     return None
                 # Bands hang from the stem. Ink wholly past its end may be a beam the
                 # trace fell short of, or a fingering numeral; only an articulation's dot,

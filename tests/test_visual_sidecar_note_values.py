@@ -372,12 +372,30 @@ class TestBands(unittest.TestCase):
         page.beams(x - 60, x, free_end, 2)  # the last note of its group
         self.assertEqual(page.read_one(note, "note_16").printed, "16th")
 
-    def test_a_beam_end_labelled_notehead_still_counts(self) -> None:
+    def test_a_notehead_the_chord_group_left_out_is_not_a_band(self) -> None:
+        page = Page()
+        note = page.head(200, 330)
+        x, _ = page.up_stem(note)
+        # Another head on the same stem, small enough to pass for a beam by thickness.
+        cv2.ellipse(page.image, (x, 290), (12, 6), 0, 0, 360, 0, -1)
+        cv2.ellipse(page.notehead, (x, 290), (12, 6), 0, 0, 360, 1, -1)
+        self.assertEqual(page.read_one(note, "note_4").reason, "bands_unclear")
+
+    def test_a_beam_end_labelled_notehead_is_not_miscounted(self) -> None:
         page = Page()
         note = page.head(200, 130)
         x, free_end = page.up_stem(note)
         page.beams(x, x + 40, free_end, 2)
+        # Erased with the noteheads, the beams would read as none: a quarter.
         page.notehead[free_end : free_end + 30, x - 2 : x + 14] = 1
+        self.assertEqual(page.read_one(note, "note_16").reason, "bands_unclear")
+
+    def test_a_beam_only_grazing_a_notehead_still_counts(self) -> None:
+        page = Page()
+        note = page.head(200, 130)
+        x, free_end = page.up_stem(note)
+        page.beams(x, x + 40, free_end, 2)
+        page.notehead[free_end : free_end + 3, x - 2 : x + 14] = 1  # 3 of the first beam's 10 rows
         self.assertEqual(page.read_one(note, "note_16").printed, "16th")
 
     def test_an_accidental_beside_the_free_end_is_not_a_band(self) -> None:
