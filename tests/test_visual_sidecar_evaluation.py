@@ -16,6 +16,7 @@ from homr.visual_sidecar.evaluation import (
     VisualEvalReport,
     evaluate_musicxml_sidecar,
 )
+from tests.visual_sidecar_helpers import musicxml_note_ids
 
 
 def musicxml_document(notes: str, clef: str | None = None) -> str:
@@ -161,6 +162,94 @@ class TestVisualSidecarEvaluation(unittest.TestCase):
         report = evaluate_musicxml_sidecar(musicxml, builder.to_json_dict())
 
         self.assertTrue(report.passed, report.to_dict())
+
+    def test_group_matched_to_a_symbol_the_writer_leaves_out_becomes_diagnostic(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        note = Note(
+            BoundingEllipse(((30, 50), (10, 8), 0), np.array([[25, 46], [35, 54]]), 1),
+            position=1,
+            stem=None,
+            stem_direction=None,
+            visual_id="vnote-1",
+        )
+        builder = VisualSidecarBuilder(coordinate_transform)
+        builder.add_staff_visual_notes(0, [note], [note.copy()])
+        clef = EncodedSymbol("clef_G2", position="upper")
+        matched = EncodedSymbol("note_4", "E4", position="upper", coordinates=(30, 50))
+        builder.add_staff_matches([clef, matched], 0)
+        self.assertEqual(builder.matches_by_symbol_id[matched.visual_match_id].visual_id, "vnote-1")
+
+        # The writer leaves the matched note out, as it did with the notes of a chord
+        # led by a misread time signature.
+        generated = generate_xml(XmlGeneratorArguments(), [[clef]], "", visual_sidecar=builder)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "score.musicxml"
+            generated.write(str(path))
+            musicxml = path.read_text(encoding="utf-8")
+        sidecar = builder.to_json_dict()
+
+        group = sidecar["visual_groups"][0]
+        self.assertEqual(group["visual_status"], "diagnostic")
+        self.assertIsNone(group["musicxml_id"])
+        self.assertIsNone(group["moment_id"])
+        self.assertIsNone(group["chord_id"])
+        self.assertIn("symbol_not_written", group["repair_actions"])
+        report = evaluate_musicxml_sidecar(musicxml, sidecar)
+        self.assertTrue(report.passed, report.to_dict())
+
+    def test_linked_group_without_a_note_for_another_reason_is_not_released(self) -> None:
+        coordinate_transform = PredictionCoordinateTransform(
+            source_image_size=(100, 100),
+            autocrop_box=(0, 0, 100, 100),
+            cropped_size=(100, 100),
+            resized_size=(100, 100),
+            resize_scale=(1.0, 1.0),
+            prediction_size=(100, 100),
+        )
+        notes = [
+            Note(
+                BoundingEllipse(((x, 50), (10, 8), 0), np.array([[x - 5, 46], [x + 5, 54]]), 1),
+                position=1,
+                stem=None,
+                stem_direction=None,
+                visual_id=visual_id,
+            )
+            for x, visual_id in ((30, "vnote-1"), (70, "vnote-2"))
+        ]
+        builder = VisualSidecarBuilder(coordinate_transform)
+        builder.add_staff_visual_notes(0, notes, [note.copy() for note in notes])
+        symbols = [
+            EncodedSymbol("clef_G2", position="upper"),
+            EncodedSymbol("note_4", "E4", position="upper", coordinates=(30, 50)),
+        ]
+        builder.add_staff_matches(symbols, 0)
+        # No symbol is matched to vnote-2; it is left linked as if by a fault elsewhere.
+        builder.visual_groups["vnote-2"].visual_status = "fallback"
+
+        generated = generate_xml(XmlGeneratorArguments(), [[*symbols]], "", visual_sidecar=builder)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "score.musicxml"
+            generated.write(str(path))
+            musicxml = path.read_text(encoding="utf-8")
+        sidecar = builder.to_json_dict()
+
+        groups = {group["visual_group_id"]: group for group in sidecar["visual_groups"]}
+        self.assertEqual(groups["vnote-1"]["musicxml_id"], musicxml_note_ids(generated)[0])
+        self.assertEqual(groups["vnote-2"]["visual_status"], "fallback")
+        self.assertNotIn("symbol_not_written", groups["vnote-2"]["repair_actions"])
+        report = evaluate_musicxml_sidecar(musicxml, sidecar)
+        self.assertFalse(report.passed)
+        self.assertIn(
+            "Canonical or fallback visual group must have one musicxml_id",
+            [divergence.message for divergence in report.divergences],
+        )
 
     def test_valid_v3_sidecar_passes(self) -> None:
         xml = musicxml_document(xml_note("homr-note-1", "C", 4))

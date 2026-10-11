@@ -127,6 +127,8 @@ def generate_xml(
         root.add_child(
             build_part(args, staff, index, has_two_staves_by_part[index], visual_sidecar)
         )
+    if visual_sidecar is not None:
+        visual_sidecar.release_unwritten_groups()
     return root
 
 

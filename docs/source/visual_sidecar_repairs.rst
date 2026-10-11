@@ -265,6 +265,13 @@ Candidate consolidation and quarantine actions
    a MusicXML note for it because the pixels alone do not establish pitch,
    duration, and voice.
 
+``symbol_not_written``
+   The candidate was matched to a recognized symbol, but the MusicXML writer did
+   not write that symbol as a note, so there is no note to link it to. The group
+   becomes ``diagnostic`` and loses its ``moment_id`` and ``chord_id``; earlier
+   link actions stay as history. A linked group that lacks a note for any other
+   reason is not released and still fails the sidecar contract.
+
 Link recovery actions
 ---------------------
 

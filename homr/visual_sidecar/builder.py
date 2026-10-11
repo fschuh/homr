@@ -443,6 +443,32 @@ class VisualSidecarBuilder:
             ):
                 group.repair_actions.append("unmatched_candidate")
 
+    def release_unwritten_groups(self) -> None:
+        """Make diagnostic the groups matched to a symbol the MusicXML writer left out.
+
+        Call it once the MusicXML is written. Matching runs on the recognized tokens, and
+        the writer can still drop one of them, so such a group has no note to link to.
+        record_musicxml_note links the group matched to every symbol it writes, so a
+        matched group still without a MusicXML ID is one whose symbol was left out. A
+        group without a note for any other reason stays as it is, for the contract
+        checks to report.
+        """
+        for match in self.matches_by_symbol_id.values():
+            if match.visual_id is None:
+                continue
+            group = self.visual_groups.get(match.visual_id)
+            if (
+                group is None
+                or group.visual_status == "diagnostic"
+                or group.musicxml_id is not None
+            ):
+                continue
+            group.visual_status = "diagnostic"
+            group.moment_id = None
+            group.chord_id = None
+            if "symbol_not_written" not in group.repair_actions:
+                group.repair_actions.append("symbol_not_written")
+
     def create_musicxml_id(self) -> str:
         musicxml_id = f"homr-note-{self.state.next_musicxml_note_id}"
         self.state.next_musicxml_note_id += 1
