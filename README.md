@@ -89,9 +89,11 @@ Groups now start when the earliest sounding note ends.
 The same measurement now decides the time signature's beat count, separately for
 each meter section, without counting a staff whose only content in a bar is a
 rest. Such a rest is written as a measure rest filling the bar, whatever glyph
-was read, and symbols the transformer chords with notes, such as a barline, are
-no longer written as rests. On a 240-page corpus, bars with a staff gap or
-overflow fell from 1,740 to 1,371 of 3,865, with no page regressing.
+was read. Only in a bar shorter than the meter, such as a pickup, does a rest that
+lasts as read exactly as long as the other staff keep its value. Symbols the
+transformer chords with notes, such as a barline, are no longer written as rests.
+On a 240-page corpus, bars with a staff gap or overflow fell from 1,740 to 1,371
+of 3,865, with no page regressing.
 
 Starting groups when the earliest note ends trusts every length, though. Where one
 note is read shorter than printed while the other hand holds a note, such as a bass

@@ -53,7 +53,7 @@ def staff_ends(
     chords: list["SymbolChord"],
     rule: str,
     bar_length: Fraction | None,
-    lone_rests: set[int],
+    lone_rests: dict[int, Fraction],
 ) -> dict[str, Fraction]:
     """When each staff's last note or rest ends if the writer places this bar by ``rule``.
 
@@ -187,7 +187,7 @@ class BarPlacement:
     def __init__(
         self,
         groups: list["SymbolChord"],
-        lone_rests: set[int],
+        lone_rests: dict[int, Fraction],
         timing_repairs: "TimingRepairs",
     ) -> None:
         self._lone_rests = lone_rests

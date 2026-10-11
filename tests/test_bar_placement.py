@@ -253,7 +253,9 @@ def written_staff_ends(xml: Any, index: int = 0) -> dict[str, Fraction]:
     return ends
 
 
-def bars_of(lines: list[str]) -> tuple[list[SymbolChord], list[list[SymbolChord]], set[int]]:
+def bars_of(
+    lines: list[str],
+) -> tuple[list[SymbolChord], list[list[SymbolChord]], dict[int, Fraction]]:
     """The writer's groups for these tokens, the groups of each bar, and the lone rests."""
     groups = add_tuplet_start_stop(group_into_chords(read_token_lines(lines)))
     bars: list[list[SymbolChord]] = [[]]

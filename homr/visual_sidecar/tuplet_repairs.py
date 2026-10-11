@@ -450,7 +450,7 @@ def _support(
     bars: list[list["SymbolChord"]],
     lengths: list[Fraction | None],
     candidates: dict[int, str],
-    lone_rests: set[int],
+    lone_rests: dict[int, Fraction],
 ) -> dict[Fraction, int]:
     """How many bars under each trusted length add up as the writer places them, each
     with its own candidates applied."""
@@ -481,7 +481,7 @@ def _refusal(
     here: dict[int, str],
     length: Fraction | None,
     support: dict[Fraction, int],
-    lone_rests: set[int],
+    lone_rests: dict[int, Fraction],
 ) -> str:
     """Why a bar's candidates are not applied, or "" when the bar proves them."""
     from homr import (  # noqa: PLC0415 - it imports this module
@@ -509,7 +509,7 @@ def _refusal(
 
 
 def _written_ends(
-    chords: list["SymbolChord"], length: Fraction, lone_rests: set[int]
+    chords: list["SymbolChord"], length: Fraction, lone_rests: dict[int, Fraction]
 ) -> dict[str, Fraction]:
     """Each staff's end as the writer places the bar: by the earliest end, or after the
     shortest note where bar placement prefers that."""

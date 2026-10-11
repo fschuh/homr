@@ -495,6 +495,85 @@ barline . . . . ."""
         self.assertIsNone(rests[0].find("rest").get("measure"))  # type: ignore[union-attr]
         self.assertEqual(rests[0].findtext("type"), "half")
 
+    def test_lone_rest_as_long_as_the_other_staff_stays_as_read(self) -> None:
+        """
+        Für Elise opens with a pickup: two treble sixteenths over a bass eighth rest. The
+        staves agree on an eighth, so the rest keeps its value; filling the 3/8 bar would
+        add two eighths of silence before the first full bar.
+        """
+        pickup = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/8 . . . . .
+note_16 E5 _ _ _ upper&rest_8 _ _ _ _ lower
+note_16 D5 _ _ _ upper
+barline . . . . .
+note_4. A4 _ _ _ upper&note_4. A2 _ _ _ lower
+barline . . . . .
+note_4. B4 _ _ _ upper&note_4. B2 _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(pickup)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "3")
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertIsNone(rest.find("rest").get("measure"))  # type: ignore[union-attr]
+        self.assertEqual(rest.findtext("type"), "eighth")
+        self.assertEqual(2 * int(rest.findtext("duration", "0")), divisions)
+
+    def test_lone_rest_after_a_repeat_sign_as_long_as_the_other_staff_stays_as_read(
+        self,
+    ) -> None:
+        """
+        The Turkish March's sections each start after a repeat sign with a pickup: four
+        treble sixteenths over a bass quarter rest, in 2/4.
+        """
+        repeated_pickup = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+barline . . . . .
+note_2 D5 _ _ _ upper&note_2 D3 _ _ _ lower
+repeatStart . . . . .
+note_16 B4 _ _ _ upper&rest_4 _ _ _ _ lower
+note_16 A4 _ _ _ upper
+note_16 G4 _ _ _ upper
+note_16 A4 _ _ _ upper
+barline . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(repeated_pickup)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "2")
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertIsNone(rest.find("rest").get("measure"))  # type: ignore[union-attr]
+        self.assertEqual(rest.findtext("type"), "quarter")
+        self.assertEqual(int(rest.findtext("duration", "0")), divisions)
+
+    def test_lone_rest_as_long_as_the_other_staff_keeps_its_value_only_in_a_short_bar(
+        self,
+    ) -> None:
+        """
+        Only a bar shorter than the meter is a pickup. Where the other staff fills the 2/4
+        bar the rest is still the bar's measure rest, and where the staves agree on more
+        than the bar it still fills the bar, as before.
+        """
+        for upper, lower in (("note_2", "rest_2"), ("note_2.", "rest_2.")):
+            with self.subTest(read=lower):
+                tokens = f"""clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+barline . . . . .
+note_2 D5 _ _ _ upper&note_2 D3 _ _ _ lower
+barline . . . . .
+{upper} E5 _ _ _ upper&{lower} _ _ _ _ lower
+barline . . . . ."""
+                root = self._generate_root(tokens)
+                divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+                self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "2")
+                rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+                self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+                self.assertEqual(int(rest.findtext("duration", "0")), 2 * divisions)
+
     def test_lone_rest_without_time_signature_fills_a_plausible_typical_bar(self) -> None:
         """
         Pages after the first carry no time signature, so the typical bar length stands in,

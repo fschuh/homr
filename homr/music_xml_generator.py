@@ -383,17 +383,19 @@ def _lone_rest_staves(chords: list[list[EncodedSymbol]]) -> set[str]:
     }
 
 
-def _lone_rest_ids(groups: list[SymbolChord]) -> set[int]:
-    """Identify, by object, every rest that is its staff's only timed symbol in its bar."""
-    result: set[int] = set()
+def _lone_rest_ids(groups: list[SymbolChord]) -> dict[int, Fraction]:
+    """Map, by object, every rest that is its staff's only timed symbol in its bar to how
+    long the bar's other staves last, or zero when nothing else in the bar is timed."""
+    result: dict[int, Fraction] = {}
     bar: list[list[EncodedSymbol]] = []
     for group in [*groups, SymbolChord([EncodedSymbol("barline")])]:
         if not group.is_barline():
             bar.append(group.symbols)
             continue
         lone = _lone_rest_staves(bar)
+        other_staves = _bar_length_evidence(bar)
         result.update(
-            id(symbol)
+            (id(symbol), other_staves)
             for chord in bar
             for symbol in chord
             if symbol.position in lone
@@ -405,13 +407,26 @@ def _lone_rest_ids(groups: list[SymbolChord]) -> set[int]:
 
 
 def _with_measure_rests(
-    group: SymbolChord, lone_rests: set[int], bar_length: Fraction
+    group: SymbolChord, lone_rests: dict[int, Fraction], bar_length: Fraction
 ) -> SymbolChord:
-    if not any(id(symbol) in lone_rests for symbol in group.symbols):
+    """Write each lone rest in ``group`` as a measure rest lasting ``bar_length``.
+
+    A rest that lasts as read exactly as long as the bar's other staves, and shorter than
+    the bar, keeps its value. The page agrees with itself there, and the bar is short on
+    it: a pickup, or the bar after a repeat sign. Filling the bar would lengthen it.
+    """
+
+    def fills_the_bar(symbol: EncodedSymbol) -> bool:
+        if id(symbol) not in lone_rests:
+            return False
+        read = symbol.get_duration().fraction
+        return not (read == lone_rests[id(symbol)] and read < bar_length)
+
+    if not any(fills_the_bar(symbol) for symbol in group.symbols):
         return group
     return SymbolChord(
         [
-            _MeasureRest(symbol, bar_length) if id(symbol) in lone_rests else symbol
+            _MeasureRest(symbol, bar_length) if fills_the_bar(symbol) else symbol
             for symbol in group.symbols
         ],
         group.tuplet_mark,
