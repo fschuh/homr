@@ -17,7 +17,9 @@ from homr.transformer.vocabulary import (
     nonote,
     sort_token_chords,
 )
+from homr.visual_sidecar.time_signatures import validate_meter_options
 from homr.visual_sidecar.timing_repairs import TimingRepairs
+from homr.visual_sidecar.tuplet_repairs import repair_tuplets
 
 if TYPE_CHECKING:
     from homr.visual_sidecar import VisualSidecarBuilder
@@ -128,12 +130,23 @@ class XmlGeneratorArguments:
         metronome: int | None = None,
         tempo: int | None = None,
         repair_shared_notehead_timing: bool = True,
+        read_time_signatures: bool = False,
+        repair_tuplets: bool = False,
+        time_signature_from_previous_page: tuple[int, int] | None = None,
     ):
         self.large_page = large_page
         self.metronome = metronome
         self.tempo = tempo
         # Needs the visual sidecar; see homr.visual_sidecar.timing_repairs.
         self.repair_shared_notehead_timing = repair_shared_notehead_timing
+        # These need the visual sidecar too; see homr.visual_sidecar.time_signatures and
+        # homr.visual_sidecar.tuplet_repairs.
+        validate_meter_options(
+            read_time_signatures, repair_tuplets, time_signature_from_previous_page
+        )
+        self.read_time_signatures = read_time_signatures
+        self.repair_tuplets = repair_tuplets
+        self.time_signature_from_previous_page = time_signature_from_previous_page
 
 
 def build_identification() -> mxl.XMLIdentification:
@@ -209,6 +222,8 @@ def build_measures(
 
     measure_number = 1
     groups = add_tuplet_start_stop(group_into_chords(voice))
+    if args.repair_tuplets and visual_sidecar is not None:
+        groups = repair_tuplets(groups, visual_sidecar)
     timing_repairs = TimingRepairs(groups, visual_sidecar, args.repair_shared_notehead_timing)
     division, nominator = timing_repairs.division_and_nominator()
     state = ConversionState(division, nominator)
@@ -219,6 +234,7 @@ def build_measures(
     current_measure = mxl.XMLMeasure(number=str(measure_number))
     first_attributes = build_or_get_attributes(current_measure, None)
     first_attributes.add_child(build_divisions(division))
+    timing_repairs.restate_carried_meter(first_attributes, state)
     if has_two_staves:
         first_attributes.add_child(mxl.XMLStaves(value_=2))
         first_attributes.add_child(mxl.XMLPartSymbol(value_="brace"))
@@ -277,6 +293,8 @@ def build_measures(
         elif rhythm.startswith("keySignature"):
             attributes = build_or_get_attributes(current_measure, last_attributes)
             build_key(symbol, attributes)
+        elif rhythm.startswith("timeSignature") and timing_repairs.ignores(symbol):
+            attributes = last_attributes  # not printed on the page; see timing_repairs
         elif rhythm.startswith("timeSignature"):
             attributes = build_or_get_attributes(current_measure, last_attributes)
             build_time_signature(symbol, attributes, state)

@@ -1,9 +1,10 @@
-from typing import Any
+from concurrent.futures import Future
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from homr.bounding_boxes import RotatedBoundingBox
-from homr.model import Note, Staff
+from homr.model import MultiStaff, Note, Staff
 from homr.staff_canvas_transform import StaffCanvasTransform
 from homr.transformer.vocabulary import EncodedSymbol, remove_duplicated_symbols
 from homr.visual_sidecar.annotation_geometry import (
@@ -33,6 +34,7 @@ from homr.visual_sidecar.note_values import (
     NoteValueReader,
     NoteValueReading,
     SharedNoteheadReading,
+    StemEnd,
 )
 from homr.visual_sidecar.notehead_refit import NoteheadRefitter
 from homr.visual_sidecar.noteheads import NoteheadGeometry
@@ -54,7 +56,21 @@ from homr.visual_sidecar.tempo_marks import (
     measure_at,
     write_tempo_directions,
 )
+from homr.visual_sidecar.time_signatures import (
+    Glyph,
+    Meter,
+    TimeSignatureLinks,
+    TimeSignatureRead,
+    read_time_signatures_in_background,
+)
 from homr.visual_sidecar.timing_repairs import SharedNoteheadRecord
+from homr.visual_sidecar.tuplet_numerals import (
+    Numeral,
+    read_tuplet_numerals_in_background,
+)
+
+if TYPE_CHECKING:
+    from homr.music_xml_generator import XmlGeneratorArguments
 
 
 class VisualSidecarBuilder:
@@ -116,6 +132,8 @@ class VisualSidecarBuilder:
             self.noteheads,
             self.stems,
         )
+        self.time_signatures = TimeSignatureLinks()
+        self._tuplet_numerals: Future[list[Numeral]] | None = None
         self.serializer = VisualSidecarSerializer(
             self.state,
             coordinate_transform,
@@ -279,6 +297,7 @@ class VisualSidecarBuilder:
         """
         # Match the same cleaned symbol identities that MusicXML generation retains.
         symbols = remove_duplicated_symbols(symbols, cleanup_tuplets=False)
+        self._add_time_signature_tokens(symbols, canvas_transform)
         if source_staff is not None:
             self.state.source_staffs[staff_group_index] = source_staff
         for verdict in self.rests.verify_staff(
@@ -583,6 +602,148 @@ class VisualSidecarBuilder:
     def set_timing_repairs_enabled(self, enabled: bool) -> None:
         self.state.timing_repairs_enabled = enabled
 
+    def start_meter_reads(
+        self, image_path: str, staffs: list[MultiStaff], args: "XmlGeneratorArguments"
+    ) -> None:
+        """Starts reading what the writer's meter options need from the page, beside the
+        transformer: the printed time signatures, and the bracketed tuplet numerals."""
+        if args.read_time_signatures:
+            self.set_time_signature_reads(
+                read_time_signatures_in_background(image_path, staffs, self.coordinate_transform)
+            )
+            self.set_carried_time_signature(args.time_signature_from_previous_page)
+        if args.repair_tuplets:
+            self.set_tuplet_numerals(
+                read_tuplet_numerals_in_background(image_path, staffs, self.coordinate_transform)
+            )
+
+    def time_signature_at_end(self) -> Meter | None:
+        """The trusted meter in force at the page's end, when its time signatures were read."""
+        return self.time_signatures.carried_out if self.time_signatures.enabled else None
+
+    def set_time_signature_reads(
+        self, reads: "Future[tuple[list[TimeSignatureRead], list[Glyph]]]"
+    ) -> None:
+        """The page's printed time signatures, read in the background; without them no
+        token has a read, and the writer infers every meter."""
+        self.time_signatures.set_reads(reads)
+
+    def set_carried_time_signature(self, meter: Meter | None) -> None:
+        """The meter in force at the end of the previous page of the score."""
+        self.time_signatures.carried_in = meter
+
+    def carried_meter(self) -> Meter | None:
+        return self.time_signatures.carried_in if self.time_signatures.enabled else None
+
+    def record_final_meter(self, meter: Meter | None) -> None:
+        self.time_signatures.carried_out = meter
+
+    def time_signature_status(self, symbol: EncodedSymbol) -> str | None:
+        return self.time_signatures.status_of(symbol.visual_match_id)
+
+    def read_time_signature(self, symbol: EncodedSymbol) -> Meter | None:
+        """The printed meter of a time-signature token, when a trusted read lands on it."""
+        return self.time_signatures.meter_of(symbol.visual_match_id)
+
+    def _add_time_signature_tokens(
+        self, symbols: list[EncodedSymbol], canvas_transform: StaffCanvasTransform | None
+    ) -> None:
+        """Records each time-signature token with where the transformer saw it on the page."""
+        for symbol in symbols:
+            if not symbol.rhythm.startswith("timeSignature/"):
+                continue
+            point = None
+            if canvas_transform is not None and symbol.coordinates is not None:
+                values = np.asarray(symbol.coordinates, dtype=float).reshape(-1)
+                if len(values) >= 2 and np.all(np.isfinite(values[:2])):
+                    prediction = canvas_transform.to_prediction(
+                        (float(values[0]), float(values[1]))
+                    )
+                    if prediction is not None:
+                        source = self.coordinate_transform.prediction_point_to_source(prediction)
+                        point = (float(source[0]), float(source[1]))
+            self.time_signatures.add_token(
+                symbol.visual_match_id, point, int(symbol.rhythm.split("/")[1])
+            )
+
+    def set_tuplet_numerals(self, numerals: "Future[list[Numeral]]") -> None:
+        """The page's bracketed tuplet numerals, read in the background."""
+        self._tuplet_numerals = numerals
+
+    def tuplet_numerals(self) -> list[Numeral]:
+        return self._tuplet_numerals.result(120) if self._tuplet_numerals is not None else []
+
+    def stem_ends(self, chords: list[list[EncodedSymbol]]) -> list[StemEnd | None]:
+        """Each chord's one stem, from the noteheads its tokens are linked to, or None."""
+        ends: list[StemEnd | None] = []
+        for symbols in chords:
+            groups: list[VisualGroup] = []
+            for symbol in symbols:
+                group = self._linked_group(symbol)
+                if group is not None and group not in groups:
+                    groups.append(group)
+            if not groups:
+                ends.append(None)
+                continue
+            staff = self.state.source_staffs.get(groups[0].staff_group_index)
+            ends.append(self.note_values.stem_end(groups, staff))
+        return ends
+
+    def beamed_together(self, first: StemEnd, second: StemEnd) -> bool:
+        return self.note_values.beamed_together(first, second)
+
+    def read_token_values(self, symbols: list[EncodedSymbol]) -> dict[int, NoteValueReading]:
+        """The printed value of each token's linked notehead, keyed by id of the token."""
+        chords: dict[str, list[ChordMember]] = {}
+        for symbol in symbols:
+            group = self._linked_group(symbol)
+            if group is None:
+                continue
+            chords.setdefault(group.chord_id or group.visual_id, []).append(
+                ChordMember(str(id(symbol)), group, symbol.rhythm)
+            )
+        readings: dict[int, NoteValueReading] = {}
+        for members in chords.values():
+            staff = self.state.source_staffs.get(members[0].group.staff_group_index)
+            for reading in self.note_values.read_chord(members, staff):
+                readings[int(reading.musicxml_id)] = reading
+        return readings
+
+    def notehead_prediction_point(self, symbol: EncodedSymbol) -> tuple[float, float] | None:
+        """The centre of the token's linked notehead in prediction pixels, as stems are read."""
+        group = self._linked_group(symbol)
+        if group is None:
+            return None
+        return float(group.prediction_center[0]), float(group.prediction_center[1])
+
+    def notehead_point(self, symbol: EncodedSymbol) -> tuple[float, float] | None:
+        """The centre of the token's linked notehead in source pixels, as numerals are read."""
+        group = self._linked_group(symbol)
+        if group is None:
+            return None
+        point = self.coordinate_transform.prediction_point_to_source(group.prediction_center)
+        return float(point[0]), float(point[1])
+
+    def record_tuplet_repairs(
+        self,
+        groups: list[dict[str, Any]],
+        notes: list[tuple[EncodedSymbol, dict[str, Any]]],
+    ) -> None:
+        self.state.tuplet_repairs_enabled = True
+        self.state.tuplet_groups.extend(groups)
+        for symbol, record in notes:
+            match = self.matches_by_symbol_id.get(symbol.visual_match_id)
+            self.state.tuplet_repair_records.append(
+                (match.visual_id if match is not None else None, record)
+            )
+
+    def _linked_group(self, symbol: EncodedSymbol) -> VisualGroup | None:
+        match = self.matches_by_symbol_id.get(symbol.visual_match_id)
+        group = self.visual_groups.get(match.visual_id or "") if match is not None else None
+        if group is None or group.visual_status == "diagnostic":
+            return None
+        return group
+
     def record_shared_notehead_timing(self, record: SharedNoteheadRecord) -> None:
         match = self.matches_by_symbol_id.get(record.symbol.visual_match_id)
         self.state.shared_notehead_records.append(
@@ -670,6 +831,10 @@ class VisualSidecarBuilder:
 
     def to_json_dict(self) -> dict[str, Any]:
         self.state.note_value_readings = self._read_note_values()
+        if self.time_signatures.enabled:
+            self.state.time_signatures = self.time_signatures.to_json_dict()
+        if self.state.tuplet_repairs_enabled:
+            self.state.tuplet_numerals = self.tuplet_numerals()
         return self.serializer.to_dict()
 
     def _read_note_values(self) -> list[NoteValueReading]:

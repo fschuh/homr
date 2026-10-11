@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from homr.visual_sidecar.rests import RestVerdict
     from homr.visual_sidecar.tempo_marks import TempoMark
     from homr.visual_sidecar.timing_repairs import SharedNoteheadRecord
+    from homr.visual_sidecar.tuplet_numerals import Numeral
 
 VISUAL_SIDECAR_VERSION = 3
 CROSS_STAFF_ALIGNMENT_METHOD = "cross_staff_repair"
@@ -184,3 +185,12 @@ class SidecarState:
     #: The page's metronome marks and what became of each, or None when the writer never
     #: asked for them.
     tempo_marks: list["TempoMark"] | None = None
+    #: The time-signature block, or None when the page's time signatures were not read.
+    time_signatures: dict[str, Any] | None = None
+    #: Whether the tuplet repair ran; the page's bracketed numerals, the beam groups and
+    #: numerals it weighed, and the linked visual group and record of each note it repaired
+    #: or declined to repair.
+    tuplet_repairs_enabled: bool = False
+    tuplet_numerals: list["Numeral"] = field(default_factory=list)
+    tuplet_groups: list[dict[str, Any]] = field(default_factory=list)
+    tuplet_repair_records: list[tuple[str | None, dict[str, Any]]] = field(default_factory=list)

@@ -17,6 +17,7 @@ from homr.visual_sidecar.note_values import (
     NoteValueReader,
     NoteValueReading,
     SharedNoteheadReading,
+    StemEnd,
     recognized_value,
 )
 from homr.visual_sidecar.rests import SegmentationMasks
@@ -631,3 +632,81 @@ class TestSidecarBlock(unittest.TestCase):
                 ],
             },
         )
+
+
+class TestStemsAndBeams(unittest.TestCase):
+    """The stem of a chord, and whether a beam joins two stems, as the tuplet repair
+    groups notes by them."""
+
+    def reader(self, page: Page) -> NoteValueReader:
+        return NoteValueReader(page.image, page.masks(), identity_transform(), lines_at_x)
+
+    def stems(self, beamed: bool, up: bool = True) -> tuple[Page, list[VisualGroup]]:
+        page = Page()
+        notes = [page.head(150 + 60 * i, 130 if up else 150) for i in range(2)]
+        ends = [page.up_stem(n) if up else page.down_stem(n) for n in notes]
+        if beamed:
+            page.beams(ends[0][0], ends[1][0], ends[0][1], 1, up=up)
+        return page, notes
+
+    def test_a_chords_stem_and_free_end(self) -> None:
+        page, notes = self.stems(beamed=True)
+        end = self.reader(page).stem_end([notes[0]], staff())
+        assert end is not None
+        self.assertEqual((round(end.x), end.up), (162, True))
+        self.assertAlmostEqual(end.free_end, 130 - STEM_LENGTH, delta=2)
+        self.assertEqual(end.space, UNIT)
+        page, notes = self.stems(beamed=True, up=False)
+        end = self.reader(page).stem_end([notes[0]], staff())
+        assert end is not None
+        self.assertEqual((round(end.x), end.up), (138, False))
+
+    def test_a_chord_without_a_stem_has_no_end(self) -> None:
+        page = Page()
+        note = page.head(200, 130)
+        self.assertIsNone(self.reader(page).stem_end([note], staff()))
+
+    def test_a_beam_joins_the_free_ends(self) -> None:
+        page, notes = self.stems(beamed=True)
+        reader = self.reader(page)
+        first, second = (reader.stem_end([n], staff()) for n in notes)
+        assert first is not None and second is not None
+        self.assertTrue(reader.beamed_together(first, second))
+        page, notes = self.stems(beamed=True, up=False)
+        reader = self.reader(page)
+        first, second = (reader.stem_end([n], staff()) for n in notes)
+        assert first is not None and second is not None
+        self.assertTrue(reader.beamed_together(first, second))
+
+    def test_flags_or_a_short_stub_are_no_beam(self) -> None:
+        page, notes = self.stems(beamed=False)
+        for end in (page.up_stem(notes[0]),):
+            page.beams(end[0], end[0] + 12, end[1], 1)  # a flag-like stub from the first
+        reader = self.reader(page)
+        first, second = (reader.stem_end([n], staff()) for n in notes)
+        assert first is not None and second is not None
+        self.assertFalse(reader.beamed_together(first, second))
+
+    def test_stems_pointing_apart_or_too_close_are_not_beamed(self) -> None:
+        page, notes = self.stems(beamed=True)
+        reader = self.reader(page)
+        first, second = (reader.stem_end([n], staff()) for n in notes)
+        assert first is not None and second is not None
+        down = StemEnd(second.x, second.free_end, False, second.space)
+        self.assertFalse(reader.beamed_together(first, down))
+        near = StemEnd(first.x + 0.4 * UNIT, first.free_end, True, first.space)
+        self.assertFalse(reader.beamed_together(first, near))
+
+    def test_staff_lines_are_fitted_once_per_chord(self) -> None:
+        page, notes = self.stems(beamed=True)
+        calls: list[float] = []
+
+        def counted(staff_: Staff, x: float, staff_index: int) -> list[float]:
+            calls.append(x)
+            return LINES
+
+        reader = NoteValueReader(page.image, page.masks(), identity_transform(), counted)
+        reader.stem_end([notes[0]], staff())
+        reader.read_chord([ChordMember("homr-note-1", notes[0], "note_8")], staff())
+        reader.stem_end([notes[1], notes[0]], staff())
+        self.assertEqual(len(calls), 2)

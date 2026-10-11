@@ -33,6 +33,7 @@ from homr.visual_sidecar.timing_repairs import (
     TIMING_REPAIRS_VERSION,
     SharedNoteheadRecord,
 )
+from homr.visual_sidecar.tuplet_repairs import TUPLET_REPAIRS_VERSION
 
 HORIZONTAL_HOLLOW_NOTEHEAD_ASPECT_RATIO = 1.8
 
@@ -238,7 +239,29 @@ class VisualSidecarSerializer:
                     for visual_id, record in self.state.shared_notehead_records
                 ],
             }
+        if self.state.time_signatures is not None:
+            result["time_signatures"] = self.state.time_signatures
+        if self.state.tuplet_repairs_enabled:
+            result["tuplet_repairs"] = {
+                "version": TUPLET_REPAIRS_VERSION,
+                "numerals": [numeral.to_json_dict() for numeral in self.state.tuplet_numerals],
+                "groups": self.state.tuplet_groups,
+                "notes": [
+                    self._tuplet_note_for_output(visual_id, record)
+                    for visual_id, record in self.state.tuplet_repair_records
+                ],
+            }
         return result
+
+    def _tuplet_note_for_output(
+        self, visual_id: str | None, record: dict[str, Any]
+    ) -> dict[str, Any]:
+        group = self.visual_groups.get(visual_id or "")
+        return {
+            "musicxml_id": group.musicxml_id if group is not None else None,
+            "visual_group_id": visual_id,
+            **record,
+        }
 
     def _shared_notehead_for_output(
         self, visual_id: str | None, record: SharedNoteheadRecord

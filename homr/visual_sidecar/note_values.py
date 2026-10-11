@@ -10,14 +10,19 @@ The notes of a chord share one stem, its flags or beams and its dots, so they ar
 together: the stem's direction comes from the outermost noteheads, and a dot printed
 beside any of them dots the chord.
 
-This is diagnostic only. A reading never changes the MusicXML or any note link; it is
-exported beside them so a consumer can show where the printed value and the recognized
-one disagree.
+A reading never changes the MusicXML or any note link by itself; it is exported beside
+them so a consumer can show where the printed value and the recognized one disagree. The
+tuplet repair in ``tuplet_repairs`` consults it: a beam group whose read values disagree
+with its tokens is not repaired, and the notes under a bracketed numeral take their
+printed values where the reader is sure of them.
 
 A single notehead that two voices share carries two stems, one rising from its right
 edge and one falling from its left, each with its own flags or beams. Those are read
 separately by ``read_shared_notehead``; the shared-notehead timing repair in
 ``timing_repairs`` relies on that reading.
+
+``stem_end`` and ``beamed_together`` find a chord's stem and whether a beam joins two
+stems; the tuplet repair groups notes by them.
 """
 
 import re
@@ -114,6 +119,14 @@ SHARED_STEM_WIDTH_TOLERANCE = 0.25
 SHARED_STEM_HALF_WIDTH = 0.3
 SHARED_STEM_HEAD_CLEARANCE = 0.8
 SHARED_STEM_END_CLEARANCE = 1.0
+#: A beam joining two stems runs along the straight line between their free ends: ink
+#: lies this far inside that line (towards the noteheads), within this window, across at
+#: least this share of the columns between the stems. Stems closer than the minimum gap
+#: are one stem read twice.
+BEAM_INSET = 0.25
+BEAM_WINDOW = 0.2
+BEAM_COVERAGE = 0.9
+BEAM_MIN_GAP = 0.5
 
 StaffLinesAtX = Callable[[Staff, float, int], Sequence[float]]
 
@@ -157,6 +170,18 @@ class SharedNoteheadReading:
     dotted: bool | None
     #: ``two_stems`` when the head carries both stems, otherwise why it does not.
     reason: str
+
+
+@dataclass(frozen=True)
+class StemEnd:
+    """A chord's one stem, in prediction pixels."""
+
+    x: float
+    #: The y of the stem's free end, where its flags or beams are.
+    free_end: float
+    up: bool
+    #: The staff space at the chord.
+    space: float
 
 
 def recognized_value(rhythm: str) -> tuple[str | None, bool]:
@@ -231,6 +256,9 @@ class NoteValueReader:
         self._clean: NDArray | None = None
         self._band_ink: NDArray | None = None
         self._dot_ink: NDArray | None = None
+        # The line fit is slow, and a chord is read more than once when the tuplet
+        # repair groups its notes before the sidecar reads every note's value.
+        self._lines_by_chord: dict[tuple[int, int, tuple[str, ...]], list[float] | str] = {}
 
     def read_chord(self, members: list[ChordMember], staff: Staff | None) -> list[NoteValueReading]:
         """Read one chord's printed value and compare it with each member's token."""
@@ -329,10 +357,51 @@ class NoteValueReader:
         x1 = int(stem_x + SHARED_STEM_HALF_WIDTH * unit) + 1
         return bool((self.masks.notehead[y0 : y1 + 1, x0:x1] > 0).any())
 
+    def stem_end(self, groups: list[VisualGroup], staff: Staff | None) -> StemEnd | None:
+        """The chord's one stem and its free end, or None when it has no single stem to
+        read: no stem, two voices' stems, or a stem too short to carry flags or beams."""
+        lines = self._staff_lines(groups, staff)
+        if isinstance(lines, str):
+            return None
+        unit = float(np.median(np.diff(lines)))
+        stem_x, _ = self._stem_x(groups, unit)
+        if stem_x is None:
+            return None
+        free = self._free_end(groups, stem_x, unit)
+        if free is None:
+            return None
+        free_end, nearest_head = free
+        return StemEnd(stem_x, free_end, free_end < nearest_head, unit)
+
+    def beamed_together(self, first: StemEnd, second: StemEnd) -> bool:
+        """Whether a straight beam joins the free ends of two stems, the first left of the
+        second, both pointing the same way. A beam's lines all run inside the line between
+        the free ends, so ink just inside it across nearly every column is a beam; a slur
+        or a gap between two flagged notes leaves most columns empty."""
+        if first.up != second.up or second.x - first.x < BEAM_MIN_GAP * first.space:
+            return False
+        ink = self._beam_ink()
+        inward = BEAM_INSET * first.space * (1 if first.up else -1)
+        window = BEAM_WINDOW * first.space
+        hits = total = 0
+        for x in range(int(round(first.x)) + 2, int(round(second.x)) - 1):
+            share = (x - first.x) / (second.x - first.x)
+            y = first.free_end + share * (second.free_end - first.free_end) + inward
+            y0, y1 = max(0, int(y - window)), int(y + window) + 1
+            total += 1
+            hits += bool(ink[y0:y1, x].any())
+        return total > 0 and hits >= BEAM_COVERAGE * total
+
     def _staff_lines(self, groups: list[VisualGroup], staff: Staff | None) -> list[float] | str:
         """The five line ys at the chord, or why the chord cannot be read."""
         if self.gray is None or self.masks is None or staff is None or not groups:
             return "no_segmentation"
+        key = (id(staff), groups[0].staff_index, tuple(sorted(g.visual_id for g in groups)))
+        if key not in self._lines_by_chord:
+            self._lines_by_chord[key] = self._fit_staff_lines(groups, staff)
+        return self._lines_by_chord[key]
+
+    def _fit_staff_lines(self, groups: list[VisualGroup], staff: Staff) -> list[float] | str:
         cx = float(np.mean([group.prediction_center[0] for group in groups]))
         try:
             lines = [float(y) for y in self.staff_lines_at_x(staff, cx, groups[0].staff_index)]

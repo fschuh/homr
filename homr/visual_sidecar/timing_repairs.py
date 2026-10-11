@@ -20,6 +20,24 @@ needing no repair already has.
 
 The repair needs the visual sidecar, which links tokens to noteheads. Without it, or
 when it is switched off, the writer behaves exactly as it would without this module.
+
+Printed time signatures
+-----------------------
+
+With the page's time signatures read (see ``time_signatures``), a time-signature token a
+trusted read lands on governs its section with the printed meter instead of the typical
+bar length of the section's bars. The meter in force at the end of the previous page of
+the score, when the caller passes it, governs the bars before the page's first time
+signature: it is written into the page's first measure without being printed, unless
+the page starts with a time signature of its own.
+
+The transformer also reads time signatures where none is printed, as where a key changes
+mid-piece. Under a trusted meter (read on the page or carried to it), a token with
+nothing shaped like a time signature printed near it is not written, and its bars keep
+the trusted meter. A token at a printed glyph that no read could make out ends the
+trusted meter instead: its section's meter is inferred, as without the reader. The meter
+in force at the page's end, for the next page, is the trusted one, or none once an
+inferred section starts.
 """
 
 import re
@@ -28,11 +46,14 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import TYPE_CHECKING, Protocol
 
+import musicxml.xmlelement.xmlelement as mxl
+
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar.note_values import SharedNoteheadReading
+from homr.visual_sidecar.time_signatures import NO_READ, Meter
 
 if TYPE_CHECKING:
-    from homr.music_xml_generator import SymbolChord
+    from homr.music_xml_generator import ConversionState, SymbolChord
 
 TIMING_REPAIRS_VERSION = 1
 
@@ -63,6 +84,14 @@ class SharedNoteheadSource(Protocol):
     def record_shared_notehead_timing(self, record: "SharedNoteheadRecord") -> None: ...
 
     def set_timing_repairs_enabled(self, enabled: bool) -> None: ...
+
+    def read_time_signature(self, symbol: EncodedSymbol) -> Meter | None: ...
+
+    def time_signature_status(self, symbol: EncodedSymbol) -> str | None: ...
+
+    def carried_meter(self) -> Meter | None: ...
+
+    def record_final_meter(self, meter: Meter | None) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -140,6 +169,11 @@ class TimingRepairs:
         self._accepted: dict[int, Fraction] = {}
         self._division, self._nominator = writer.find_division_and_time_signature_nominator(groups)
         self._sections = writer.time_signature_section_nominators(groups)
+        self._printed: dict[int, Fraction] = {}
+        self._ignored: set[int] = set()
+        self._carried: Meter | None = None
+        if source is not None:
+            self._follow_meters(source)
         if source is not None:
             source.set_timing_repairs_enabled(enabled)
         self._source = source if enabled else None
@@ -153,6 +187,56 @@ class TimingRepairs:
 
     def section_nominators(self) -> dict[int, Fraction]:
         return dict(self._sections)
+
+    def ignores(self, symbol: EncodedSymbol) -> bool:
+        """Whether a time-signature token is left unwritten: nothing is printed there."""
+        return id(symbol) in self._ignored
+
+    def restate_carried_meter(
+        self, attributes: mxl.XMLAttributes, state: "ConversionState"
+    ) -> None:
+        """Measures the page's first bars against the meter carried from the previous page,
+        and writes it, unprinted, into the first measure's attributes unless the page
+        starts with a time signature of its own."""
+        if self._carried is None:
+            return
+        beats, beat_type = self._carried
+        state.bar_length = Fraction(beats, beat_type)
+        if self._starts_with_time_signature():
+            return
+        time = mxl.XMLTime(print_object="no")
+        time.add_child(mxl.XMLBeats(value_=str(beats)))
+        time.add_child(mxl.XMLBeatType(value_=str(beat_type)))
+        attributes.add_child(time)
+        state.beats = beats
+
+    def _follow_meters(self, source: SharedNoteheadSource) -> None:
+        """Applies the printed and carried meters, and records the page's final one."""
+        trusted = self._carried = source.carried_meter()
+        for group in self._groups:
+            for symbol in group.symbols:
+                if not symbol.rhythm.startswith("timeSignature/"):
+                    continue
+                read = source.read_time_signature(symbol)
+                if read is not None:
+                    self._printed[id(symbol)] = Fraction(*read)
+                    trusted = read
+                elif trusted is not None and source.time_signature_status(symbol) == NO_READ:
+                    self._ignored.add(id(symbol))
+                else:
+                    trusted = None
+        self._sections.update(self._printed)
+        source.record_final_meter(trusted)
+
+    def _starts_with_time_signature(self) -> bool:
+        """Whether a written time signature comes before the voice's first note or rest."""
+        for group in self._groups:
+            for symbol in group.symbols:
+                if symbol.rhythm.startswith("timeSignature/") and not self.ignores(symbol):
+                    return True
+                if symbol.rhythm.startswith(("note", "rest")):
+                    return False
+        return False
 
     def lost_note_lengths(self, group: "SymbolChord") -> list[Fraction]:
         """How long the lost shorter notes of this group's applied repairs last.
@@ -235,13 +319,19 @@ class TimingRepairs:
             nominator = self._nominator
         sections = dict(self._sections)
         for key, length in sections_with.items():
+            if key in self._printed:
+                continue
             if length == self._sections.get(key) or length in unrepaired_by_section[key]:
                 sections[key] = length
 
         # The bar length each bar is written to, as the writer's conversion state has it.
         bar_length = nominator if nominator > 0 and (nominator * 8).denominator == 1 else None
+        if self._carried is not None:
+            bar_length = Fraction(*self._carried)
         for bar in bars:
             for time_signature in bar.time_signatures:
+                if id(time_signature) in self._ignored:
+                    continue
                 beat_type = int(time_signature.rhythm.split("/")[1])
                 typical = sections.get(id(time_signature), nominator)
                 bar_length = Fraction(max(int(typical * beat_type), 1), beat_type)

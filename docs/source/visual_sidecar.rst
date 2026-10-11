@@ -291,3 +291,110 @@ for every token whose notehead was read with two stems:
 
 The block is absent when the writer never ran with the sidecar, and holds an empty
 array with ``enabled: false`` when the repair was off.
+
+Printed time signatures
+-----------------------
+
+The transformer's time-signature token carries only the beat type
+(``timeSignature/4``), and the writer infers the beat count from the typical bar
+length of the bars the token governs. Missed tuplets make those bars too long, so the
+inferred meter goes wrong with them, as 4/4 written as 3/2.
+
+With ``--read-time-signatures`` (``XmlGeneratorArguments(read_time_signatures=True)``,
+which needs the visual sidecar), homr reads the time signatures printed on the page
+while the transformer runs: two stacked numbers inside the staff, common time or cut
+time, found in the page's ink with the staff lines taken out and read with OCR. A read
+is used only when every read of it agrees (each staff of its system, and two passes
+that take out the staff lines at their exact thickness and a pixel thicker), when its
+numbers are a meter (1 to 32 beats of 1, 2, 4, 8, 16 or 32), and when the transformer
+put a time-signature token with the same beat type within six staff spaces of it. The
+read meter then replaces the inferred beat count for the token's section.
+
+A caller writing a score page by page passes the meter the previous page ended in as
+``time_signature_from_previous_page``; ``ProcessingResult.time_signature_at_end``
+gives it for the next page. The bars before the page's first time signature are then
+measured against it, and it is written into the first measure with
+``print-object="no"``, unless the page starts with a time signature of its own.
+
+The transformer also reads time signatures where none is printed, as at a key change.
+Under a trusted meter (one read on the page or carried to it), a token with nothing
+shaped like a time signature printed near it is not written, and its bars keep the
+trusted meter. A token where something is printed that no read could make out ends
+the trusted meter: its section's beat count is inferred, as without the reader, and
+the page then ends in no trusted meter.
+
+Schema v3 then contains ``time_signatures`` with ``version: 1``:
+
+``carried_in`` and ``carried_out``
+   The meter passed in from the previous page and the trusted meter the page ends in,
+   each ``[beats, beat_type]`` or null.
+
+``tokens``
+   One record per time-signature token: ``point`` (where the transformer saw it, in
+   source pixels, or null), ``beat_type``, ``status`` and ``read``. ``status`` is
+   ``read`` (a trusted read lands on it), ``beat_type_differs`` (one lands on it with
+   another beat type), ``unread_glyph`` (something is printed there that no read made
+   out) or ``no_read`` (nothing shaped like a time signature is printed there).
+   ``read`` is the read that landed on it, or null.
+
+``unmatched_reads``
+   Trusted reads no token landed on. Each read, here and in ``tokens``, has
+   ``system_index``, ``x``, ``span`` (the system's top and bottom line), ``beats``,
+   ``beat_type`` and ``symbol`` (``common``, ``cut`` or null for numbers).
+
+The block is absent when the time signatures were not read.
+
+Tuplet repairs
+--------------
+
+The transformer often writes a tuplet's notes with their plain values and no ratio:
+six 16ths under one beam in a beat come out as six plain 16ths, and the bar runs long.
+With ``--repair-tuplets`` (``repair_tuplets=True``, which needs the time signatures
+read), the writer repairs such groups where the page shows them:
+
+* a beam joins the notes and their plain values add up to three, six or another
+  count of their smallest value that no plain values make. The group is then a
+  triplet; a beam alone implies no other ratio;
+* a bracketed numeral ("3", "5", "6" or "7") spans the notes, whose values, as printed
+  where the note-value reader is sure of them, add up to that many of their smallest
+  value. A numeral without its bracket is not read.
+
+A beam group is not repaired when a lone note an eighth or shorter stands next to it,
+when its stems are unevenly spaced (the widest gap more than 1.6 times the narrowest,
+or 2.2 times when its values differ), when a notehead of one of its chords lies more
+than a staff space off the chord's stem, when a printed value the reader is sure of
+disagrees with its token, or, in a compound meter, when it is a whole number of dotted
+beats, or it fills the whole bar.
+
+A bar's repairs apply together, and only under a trusted meter (read on the page or
+carried to it; never an inferred one), when every staff they touch falls short or
+overflows as recognized and adds up exactly with them, no staff ends further from the
+bar length, and at least three bars of the page under the same meter add up as the
+writer places them, each with its own repairs. A repaired note gets the tuplet's
+token, e.g. ``note_12`` for a triplet eighth, so the MusicXML writes its
+``time-modification``, and tuplet start and stop marks where the writer can bracket
+the group.
+
+Schema v3 then contains ``tuplet_repairs`` with ``version: 1``:
+
+``numerals``
+   The page's bracketed numerals: ``system_index``, ``x``, ``y``, ``number``,
+   ``above`` and ``bracket`` (the x of its two hooks), in source pixels.
+
+``groups``
+   The beam groups and numerals the repair weighed: ``source`` (``beam`` or
+   ``numeral``), ``bar`` (counted from the page's first bar), ``staff``, ``notes`` and
+   ``outcome``. ``candidate`` groups carry their ``ratio``. The others say why not:
+   ``lone_short_neighbour``, ``uneven_spacing``, ``head_off_stem``,
+   ``value_disagrees``, ``rest_or_single``, ``not_plain`` or ``units_differ``. Beam
+   groups whose values add up plainly, already a tuplet, or explained by the meter are
+   not listed.
+
+``notes``
+   One record per note of a candidate group: ``musicxml_id`` and ``visual_group_id``,
+   ``bar``, ``source``, ``recognized`` and ``repaired`` (the tokens), ``bar_length``,
+   ``applied``, and ``reason`` when not applied: ``no_trusted_meter``,
+   ``adds_up_as_recognized``, ``not_exact_with_repairs``, ``a_staff_gets_worse`` or
+   ``too_few_supporting_bars``.
+
+The block is absent when the repair did not run.

@@ -218,6 +218,9 @@ class ProcessingConfig:
 class ProcessingResult:
     musicxml_path: Path
     visual_sidecar_path: Path | None
+    # The trusted meter in force at the page's end, for the score's next page, when the
+    # page's time signatures were read; see homr.visual_sidecar.time_signatures.
+    time_signature_at_end: tuple[int, int] | None = None
 
 
 def process_image(
@@ -226,6 +229,8 @@ def process_image(
     xml_generator_args: XmlGeneratorArguments,
 ) -> ProcessingResult:
     eprint("Processing " + image_path)
+    if xml_generator_args.read_time_signatures and not config.write_visual_sidecar:
+        raise ValueError("Reading time signatures needs the visual sidecar")
     xml_file = replace_extension(image_path, ".musicxml")
     visual_sidecar_file: str | None = None
     debug_cleanup: Debug | None = None
@@ -291,6 +296,8 @@ def process_image(
             if config.write_visual_sidecar
             else None
         )
+        if visual_sidecar is not None:
+            visual_sidecar.start_meter_reads(image_path, multi_staffs, xml_generator_args)
         result_staffs = parse_staffs(
             debug,
             multi_staffs,
@@ -327,6 +334,9 @@ def process_image(
             musicxml_path=Path(xml_file).resolve(),
             visual_sidecar_path=(
                 Path(visual_sidecar_file).resolve() if visual_sidecar_file is not None else None
+            ),
+            time_signature_at_end=(
+                visual_sidecar.time_signature_at_end() if visual_sidecar is not None else None
             ),
         )
     except:
@@ -526,6 +536,19 @@ def main() -> None:
         + "start when the shorter voice's note ends. This writes them as recognized instead.",
     )
     parser.add_argument(
+        "--read-time-signatures",
+        action="store_true",
+        help="With --output-visual-sidecar, writes the time signature printed on the page "
+        + "instead of the one homr infers from the bar lengths.",
+    )
+    parser.add_argument(
+        "--repair-tuplets",
+        action="store_true",
+        help="With --read-time-signatures, writes as tuplets the notes the page shows are "
+        + "one: under a beam whose notes add up to a triplet, or a bracketed numeral, where "
+        + "the bar then adds up to its time signature.",
+    )
+    parser.add_argument(
         "--write-staff-positions",
         action="store_true",
         help="Writes the position of all detected staffs to a txt file.",
@@ -552,6 +575,10 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.read_time_signatures and not args.output_visual_sidecar:
+        parser.error("--read-time-signatures needs --output-visual-sidecar")
+    if args.repair_tuplets and not args.read_time_signatures:
+        parser.error("--repair-tuplets needs --read-time-signatures")
 
     force_gpu = args.gpu == GpuSupport.FORCE
     auto_gpu = args.gpu == GpuSupport.AUTO
@@ -588,6 +615,8 @@ def main() -> None:
         args.output_metronome,
         args.output_tempo,
         repair_shared_notehead_timing=not args.no_timing_repairs,
+        read_time_signatures=args.read_time_signatures,
+        repair_tuplets=args.repair_tuplets,
     )
     if args.debug:
         eprint(f"Using Log Level {2} for OnnxRuntime")
