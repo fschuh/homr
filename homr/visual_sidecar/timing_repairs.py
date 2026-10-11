@@ -9,14 +9,14 @@ every later note in the bar starts late and the bar overflows.
 
 Where the page shows a second stem with a shorter value than the token, the writer
 starts the next notes when that shorter value ends instead, as if the lost note were
-still sounding. Nothing else changes: no note is added, and the token keeps its value
-and its one notehead.
+still in its group. Nothing else changes: no note is added, and the token keeps its
+value and its one notehead.
 
 The page decides which note and which value; the bar only confirms. A bar's repairs
-are applied together, and only when the bar does not add up as recognized and adds up
-exactly to its time signature's bar length with them. That bar length is itself the
-typical bar length, so the repairs may change it only to a length that some bar
-needing no repair already has.
+are applied together, and only when the bar, placed as the writer places it (see
+``homr.bar_placement``), does not add up as recognized and adds up exactly to its time
+signature's bar length with them. That bar length is itself the typical bar length, so
+the repairs may change it only to a length that some bar needing no repair already has.
 
 The repair needs the visual sidecar, which links tokens to noteheads. Without it, or
 when it is switched off, the writer behaves exactly as it would without this module.
@@ -149,8 +149,9 @@ class TimingRepairs:
     """The shared-notehead repairs one voice gets, decided before it is written.
 
     The writer takes the division and typical bar lengths from here, adds the ends
-    from ``shared_notehead_ends`` to the sounding notes before placing each group, and
-    otherwise writes as usual.
+    from ``shared_notehead_ends`` to the sounding notes before placing each group, counts
+    the lengths from ``lost_note_lengths`` among each group's notes, and otherwise writes
+    as usual.
     """
 
     def __init__(
@@ -213,7 +214,7 @@ class TimingRepairs:
         if self._carried is None:
             return
         beats, beat_type = self._carried
-        state.bar_length = Fraction(beats, beat_type)
+        state.bar_length = state.trusted_bar_length = Fraction(beats, beat_type)
         if self._starts_with_time_signature():
             return
         time = mxl.XMLTime(print_object="no")
@@ -221,6 +222,11 @@ class TimingRepairs:
         time.add_child(mxl.XMLBeatType(value_=str(beat_type)))
         attributes.add_child(time)
         state.beats = beats
+
+    def trust_printed_meter(self, symbol: EncodedSymbol, state: "ConversionState") -> None:
+        """Trusts the bar length just written for a time-signature token where a trusted
+        read lands on it, and stops trusting any bar length where none does."""
+        state.trusted_bar_length = state.bar_length if id(symbol) in self._printed else None
 
     def _follow_meters(self, source: SharedNoteheadSource) -> None:
         """Applies the printed and carried meters, and records the page's final one."""
@@ -339,10 +345,12 @@ class TimingRepairs:
             if length == self._sections.get(key) or length in unrepaired_by_section[key]:
                 sections[key] = length
 
-        # The bar length each bar is written to, as the writer's conversion state has it.
+        # The bar length each bar is written to, and whether it is trusted, as the writer's
+        # conversion state has them; the bar is measured as the writer places it.
         bar_length = nominator if nominator > 0 and (nominator * 8).denominator == 1 else None
+        trusted: Fraction | None = None
         if self._carried is not None:
-            bar_length = Fraction(*self._carried)
+            bar_length = trusted = Fraction(*self._carried)
         for bar in bars:
             for time_signature in bar.time_signatures:
                 if id(time_signature) in self._ignored:
@@ -350,12 +358,13 @@ class TimingRepairs:
                 beat_type = int(time_signature.rhythm.split("/")[1])
                 typical = sections.get(id(time_signature), nominator)
                 bar_length = Fraction(max(int(typical * beat_type), 1), beat_type)
+                trusted = bar_length if id(time_signature) in self._printed else None
             if not bar.candidates:
                 continue
             caps = {key: self._candidates[key] for key in bar.candidates}
-            before = writer._bar_length_evidence(bar.chords)
-            after = writer._bar_length_evidence(
-                [chord + self._lost_notes(chord, caps) for chord in bar.chords]
+            before = writer._written_bar_length(bar.chords, trusted)
+            after = writer._written_bar_length(
+                [chord + self._lost_notes(chord, caps) for chord in bar.chords], trusted
             )
             if bar_length is None:
                 outcome = (DECLINED, "no_bar_length")

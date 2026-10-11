@@ -8,7 +8,12 @@ import musicxml.xmlelement.xmlelement as mxl
 import numpy as np
 
 from homr import constants
-from homr.bar_placement import BarPlacement
+from homr.bar_placement import (
+    EARLIEST_END,
+    BarPlacement,
+    after_shortest_advance,
+    placement_rule,
+)
 from homr.simple_logging import eprint
 from homr.transformer.vocabulary import (
     EncodedSymbol,
@@ -39,6 +44,9 @@ class ConversionState:
         self.bar_length: Fraction | None = (
             nominator if nominator > 0 and (nominator * 8).denominator == 1 else None
         )
+        # The bar length while the meter is trusted: read on the page or carried from the
+        # previous page. Only such a bar length can prove a bar placed by the earliest end.
+        self.trusted_bar_length: Fraction | None = None
         self.tremolo_state = "stop"
         self.volta_number = 1
         self.last_volta_measure = -10
@@ -206,10 +214,9 @@ def build_measures(
     visual_sidecar: "VisualSidecarBuilder | None" = None,
 ) -> list[mxl.XMLMeasure]:
     # Tokens say which notes start together, not when each group starts. A group starts
-    # when the earliest still-sounding note ends (that is how training data is grouped),
-    # so track the end times of sounding notes instead of only the last group's shortest note.
-    # A bar where one misread length would rush the rest falls back to the shortest note;
-    # see homr.bar_placement.
+    # when the shortest note of the group before ends, or, in a bar that proves it, when
+    # the earliest still-sounding note ends (that is how training data is grouped); see
+    # homr.bar_placement. Track the end times of sounding notes for the latter.
     clock = Fraction(0)
     sounding: list[Fraction] = []
 
@@ -271,7 +278,9 @@ def build_measures(
                         written, clock, part=part_number, measure=measure_number
                     )
                 )
-                advance = placement.advance(group_no, written, clock, sounding, state.bar_length)
+                advance = placement.advance(
+                    group_no, written, clock, sounding, state.trusted_bar_length
+                )
                 clock += advance
                 sounding = [end for end in sounding if end > clock]
                 for pos_no, staff_pos in enumerate(staff_positions):
@@ -299,6 +308,7 @@ def build_measures(
             attributes = build_or_get_attributes(current_measure, last_attributes)
             build_time_signature(symbol, attributes, state)
             timing_repairs.name_time_symbol(symbol, attributes)
+            timing_repairs.trust_printed_meter(symbol, state)
         elif "barline" in rhythm:
             if rhythm != "barline":
                 # Standard barlines don't need extra handling
@@ -347,17 +357,23 @@ def build_measures(
     return measures
 
 
-def _measure_length(chords: list[list[EncodedSymbol]]) -> Fraction:
-    """When the last note of a bar's chord groups ends, placing groups as build_measures does.
+def _measure_length(chords: list[list[EncodedSymbol]], rule: str = EARLIEST_END) -> Fraction:
+    """When the last note of a bar's chord groups ends, placing groups by ``rule``.
 
-    Summing each group's shortest note instead overstates every bar in which one hand moves
-    under a note the other hand holds, and the time signature's beat count is taken from
-    the typical bar length.
+    The typical bar length, from which a meter the page does not show gets its beat count,
+    is measured by the earliest end: summing each group's shortest note instead overstates
+    every bar in which one hand moves under a note the other hand holds. A misread length
+    can shorten a bar measured so, but such a meter never decides where a bar's groups
+    start; see homr.bar_placement.
     """
     clock = Fraction(0)
     sounding: list[Fraction] = []
     for chord in chords:
-        advance = _advance_to_next_group(SymbolChord(chord), clock, sounding)
+        group = SymbolChord(chord)
+        # Either way the group's notes are recorded as sounding, for where the bar ends.
+        advance = _advance_to_next_group(group, clock, sounding)
+        if rule != EARLIEST_END:
+            advance = after_shortest_advance(group)
         clock += advance
         sounding = [end for end in sounding if end > clock]
     return max([clock, *sounding])
@@ -442,6 +458,20 @@ def _bar_length_evidence(chords: list[list[EncodedSymbol]]) -> Fraction:
     lone = _lone_rest_staves(chords)
     kept = [[symbol for symbol in chord if symbol.position not in lone] for chord in chords]
     return _measure_length([chord for chord in kept if chord])
+
+
+def _written_bar_length(
+    chords: list[list[EncodedSymbol]], trusted_bar_length: Fraction | None
+) -> Fraction:
+    """The length a bar's content gives it as ``_bar_length_evidence`` measures it, but with
+    its groups placed as the writer places them under ``trusted_bar_length``: after the
+    shortest note, or by the earliest end where the bar proves that; see
+    homr.bar_placement."""
+    lone = _lone_rest_staves(chords)
+    kept = [[symbol for symbol in chord if symbol.position not in lone] for chord in chords]
+    kept = [chord for chord in kept if chord]
+    rule = placement_rule([SymbolChord(chord) for chord in kept], trusted_bar_length, {})
+    return _measure_length(kept, rule)
 
 
 def _advance_to_next_group(

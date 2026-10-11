@@ -9,26 +9,32 @@ from homr.bar_placement import (
     AFTER_SHORTEST,
     EARLIEST_END,
     BarPlacement,
-    after_shortest_adds_up,
     after_shortest_advance,
-    after_shortest_is_closer,
-    after_shortest_preferred,
-    earliest_end_stops_short,
+    earliest_end_preferred,
     staff_ends,
 )
 from homr.music_xml_generator import (
     SymbolChord,
     XmlGeneratorArguments,
+    _bar_length_evidence,
     _lone_rest_ids,
+    _written_bar_length,
     add_tuplet_start_stop,
     generate_xml,
     group_into_chords,
 )
 from homr.transformer.vocabulary import EncodedSymbol
+from homr.visual_sidecar.time_signatures import (
+    BEAT_TYPE_DIFFERS,
+    NO_READ,
+    READ,
+    UNREAD_GLYPH,
+)
 from homr.visual_sidecar.timing_repairs import TimingRepairs
 from tests.test_timing_repairs import (
     CLEAN_BAR,
     EIGHTH_OVER_16TH,
+    MeterSidecar,
     StubbedSidecar,
     butterfly_bar,
 )
@@ -81,6 +87,32 @@ PRINTED_ONSETS = sorted(
         ("2", "A2", 3.0),
         ("2", "C4", 3.5),
         ("2", "D3", 3.5),
+    ]
+)
+
+#: Bar 33 as printed, each group starting after the shortest note of the group before: the
+#: 16th starts when the bass's eighth ends instead of when the dotted eighth does, and every
+#: note after it a quarter beat late.
+PRINTED_BAR_LATE_ONSETS = sorted(
+    [
+        ("1", "F4", 0.0),
+        ("1", "C4", 0.0),
+        ("1", "A3", 0.0),
+        ("1", "C4", 1.75),
+        ("1", "F4", 2.25),
+        ("2", "D3", 0.0),
+        ("2", "D2", 0.0),
+        ("2", "F3", 0.5),
+        ("2", "D2", 1.0),
+        ("2", "B3", 1.25),
+        ("2", "rest", 1.25),
+        ("2", "D2", 1.75),
+        ("2", "D2", 2.25),
+        ("2", "F3", 2.75),
+        ("2", "B3", 3.25),
+        ("2", "A2", 3.25),
+        ("2", "C4", 3.75),
+        ("2", "D3", 3.75),
     ]
 )
 
@@ -163,8 +195,8 @@ CORRIDORS_BAR_26 = [
     "barline . . . . .",
 ]
 
-#: Bar 26 with each group starting after the shortest note of the group before, as the
-#: writer used to write it: the second chord a quarter beat late, the bar overflowing.
+#: Bar 26 with each group starting after the shortest note of the group before: the second
+#: chord a quarter beat late, the bar overflowing.
 BAR_26_SHIFTED_ONSETS = sorted(
     [
         *[("1", pitch, 0.0) for pitch in ("F4", "E4", "B4")],
@@ -186,8 +218,14 @@ BAR_26_SHIFTED_ONSETS = sorted(
 )
 
 
-def write(lines: list[str]) -> Any:
-    return generate_xml(XmlGeneratorArguments(), [read_token_lines(lines)], "")
+def write(lines: list[str], sidecar: MeterSidecar | None = None) -> Any:
+    return generate_xml(XmlGeneratorArguments(), [read_token_lines(lines)], "", sidecar)
+
+
+def read_meter(lines: list[str], meter: tuple[int, int] = (4, 4)) -> MeterSidecar:
+    """A sidecar that reads ``meter`` at every time signature of ``lines``: a trusted meter."""
+    count = sum(line.startswith("timeSignature") for line in lines)
+    return MeterSidecar([(meter, READ)] * count)
 
 
 def _measures(xml: Any) -> list[ET.Element]:
@@ -271,8 +309,34 @@ def first_timed_group(groups: list[SymbolChord]) -> int:
     return next(i for i, g in enumerate(groups) if g.symbols[0].rhythm.startswith("note"))
 
 
+#: A 2/4 bar whose quarter C5 shares its head with a 16th the transformer does not read,
+#: under which a second treble voice moves in eighths.
+LOST_16TH_BAR = [
+    "note_4 C5 _ _ _ upper&note_2 C3 _ _ _ lower",
+    "note_8 D5 _ _ _ upper",
+    "note_8 E5 _ _ _ upper",
+    "note_4 G5 _ _ _ upper",
+    "note_8 F5 _ _ _ upper",
+    "barline . . . . .",
+]
+
+
+#: Super Mario Bros' Ground Theme, a 2/2 bar as the transformer reads it: the bass holds a
+#: quarter under the treble's quarter chord.
+STAGGERED_BAR = [
+    "note_8 C5 _ _ _ upper&note_4 A2 _ _ _ lower",
+    "note_4 C5 _ _ _ upper",
+    "rest_8 _ _ _ _ lower",
+    "note_8 C5 _ _ _ upper&note_8 E3 _ _ _ lower",
+    "rest_8 _ _ _ _ upper&rest_4 _ _ _ _ lower",
+    "note_8 C5 _ _ _ upper",
+    "note_4 D5 _ _ _ upper&note_4 A3 _ _ _ lower",
+    "barline . . . . .",
+]
+
+
 class NoRepairs:
-    """Timing repairs with nothing applied, or with lost notes in the given groups."""
+    """Timing repairs with nothing applied, or with lost 16ths in the given groups."""
 
     def __init__(self, repaired: list[SymbolChord] | None = None) -> None:
         self.repaired = [id(group.symbols[0]) for group in repaired or []]
@@ -282,224 +346,184 @@ class NoRepairs:
 
 
 class TestBarPlacement(unittest.TestCase):
+    def test_without_a_trusted_meter_every_bar_is_placed_after_the_shortest_note(self) -> None:
+        """
+        The written 4/4 is inferred from the page's bars, so no bar can prove the
+        earliest-end placement: the printed bar overflows by a 16th, one late hiccup, and
+        the misread bar shifts its notes after the misread instead of rushing them.
+        """
+        xml = write([*GRAND_STAFF_IN_A, *corridors_bar("note_16"), *corridors_bar("note_32")])
+        self.assertEqual(onsets(xml, 0), PRINTED_BAR_LATE_ONSETS)
+        self.assertEqual(onsets(xml, 1), SHIFTED_ONSETS)
+
+    def test_a_bar_the_earliest_end_ends_on_a_trusted_meter_is_written_that_way(self) -> None:
+        lines = [*GRAND_STAFF_IN_A, *corridors_bar("note_16")]
+        self.assertEqual(onsets(write(lines, read_meter(lines))), PRINTED_ONSETS)
+
     def test_a_misread_that_would_rush_the_bar_moves_the_rest_a_little_instead(self) -> None:
         """
         With the 16th read as a 32nd, starting groups when the earliest note ends puts the
         next group off the beat; each later group then starts at whichever of two ends comes
-        first, so the bass rushes and stops at beat 2.5 while the chord holds to 4. Starting
-        each group after the shortest note before it leaves every staff closer to the bar's
-        end, so the bar is written that way: the notes after the misread start an eighth of a
-        beat late and keep their spacing.
+        first, so the bass rushes and stops at beat 2.5 while the chord holds to 4. That
+        does not end every staff on the trusted 4/4, so the bar is placed after the
+        shortest note: the notes after the misread start an eighth of a beat late and keep
+        their spacing.
         """
-        xml = write([*GRAND_STAFF_IN_A, *corridors_bar("note_32")])
-        self.assertEqual(onsets(xml), SHIFTED_ONSETS)
-
-    def test_a_bar_the_earliest_end_places_right_is_written_that_way(self) -> None:
-        xml = write([*GRAND_STAFF_IN_A, *corridors_bar("note_16")])
-        self.assertEqual(onsets(xml), PRINTED_ONSETS)
+        lines = [*GRAND_STAFF_IN_A, *corridors_bar("note_32")]
+        _, bars, lone = bars_of(lines)
+        earliest_end = staff_ends(bars[0], EARLIEST_END, Fraction(1), lone)
+        self.assertEqual(earliest_end, {"upper": Fraction(1), "lower": Fraction(5, 8)})
+        self.assertEqual(onsets(write(lines, read_meter(lines))), SHIFTED_ONSETS)
 
     def test_each_bar_is_placed_by_its_own_rule(self) -> None:
-        xml = write([*GRAND_STAFF_IN_A, *corridors_bar("note_32"), *corridors_bar("note_16")])
+        lines = [*GRAND_STAFF_IN_A, *corridors_bar("note_32"), *corridors_bar("note_16")]
+        xml = write(lines, read_meter(lines))
         self.assertEqual(onsets(xml, 0), SHIFTED_ONSETS)
         self.assertEqual(onsets(xml, 1), PRINTED_ONSETS)
-
-    def test_the_misread_bar_rushes_by_the_earliest_end(self) -> None:
-        """What the fallback avoids: the earliest-end placement of the misread bar."""
-        _, bars, lone = bars_of([*GRAND_STAFF_IN_A, *corridors_bar("note_32")])
-        bar = Fraction(1)
-        earliest_end = staff_ends(bars[0], EARLIEST_END, bar, lone)
-        after_shortest = staff_ends(bars[0], AFTER_SHORTEST, bar, lone)
-        self.assertEqual(earliest_end, {"upper": Fraction(1), "lower": Fraction(5, 8)})
-        self.assertEqual(after_shortest, {"upper": Fraction(1), "lower": Fraction(33, 32)})
-        self.assertTrue(after_shortest_is_closer(earliest_end, after_shortest, bar))
-
-    def test_closer_means_every_staff_at_least_as_close_and_one_closer(self) -> None:
-        bar = Fraction(1)
-        earliest = {"upper": Fraction(1), "lower": Fraction(1, 2)}
-        cases = [
-            ({"upper": Fraction(1), "lower": Fraction(1, 2)}, False),  # the same
-            ({"upper": Fraction(1), "lower": Fraction(3, 4)}, True),  # one closer
-            ({"upper": Fraction(9, 8), "lower": Fraction(1)}, False),  # one farther
-            ({"upper": Fraction(1), "lower": Fraction(5, 4)}, True),  # over by less than short
-            ({"upper": Fraction(1), "lower": Fraction(3, 2)}, False),  # over by as much
-            ({"upper": Fraction(1)}, False),  # different staves
-        ]
-        for after_shortest, closer in cases:
-            with self.subTest(after_shortest=after_shortest):
-                self.assertEqual(after_shortest_is_closer(earliest, after_shortest, bar), closer)
-        both_closer = {"upper": Fraction(7, 8), "lower": Fraction(1, 4)}
-        self.assertTrue(after_shortest_is_closer(both_closer, {"upper": bar, "lower": bar}, bar))
-        self.assertFalse(after_shortest_is_closer({}, {}, bar))
 
     def test_a_rushed_bar_whose_shift_ends_a_staff_just_past_the_barline_is_shifted(
         self,
     ) -> None:
         """
         Bar 25 has bar 33's misread, but the second half of its arpeggio is on the treble
-        staff. Starting groups after the shortest note then ends the treble an eighth of a
-        beat past the barline instead of on it, so that placement is not closer on every
-        staff. It does end both staves within an eighth note of the barline, where the
-        earliest-end placement stops the bass a beat and a half short, so the bar is written
-        after the shortest note.
+        staff. Starting groups after the shortest note then ends both staves a 32nd past
+        the barline, and the earliest-end placement stops the bass a beat and a half short.
         """
-        _, bars, lone = bars_of([*GRAND_STAFF_IN_A, *CORRIDORS_BAR_25])
+        lines = [*GRAND_STAFF_IN_A, *CORRIDORS_BAR_25]
+        _, bars, lone = bars_of(lines)
         bar = Fraction(1)
-        earliest_end = staff_ends(bars[0], EARLIEST_END, bar, lone)
-        after_shortest = staff_ends(bars[0], AFTER_SHORTEST, bar, lone)
-        self.assertEqual(earliest_end, {"upper": Fraction(1), "lower": Fraction(5, 8)})
-        self.assertEqual(after_shortest, {"upper": Fraction(33, 32), "lower": Fraction(33, 32)})
-        self.assertFalse(after_shortest_is_closer(earliest_end, after_shortest, bar))
-        self.assertTrue(after_shortest_adds_up(earliest_end, after_shortest, bar))
-        xml = write([*GRAND_STAFF_IN_A, *CORRIDORS_BAR_25])
-        self.assertEqual(onsets(xml), BAR_25_SHIFTED_ONSETS)
-
-    def test_adding_up_means_every_staff_within_an_eighth_where_the_earliest_end_is_not(
-        self,
-    ) -> None:
-        bar = Fraction(1)
-        rushed = {"upper": Fraction(1), "lower": Fraction(5, 8)}
-        nearly = {"upper": Fraction(1), "lower": Fraction(29, 32)}
-        cases = [
-            (
-                "both just past",
-                rushed,
-                {"upper": Fraction(33, 32), "lower": Fraction(33, 32)},
-                True,
-            ),
-            ("just short", rushed, nearly, True),
-            ("an eighth past", rushed, {"upper": Fraction(9, 8), "lower": Fraction(1)}, False),
-            ("an eighth short", rushed, {"upper": Fraction(1), "lower": Fraction(7, 8)}, False),
-            ("earliest end adds up", nearly, {"upper": Fraction(33, 32), "lower": bar}, False),
-            ("different staves", rushed, {"upper": bar}, False),
-            ("nothing measured", {}, {}, False),
-        ]
-        for name, earliest_end, after_shortest, adds_up in cases:
-            with self.subTest(case=name):
-                self.assertEqual(after_shortest_adds_up(earliest_end, after_shortest, bar), adds_up)
+        self.assertEqual(
+            staff_ends(bars[0], EARLIEST_END, bar, lone),
+            {"upper": Fraction(1), "lower": Fraction(5, 8)},
+        )
+        self.assertEqual(
+            staff_ends(bars[0], AFTER_SHORTEST, bar, lone),
+            {"upper": Fraction(33, 32), "lower": Fraction(33, 32)},
+        )
+        self.assertEqual(onsets(write(lines, read_meter(lines))), BAR_25_SHIFTED_ONSETS)
 
     def test_a_rushed_bar_whose_shift_overflows_is_shifted(self) -> None:
         """
         Bar 26 reads its dotted eighth as a plain eighth, and the earliest-end placement
         stops the bass an eighth note short. Starting groups after the shortest note moves
-        the second chord a quarter beat late and overflows both staves, so it is neither
-        closer on every staff nor within an eighth of the barline. It stops no staff short,
-        so the bar is written that way: it overflows, as the writer used to write it,
-        instead of rushing.
+        the second chord a quarter beat late and overflows both staves: a late hiccup
+        instead of a rush.
         """
-        _, bars, lone = bars_of([*GRAND_STAFF_IN_A, *CORRIDORS_BAR_26])
+        lines = [*GRAND_STAFF_IN_A, *CORRIDORS_BAR_26]
+        _, bars, lone = bars_of(lines)
         bar = Fraction(1)
-        earliest_end = staff_ends(bars[0], EARLIEST_END, bar, lone)
-        after_shortest = staff_ends(bars[0], AFTER_SHORTEST, bar, lone)
-        self.assertEqual(earliest_end, {"upper": Fraction(1), "lower": Fraction(7, 8)})
-        self.assertEqual(after_shortest, {"upper": Fraction(17, 16), "lower": Fraction(19, 16)})
-        self.assertFalse(after_shortest_is_closer(earliest_end, after_shortest, bar))
-        self.assertFalse(after_shortest_adds_up(earliest_end, after_shortest, bar))
-        self.assertTrue(earliest_end_stops_short(earliest_end, after_shortest, bar))
-        xml = write([*GRAND_STAFF_IN_A, *CORRIDORS_BAR_26])
-        self.assertEqual(onsets(xml), BAR_26_SHIFTED_ONSETS)
+        self.assertEqual(
+            staff_ends(bars[0], EARLIEST_END, bar, lone),
+            {"upper": Fraction(1), "lower": Fraction(7, 8)},
+        )
+        self.assertEqual(
+            staff_ends(bars[0], AFTER_SHORTEST, bar, lone),
+            {"upper": Fraction(17, 16), "lower": Fraction(19, 16)},
+        )
+        self.assertEqual(onsets(write(lines, read_meter(lines))), BAR_26_SHIFTED_ONSETS)
 
-    def test_stopping_short_means_an_eighth_or_more_where_the_other_stops_none_so(
+    def test_the_earliest_end_is_preferred_only_where_it_alone_ends_every_staff_on_the_bar(
         self,
     ) -> None:
         bar = Fraction(1)
+        on = {"upper": bar, "lower": bar}
         cases = [
-            (
-                "an eighth short",
-                {"upper": bar, "lower": Fraction(7, 8)},
-                {"upper": bar, "lower": Fraction(5, 4)},
-                True,
-            ),
-            (
-                "just under an eighth short",
-                {"upper": bar, "lower": Fraction(29, 32)},
-                {"upper": bar, "lower": Fraction(5, 4)},
-                False,
-            ),
-            (
-                "other just under an eighth short",
-                {"upper": bar, "lower": Fraction(1, 2)},
-                {"upper": bar, "lower": Fraction(29, 32)},
-                True,
-            ),
-            (
-                "other an eighth short",
-                {"upper": bar, "lower": Fraction(1, 2)},
-                {"upper": Fraction(7, 8), "lower": Fraction(5, 4)},
-                False,
-            ),
-            (
-                "overflowing is not short",
-                {"upper": Fraction(5, 4), "lower": Fraction(5, 4)},
-                {"upper": bar, "lower": bar},
-                False,
-            ),
-            ("different staves", {"upper": bar, "lower": Fraction(1, 2)}, {"upper": bar}, False),
+            ("the other overflows", on, {"upper": bar, "lower": Fraction(17, 16)}, True),
+            ("the other stops short", on, {"upper": Fraction(7, 8), "lower": bar}, True),
+            ("both end on it", on, on, False),
+            ("a staff stops short", {"upper": bar, "lower": Fraction(7, 8)}, {}, False),
+            ("a staff overflows", {"upper": bar, "lower": Fraction(9, 8)}, {}, False),
+            ("its only staff", {"upper": bar}, {"upper": Fraction(9, 8)}, True),
             ("nothing measured", {}, {}, False),
         ]
-        for name, earliest_end, after_shortest, stops_short in cases:
-            with self.subTest(case=name):
-                self.assertEqual(
-                    earliest_end_stops_short(earliest_end, after_shortest, bar), stops_short
-                )
-
-    def test_any_one_test_writes_the_bar_after_the_shortest_note(self) -> None:
-        bar = Fraction(1)
-        cases = [
-            # closer on every staff only: the earliest end overflows by more
-            ("closer", {"upper": Fraction(5, 4)}, {"upper": Fraction(9, 8)}, True),
-            # adds up only: the earliest end overflows, the other is just past on both
-            (
-                "adds up",
-                {"upper": bar, "lower": Fraction(5, 4)},
-                {"upper": Fraction(33, 32), "lower": Fraction(33, 32)},
-                True,
-            ),
-            # stops short only: the earliest end stops short, the other overflows more
-            (
-                "stops short",
-                {"upper": bar, "lower": Fraction(7, 8)},
-                {"upper": Fraction(17, 16), "lower": Fraction(19, 16)},
-                True,
-            ),
-            # none: the earliest end is on the barline, the other past it
-            ("none", {"upper": bar, "lower": bar}, {"upper": Fraction(9, 8), "lower": bar}, False),
-        ]
-        tests = (after_shortest_is_closer, after_shortest_adds_up, earliest_end_stops_short)
         for name, earliest_end, after_shortest, preferred in cases:
             with self.subTest(case=name):
-                holding = [t.__name__ for t in tests if t(earliest_end, after_shortest, bar)]
-                expected = {
-                    "closer": ["after_shortest_is_closer"],
-                    "adds up": ["after_shortest_adds_up"],
-                    "stops short": ["earliest_end_stops_short"],
-                    "none": [],
-                }[name]
-                self.assertEqual(holding, expected)
                 self.assertEqual(
-                    after_shortest_preferred(earliest_end, after_shortest, bar), preferred
+                    earliest_end_preferred(earliest_end, after_shortest, bar), preferred
                 )
 
-    def test_without_a_bar_length_the_earliest_end_is_kept(self) -> None:
-        groups, _, lone = bars_of([*GRAND_STAFF_IN_A, *corridors_bar("note_32")])
+    def test_only_a_read_or_carried_meter_is_trusted(self) -> None:
+        """The printed bar is placed by the earliest end exactly where its meter is trusted."""
+        printed = corridors_bar("note_16")
+        with_token = [*GRAND_STAFF_IN_A, *printed]
+        without_token = [*GRAND_STAFF_IN_A[:2], *printed]
+        cases = [
+            ("inferred", with_token, None, PRINTED_BAR_LATE_ONSETS),
+            ("read", with_token, MeterSidecar([((4, 4), READ)]), PRINTED_ONSETS),
+            (
+                "read with another beat type",
+                with_token,
+                MeterSidecar([(None, BEAT_TYPE_DIFFERS)]),
+                PRINTED_BAR_LATE_ONSETS,
+            ),
+            ("carried", without_token, MeterSidecar(carried=(4, 4)), PRINTED_ONSETS),
+            (
+                "carried past a token with nothing printed",
+                with_token,
+                MeterSidecar([(None, NO_READ)], carried=(4, 4)),
+                PRINTED_ONSETS,
+            ),
+            (
+                "carried up to a glyph no read made out",
+                with_token,
+                MeterSidecar([(None, UNREAD_GLYPH)], carried=(4, 4)),
+                PRINTED_BAR_LATE_ONSETS,
+            ),
+        ]
+        for name, lines, sidecar, expected in cases:
+            with self.subTest(meter=name):
+                self.assertEqual(onsets(write(lines, sidecar)), expected)
+
+    def test_without_a_trusted_bar_length_the_bar_is_placed_after_the_shortest_note(
+        self,
+    ) -> None:
+        groups, _, lone = bars_of([*GRAND_STAFF_IN_A, *corridors_bar("note_16")])
         first = first_timed_group(groups)
         repairs: Any = NoRepairs()
-        self.assertEqual(BarPlacement(groups, lone, repairs).rule(first, None), EARLIEST_END)
-        self.assertEqual(
-            BarPlacement(groups, lone, repairs).rule(first, Fraction(1)), AFTER_SHORTEST
-        )
+        self.assertEqual(BarPlacement(groups, lone, repairs).rule(first, None), AFTER_SHORTEST)
+        self.assertEqual(BarPlacement(groups, lone, repairs).rule(first, Fraction(1)), EARLIEST_END)
 
-    def test_a_bar_with_an_applied_shared_notehead_repair_keeps_the_earliest_end(self) -> None:
-        """The repair says when the notes after a shared head start, by the earliest end."""
-        groups, bars, lone = bars_of([*GRAND_STAFF_IN_A, *corridors_bar("note_32")])
+    def test_a_lost_shorter_note_counts_among_its_groups_notes_under_either_rule(
+        self,
+    ) -> None:
+        """
+        The second treble voice starts when the lost 16th ends. Counted, it ends the bar on
+        the barline by the earliest end, so the bar is placed that way; uncounted, neither
+        rule ends it there and it is placed after the shortest note.
+        """
+        lines = [*GRAND_STAFF_IN_A, *LOST_16TH_BAR]
+        groups, bars, lone = bars_of(lines)
         first = first_timed_group(groups)
-        repaired: Any = NoRepairs([bars[0][-1]])
+        repaired: Any = NoRepairs([groups[first]])
+        bar = Fraction(1, 2)
         self.assertEqual(
-            BarPlacement(groups, lone, repaired).rule(first, Fraction(1)), EARLIEST_END
+            staff_ends(bars[0], EARLIEST_END, bar, lone, repaired.lost_note_lengths),
+            {"upper": bar, "lower": bar},
         )
+        self.assertEqual(
+            staff_ends(bars[0], AFTER_SHORTEST, bar, lone, repaired.lost_note_lengths),
+            {"upper": Fraction(11, 16), "lower": bar},
+        )
+        self.assertEqual(
+            staff_ends(bars[0], EARLIEST_END, bar, lone),
+            {"upper": Fraction(7, 8), "lower": bar},
+        )
+        self.assertEqual(BarPlacement(groups, lone, repaired).rule(first, bar), EARLIEST_END)
         unrepaired: Any = NoRepairs()
-        self.assertEqual(
-            BarPlacement(groups, lone, unrepaired).rule(first, Fraction(1)), AFTER_SHORTEST
-        )
+        self.assertEqual(BarPlacement(groups, lone, unrepaired).rule(first, bar), AFTER_SHORTEST)
+
+    def test_a_bar_is_measured_whole_for_the_meter_and_as_written_for_repairs(self) -> None:
+        """
+        The typical bar length, which gives a guessed meter its beat count, takes the
+        staggered bar by the earliest end: one 2/2 bar. A shared-notehead repair is checked
+        against the bar as the writer places it: after the shortest note it overflows by
+        an eighth, unless a trusted 2/2 lets the earliest end prove the bar.
+        """
+        _, bars, _ = bars_of(STAGGERED_BAR)
+        chords = [group.symbols for group in bars[0]]
+        self.assertEqual(_bar_length_evidence(chords), Fraction(1))
+        self.assertEqual(_written_bar_length(chords, None), Fraction(9, 8))
+        self.assertEqual(_written_bar_length(chords, Fraction(1)), Fraction(1))
 
     def test_lost_note_lengths_are_the_applied_repairs_and_record_nothing(self) -> None:
         lines = [
@@ -524,7 +548,7 @@ class TestBarPlacement(unittest.TestCase):
         self.assertEqual([found for found in lengths if found], [[Fraction(1, 16)]] * 2)
         self.assertEqual(sidecar.state.shared_notehead_records, [])
 
-    def test_grace_notes_and_rests_in_the_shortest_note(self) -> None:
+    def test_grace_notes_rests_and_lost_notes_in_the_shortest_note(self) -> None:
         def chord(*rhythms: str) -> SymbolChord:
             return SymbolChord([EncodedSymbol(r, "C4", position="upper") for r in rhythms])
 
@@ -532,6 +556,12 @@ class TestBarPlacement(unittest.TestCase):
         self.assertEqual(after_shortest_advance(chord("note_8G")), Fraction(0))
         self.assertEqual(after_shortest_advance(chord("note_2", "rest_8")), Fraction(1, 8))
         self.assertEqual(after_shortest_advance(chord("note_12", "note_4")), Fraction(1, 12))
+        self.assertEqual(
+            after_shortest_advance(chord("note_4"), [Fraction(1, 16)]), Fraction(1, 16)
+        )
+        self.assertEqual(
+            after_shortest_advance(chord("note_16"), [Fraction(1, 8)]), Fraction(1, 16)
+        )
 
     def test_the_bar_is_measured_as_the_writer_writes_it(self) -> None:
         """The rule is chosen by where each staff ends; that must be where it ends written."""
@@ -571,14 +601,16 @@ class TestBarPlacement(unittest.TestCase):
         }
         multirest = ["rest_2m _ _ _ _ upper", "barline . . . . ."]
         for name, bar in bars.items():
-            with self.subTest(bar=name):
-                lines = [*GRAND_STAFF_IN_A, *bar, *multirest]
-                xml = write(lines)
-                groups, measured, lone = bars_of(lines)
-                bar_length = written_bar_length(xml)
-                placement = BarPlacement(groups, lone, NoRepairs())  # type: ignore[arg-type]
-                rule = placement.rule(first_timed_group(groups), bar_length)
-                self.assertEqual(
-                    staff_ends(measured[0], rule, bar_length, lone), written_staff_ends(xml)
-                )
-                self.assertEqual(staff_ends(measured[1], rule, bar_length, lone), {})
+            for trusted in (False, True):
+                with self.subTest(bar=name, trusted=trusted):
+                    lines = [*GRAND_STAFF_IN_A, *bar, *multirest]
+                    xml = write(lines, read_meter(lines) if trusted else None)
+                    groups, measured, lone = bars_of(lines)
+                    bar_length = written_bar_length(xml)
+                    placement = BarPlacement(groups, lone, NoRepairs())  # type: ignore[arg-type]
+                    trusted_length = bar_length if trusted else None
+                    rule = placement.rule(first_timed_group(groups), trusted_length)
+                    self.assertEqual(
+                        staff_ends(measured[0], rule, bar_length, lone), written_staff_ends(xml)
+                    )
+                    self.assertEqual(staff_ends(measured[1], rule, bar_length, lone), {})

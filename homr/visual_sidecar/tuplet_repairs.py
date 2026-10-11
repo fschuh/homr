@@ -29,7 +29,8 @@ A candidate is applied only where its bar proves it. The bar's length must come 
 trusted meter: one read on the page or carried from the previous page (see
 ``time_signatures`` and ``timing_repairs``), never one inferred from the bars, which
 missed tuplets make too long. A bar's candidates then apply together, and only when every
-staff they touch falls short or overflows as recognized and adds up exactly with them, no
+staff they touch falls short or overflows as recognized, placed either way (see
+``homr.bar_placement``), and adds up exactly with them as the writer places the bar, no
 staff ends further from the bar length, and at least MIN_SUPPORTING_BARS bars of the page
 under the same length add up as the writer places them, with their own candidates applied.
 Every candidate and what became of it is recorded in the sidecar.
@@ -494,7 +495,14 @@ def _refusal(
     repaired = [writer.SymbolChord([_with(s, here) for s in g.symbols], g.tuplet_mark) for g in bar]
     before = _written_ends(bar, length, lone_rests)
     after = _written_ends(repaired, length, lone_rests)
-    if not all(before.get(staff) != length for staff in touched):
+    # A staff that either placement of the notes as read ends on the bar length shows no
+    # missed tuplet, even where the writer places the bar the other way: there the staff
+    # is off only for how the other staff's groups start.
+    as_recognized = [
+        placement.staff_ends(bar, rule, length, lone_rests)
+        for rule in (placement.EARLIEST_END, placement.AFTER_SHORTEST)
+    ]
+    if any(ends.get(staff) == length for ends in as_recognized for staff in touched):
         return ADDS_UP_AS_RECOGNIZED
     if not all(after.get(staff) == length for staff in touched):
         return NOT_EXACT
@@ -511,13 +519,10 @@ def _refusal(
 def _written_ends(
     chords: list["SymbolChord"], length: Fraction, lone_rests: dict[int, Fraction]
 ) -> dict[str, Fraction]:
-    """Each staff's end as the writer places the bar: by the earliest end, or after the
-    shortest note where bar placement prefers that."""
-    earliest = placement.staff_ends(chords, placement.EARLIEST_END, length, lone_rests)
-    shortest = placement.staff_ends(chords, placement.AFTER_SHORTEST, length, lone_rests)
-    if placement.after_shortest_preferred(earliest, shortest, length):
-        return shortest
-    return earliest
+    """Each staff's end as the writer places the bar under the trusted bar length: after
+    the shortest note, or by the earliest end where that ends every staff on the length."""
+    rule = placement.placement_rule(chords, length, lone_rests)
+    return placement.staff_ends(chords, rule, length, lone_rests)
 
 
 def _bars(groups: list["SymbolChord"]) -> list[list["SymbolChord"]]:

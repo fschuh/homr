@@ -2,11 +2,13 @@
 
 import unittest
 from collections.abc import Iterable
+from fractions import Fraction
 from typing import Any
 
 import cv2
 import numpy as np
 
+from homr.bar_placement import AFTER_SHORTEST, EARLIEST_END, staff_ends
 from homr.music_xml_generator import (
     SymbolChord,
     add_tuplet_start_stop,
@@ -30,9 +32,11 @@ from homr.visual_sidecar.tuplet_repairs import (
     UNEVEN_SPACING,
     UNITS_DIFFER,
     VALUE_DISAGREES,
+    _written_ends,
     repair_tuplets,
     trusted_meters,
 )
+from tests.test_bar_placement import GRAND_STAFF_IN_A, bars_of, corridors_bar
 from training.transformer.training_vocabulary import read_token_lines
 
 #: Stems stand this far apart, one chord group after another; a staff space is SPACE.
@@ -250,6 +254,44 @@ class TestBeamGroups(unittest.TestCase):
         repair_tuplets(groups, page)
         self.assertEqual(reasons(page), {ADDS_UP_AS_RECOGNIZED})
 
+    def test_a_staff_that_adds_up_as_read_placed_either_way_is_not_repaired(self) -> None:
+        # By the earliest end only, as in Chopin's Op. 25 No. 7: three beamed 16ths and a
+        # 16th rest open the bass under a treble quarter, and later a bass dotted eighth
+        # outlasts the treble's eighth. A 32nd at the end leaves the treble past the
+        # barline, so the writer places the bar after the shortest note, which starts the
+        # bass's last 16th late: the bass is late for the treble's sake, not a triplet's.
+        by_the_earliest_end = [
+            up("note_4", "E5") + "&" + low("note_16", "C3"),
+            low("note_16", "D3"),
+            low("note_16", "E3"),
+            low("rest_16", "_"),
+            up("note_8", "F5") + "&" + up("note_8.", "A5") + "&" + low("note_8.", "G3"),
+            up("note_8", "G5"),
+            low("note_16", "A3"),
+            up("note_32", "B5"),
+        ]
+        # After the shortest note only: the bass's dotted eighth ends under the treble's
+        # second eighth, where the earliest end would start the third.
+        after_the_shortest_note = [
+            up("note_8", "C5") + "&" + low("note_8.", "G2"),
+            up("note_8", "D5"),
+            up("note_8", "E5") + "&" + low("note_4", "C3"),
+            up("rest_8", "_"),
+        ]
+        cases = [
+            ("by the earliest end", by_the_earliest_end, "lower", slice(7, 10)),
+            ("after the shortest note", after_the_shortest_note, "upper", slice(6, 9)),
+        ]
+        for name, bar, staff, candidates in cases:
+            with self.subTest(placed=name):
+                groups = voice(PLAIN, PLAIN, PLAIN, bar)
+                page = Page(groups, beams=[(staff, range(9, 12))], carried=(2, 4))
+                written = rhythms(repair_tuplets(groups, page))
+                self.assertEqual(written[candidates], rhythms(groups)[candidates])
+                self.assertNotIn("note_12", written)
+                self.assertNotIn("note_24", written)
+                self.assertEqual(reasons(page), {ADDS_UP_AS_RECOGNIZED})
+
     def test_a_bar_still_broken_with_the_repairs_is_not_repaired(self) -> None:
         bar = [up("note_8", p) for p in ("C5", "D5", "E5")] + [up("note_2", "F5")]
         groups = voice(PLAIN, PLAIN, PLAIN, bar)
@@ -364,6 +406,25 @@ class TestBeamGroups(unittest.TestCase):
         page = Page(groups, beams=[("upper", range(12, 15))], carried=(3, 8))
         repair_tuplets(groups, page)
         self.assertEqual(outcomes(page), [])
+
+
+class TestWrittenEnds(unittest.TestCase):
+    def test_bars_are_measured_as_the_writer_places_them_under_the_trusted_meter(
+        self,
+    ) -> None:
+        """By the earliest end where that alone ends every staff on the bar length, as the
+        printed bar of Corridors of Time does, else after the shortest note."""
+        bar = Fraction(1)
+        for name, sixteenth, rule in (
+            ("printed", "note_16", EARLIEST_END),
+            ("misread", "note_32", AFTER_SHORTEST),
+        ):
+            with self.subTest(bar=name):
+                _, bars, lone = bars_of([*GRAND_STAFF_IN_A, *corridors_bar(sixteenth)])
+                expected = staff_ends(bars[0], rule, bar, lone)
+                self.assertEqual(_written_ends(bars[0], bar, lone), expected)
+                other = AFTER_SHORTEST if rule == EARLIEST_END else EARLIEST_END
+                self.assertNotEqual(staff_ends(bars[0], other, bar, lone), expected)
 
 
 class TestTrustedMeters(unittest.TestCase):

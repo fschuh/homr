@@ -80,52 +80,49 @@ matched pages rose from 27 to 28, **with no page regressing**. See
 ### Note timing in MusicXML
 
 This also affects everyone. The transformer's tokens say which notes start
-together, not when. The MusicXML writer started each group after the shortest
-note it had just written, ignoring notes the other hand still held, so wherever
-one hand moved under a held note every later note started late: staves got gaps
-that score editors fill with rests the score does not have, and bars overflowed.
-Groups now start when the earliest sounding note ends.
+together, not when. The MusicXML writer starts each group after the shortest note
+it has just written. Wherever one hand moves under a note the other hand still
+holds, the notes after it start late and the bar overflows: one late hiccup, after
+which the notes keep their spacing.
 
-The same measurement now decides the time signature's beat count, separately for
-each meter section, without counting a staff whose only content in a bar is a
-rest. Such a rest is written as a measure rest filling the bar, whatever glyph
-was read. Only in a bar shorter than the meter, such as a pickup, does a rest that
-lasts as read exactly as long as the other staff keep its value. Symbols the
-transformer chords with notes, such as a barline, are no longer written as rests.
-On a 240-page corpus, bars with a staff gap or overflow fell from 1,740 to 1,371
-of 3,865, with no page regressing.
+Upstream homr starts each group when the earliest sounding note ends instead,
+which puts such hands on their beats but trusts every length. Where one note is
+read shorter than printed while the other hand holds a note, such as a bass 16th
+read as a 32nd under a whole-note chord, the next group starts off the beat. From
+there each group starts at whichever of two ends comes first: the rest of the bar
+rushes, and the staff falls silent before the barline. Pages read right rush too,
+where a staff holds three voices and an inner one ends before the melody does, as
+in Chopin's Op. 25 No. 3. So this fork places a bar by the earliest end only where
+the bar proves it: its meter is trusted, read on the page or carried from the
+previous page (see below), and that placement ends every staff exactly on the
+barline where starting after the shortest note does not. Every other bar is placed
+after the shortest note. A guessed meter proves nothing, so without
+`--read-time-signatures` every bar is placed that way. No note changes its value.
 
-Starting groups when the earliest note ends trusts every length, though. Where one
-note is read shorter than printed while the other hand holds a note, such as a bass
-16th read as a 32nd under a whole-note chord, the next group starts off the beat.
-From there each group starts at whichever of two ends comes first: the rest of the
-bar rushes, and the staff falls silent before the barline. The writer now places
-every bar both ways and keeps the earliest-end placement unless starting each group
-after the shortest note of the group before leaves every staff at least as close to
-the bar's length and one staff closer, ends every staff within an eighth note of it
-where the earliest-end placement does not, or stops no staff an eighth note or more
-short of it where the earliest-end placement stops one. Then the misread only moves
-the notes after it, and they keep their spacing; where that overflows the bar, it
-overflows as the writer used to instead of rushing. No note changes its value, and a
-bar with a shared-notehead repair (below) keeps the earliest-end placement.
+The time signature's beat count, when it is guessed, comes from the typical bar
+length, measured by the earliest end and separately for each meter section, without
+counting a staff whose only content in a bar is a rest. Such a rest is written as a
+measure rest filling the bar, whatever glyph was read. Only in a bar shorter than
+the meter, such as a pickup, does a rest that lasts as read exactly as long as the
+other staff keep its value. Symbols the transformer chords with notes, such as a
+barline, are no longer written as rests.
 
-On the corpus, with the visual sidecar, this places 97 bars of 18 pieces after the
-shortest note, each as the writer used to, and changes no other bar. Bars where a
-staff stops at least an eighth before the barline, and an eighth earlier than under
-the old rule alone, fell from 94 to 13. Bars with every staff within an eighth of the
-barline rose from 3,072 to 3,119 of 3,816, and no bar that ended exactly on it
-changed. Of the changed bars, 38 are in pieces with MIDI exports: in 30 the notes'
-offsets from the MIDI spread less within the bar. The other eight were checked note
-by note against the MIDI or the page; six keep the printed spacing where the earliest
-end rushed them, and two make one late jump and then keep it. In one of those two,
-Super Mario World's Ending Theme, the rushed version was the closer to the MIDI. The
-third test alone changes ten bars in pieces without MIDI exports; checked against the
-page, five now keep their spacing where they rushed, two are no better either way, and
-three in the Fantaisie-Impromptu were closer to the page as rushed. Two of those three
-are the same passage in two editions, where the missed left-hand sextuplets make the
-writer measure the bar at six beats instead of four. The changed bars match fewer MIDI onsets
-exactly, because the notes after a misread now start late instead of early and
-crowded.
+Measured against MuseScore scores of 26 pieces (1,943 bars; see below), bars as
+long as the score's rose from 1,192 to 1,230, and to 1,423 with
+`--read-time-signatures --repair-tuplets`. On the 240-page corpus, the pieces with
+such a score (1,548 bars) went from 894 to 962 and 1,080. No bar on the MuseScore
+pages ends earlier than before; with the options, one note starts a 32nd early,
+where a double-dotted note is read as dotted, in a bar that still ends on its
+barline. On the corpus two bars end earlier. In one the comparison errs: aligned by
+pitch, a repeated figure matches the bar before, and the bar is right. In the other,
+two bars merged by a lost barline no longer stall five beats on a rest read where
+none is printed, and end half a beat short where two eighths are read as triplets.
+Three bars end later than before (one with the options): two where a staff holding
+only a rest fills a guessed meter longer than the bar, and one where a chord the
+transformer merged is split again. On the rest of the corpus and on 131 video-game
+pages, every bar that starts a note earlier than before ends exactly on the meter
+printed for it, here or on an earlier page, except one bar on a page where none is
+read, which now fills its guessed 6/8 evenly.
 
 ### Notes after a shared notehead
 
@@ -138,20 +135,21 @@ overflowed; in Chopin's Op. 25 No. 9, 38 of 51 bars did.
 With `--output-visual-sidecar`, homr now reads both stems of such a head on the
 page. Where one carries a shorter value than the token, the notes after the head
 start when that shorter value ends, as printed. No note is added and none changes
-its value. A bar's repairs are applied together, and only when the bar overflows
-or falls short as recognized and adds up exactly to its time signature with
-them. Tuplets are not read, so where the shorter note is an unmarked triplet the
+its value. A bar's repairs are applied together, and only when the bar, placed as
+it is written (see above), overflows or falls short as recognized and adds up
+exactly to its time signature with them. Tuplets are not read, so where the shorter note is an unmarked triplet the
 notes after it start after a plain eighth, as the transformer reads the rest of
 that run. Each shared notehead and what became of it is recorded in the sidecar.
 `--no-timing-repairs` turns this off.
 
-On the 240-page corpus this changed 10 pages of 5 pieces. The 119 repairs were
-each checked against the page: every one sits on a shared notehead, and the next
-notes now start after the value printed on its shorter stem. Bars in which a
-staff runs past the time signature fell from 654 to 600, and no page gained a
-bar that runs over or falls short. On 131 engraved pages with MIDI exports of
-their source files, the 5 affected bars now start every note where the MIDI
-does, from 14–42% of notes before, and no note in any other bar moved.
+On the 240-page corpus this changes 13 pages of 8 pieces. The 124 repairs were
+each checked against the page: every one sits on a shared notehead, and in all but
+one the next notes now start after the value printed on its shorter stem. That one
+reads a triplet eighth's stem as a 16th, and its bar's bass ends a 16th early. Bars
+in which a staff runs past the time signature fall from 1,022 to 968 of 3,885, and
+no other page gains a bar that runs over or falls short. On 131 engraved pages with
+MIDI exports of their source files, the 5 affected bars now start every note where
+the MIDI does, from 14–42% of notes before, and no note in any other bar moved.
 
 ### Printed time signatures and tuplets
 
@@ -162,7 +160,7 @@ MuseScore scores, a quarter of the notes were written that way. Most such groups
 print no numeral, and the long bars throw off the meter too. The transformer's
 time-signature token holds only the bottom number, so the writer guesses the top
 one from the bar lengths: 4/4 written as 3/2. Every page guesses its own, so
-18% of bars were written under the wrong meter in the joined score, and 28.5% page by
+18% of bars were written under the wrong meter in the joined score, and 32.6% page by
 page.
 
 With `--read-time-signatures` (and `--output-visual-sidecar`), homr reads the time
@@ -180,30 +178,29 @@ one. A group under one beam whose plain values add up to three, six or another c
 of its smallest value that plain values cannot make is a triplet. The notes under a
 bracketed "3", "5", "6" or "7" take its ratio. A bar's repairs apply only under a
 printed or carried time signature, never a guessed one. The staves they touch must
-fall short or overflow as read and add up exactly with them, no staff may end further
-off, and at least three bars of the page must add up to the same length. A beam group
-is left alone when anything on the page says it may be something else: a lone short
-note beside it, uneven spacing, a notehead off its stem, or a printed value that
-disagrees with its token. Each time signature and tuplet, and what became of it, is
-recorded in the sidecar.
+fall short or overflow as read, whether groups start after the shortest note or when
+the earliest note ends, and add up exactly with them as the bar is written. No staff
+may end further off, and at least three bars of the page must add up to the same
+length. A beam group is left alone when anything on the page says it may be something
+else: a lone short note beside it, uneven spacing, a notehead off its stem, or a
+printed value that disagrees with its token. Each time signature and tuplet, and what
+became of it, is recorded in the sidecar.
 
 Both options are off unless asked for. On the 26 pieces (123 pages, each page starting
 in the meter the page before ended in):
 
 - Bars written under the wrong meter fell from 18.0% to 0.5% in the joined score, and
-  from 28.5% to 2.0% page by page. The first page wrote the printed meter in 25 pieces
+  from 32.6% to 2.0% page by page. The first page wrote the printed meter in 25 pieces
   instead of 19.
 - Notes with the score's exact duration rose from 73.0% to 79.9%, and notes missing
   their tuplet fell from 25.4% to 18.5%.
 - Every one of the 2,727 repaired notes the score could judge now has the score's
   value; none was repaired wrongly.
-- Measured bar by bar against the scores, 112 staff-bars got better and one got worse:
-  a garbled bar of Chopin's Nocturne Op. 9 No. 2 that bar placement writes differently
-  under the true meter.
+- Measured bar by bar against the scores, 127 staff-bars got better and none got worse.
 
-On 131 pages of 70 video-game pieces with MIDI exports, 26 repaired notes now start
-where the MIDI does, and none moved away from it; the MIDI agrees with 165 more either
-way and cannot judge the other 19. On the 240-page corpus, 2,872 notes on 33 pages were
+On 131 pages of 70 video-game pieces with MIDI exports, 98 repaired notes now start
+where the MIDI does, and none moved away from it; the MIDI agrees with 95 more either
+way and cannot judge the other 17. On the 240-page corpus, 2,896 notes on 33 pages were
 repaired; in a sample checked against the page every repair was right but one run that
 the page leaves unclear. With the options off, the MusicXML is unchanged on all of
 these pages. The rules were found on these same pieces, so on music not yet checked
