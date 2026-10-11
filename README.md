@@ -151,6 +151,65 @@ bar that runs over or falls short. On 131 engraved pages with MIDI exports of
 their source files, the 5 affected bars now start every note where the MIDI
 does, from 14–42% of notes before, and no note in any other bar moved.
 
+### Printed time signatures and tuplets
+
+On classical pages the largest duration error is a missed tuplet: the transformer
+writes a tuplet's notes with their plain values and no ratio, so six 16ths under one
+beam in a beat become six plain 16ths and the bar runs long. On 26 pieces with exact
+MuseScore scores, a quarter of the notes were written that way. Most such groups
+print no numeral, and the long bars throw off the meter too. The transformer's
+time-signature token holds only the bottom number, so the writer guesses the top
+one from the bar lengths: 4/4 written as 3/2. Every page guesses its own, so
+18% of bars were written under the wrong meter in the joined score, and 28.5% page by
+page.
+
+With `--read-time-signatures` (and `--output-visual-sidecar`), homr reads the time
+signature printed on the page, as two stacked numbers, common time or cut time, and
+writes it instead of the guess. A read counts only when every staff of the system and
+two passes over the page agree, and when the transformer saw a time signature with
+the same bottom number there. A program that runs homr page by page can pass the
+meter each page ends in (`ProcessingResult.time_signature_at_end`) on to the next
+(`XmlGeneratorArguments(time_signature_from_previous_page=...)`), which then starts in
+it and restates it unprinted. A time signature the transformer reads where nothing is
+printed, as at a key change, is left out.
+
+With `--repair-tuplets` as well, notes the page shows are a tuplet are written as
+one. A group under one beam whose plain values add up to three, six or another count
+of its smallest value that plain values cannot make is a triplet. The notes under a
+bracketed "3", "5", "6" or "7" take its ratio. A bar's repairs apply only under a
+printed or carried time signature, never a guessed one. The staves they touch must
+fall short or overflow as read and add up exactly with them, no staff may end further
+off, and at least three bars of the page must add up to the same length. A beam group
+is left alone when anything on the page says it may be something else: a lone short
+note beside it, uneven spacing, a notehead off its stem, or a printed value that
+disagrees with its token. Each time signature and tuplet, and what became of it, is
+recorded in the sidecar.
+
+Both options are off unless asked for. On the 26 pieces (123 pages, each page starting
+in the meter the page before ended in):
+
+- Bars written under the wrong meter fell from 18.0% to 0.5% in the joined score, and
+  from 28.5% to 2.0% page by page. The first page wrote the printed meter in 25 pieces
+  instead of 19.
+- Notes with the score's exact duration rose from 73.0% to 79.9%, and notes missing
+  their tuplet fell from 25.4% to 18.5%.
+- Every one of the 2,727 repaired notes the score could judge now has the score's
+  value; none was repaired wrongly.
+- Measured bar by bar against the scores, 112 staff-bars got better and one got worse:
+  a garbled bar of Chopin's Nocturne Op. 9 No. 2 that bar placement writes differently
+  under the true meter.
+
+On 131 pages of 70 video-game pieces with MIDI exports, 26 repaired notes now start
+where the MIDI does, and none moved away from it; the MIDI agrees with 165 more either
+way and cannot judge the other 19. On the 240-page corpus, 2,872 notes on 33 pages were
+repaired; in a sample checked against the page every repair was right but one run that
+the page leaves unclear. With the options off, the MusicXML is unchanged on all of
+these pages. The rules were found on these same pieces, so on music not yet checked
+some repairs may still be wrong.
+
+The page is read while the transformer runs. Together the two options add about 1.5 s
+to a page, 8% of its time, measured on 30 pages processed one at a time with a GPU.
+
 ### Printed metronome marks
 
 The transformer reads the staff, not the text above it, so homr's MusicXML had no
