@@ -227,6 +227,15 @@ class TestLinks(unittest.TestCase):
         self.assertEqual([tied.status_of(i) for i in (1, 2, 3)], [UNREAD_GLYPH, NO_READ, NO_READ])
         self.assertIsNone(tied.meter_of(1))
 
+    def test_a_symbol_is_reported_only_from_a_read_that_lands(self) -> None:
+        common = TimeSignatureRead(0, 300.0, float(SPACE), (100.0, 180.0), 4, 4, "common")
+        cut = TimeSignatureRead(0, 500.0, float(SPACE), (100.0, 180.0), 2, 2, "cut")
+        tied = links([common, cut, read(700, 3, 4)])
+        tied.add_token(1, (300.0, 140.0), 4)
+        tied.add_token(2, (500.0, 140.0), 4)  # cut time read where the token says quarters
+        tied.add_token(3, (700.0, 140.0), 4)
+        self.assertEqual([tied.symbol_of(i) for i in (1, 2, 3, 4)], ["common", None, None, None])
+
     def test_a_read_with_another_beat_type_is_not_used(self) -> None:
         tied = links([read(300, 6, 8)])
         tied.add_token(1, (300.0, 140.0), 4)

@@ -298,6 +298,7 @@ def build_measures(
         elif rhythm.startswith("timeSignature"):
             attributes = build_or_get_attributes(current_measure, last_attributes)
             build_time_signature(symbol, attributes, state)
+            timing_repairs.name_time_symbol(symbol, attributes)
         elif "barline" in rhythm:
             if rhythm != "barline":
                 # Standard barlines don't need extra handling

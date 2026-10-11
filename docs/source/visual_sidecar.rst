@@ -308,7 +308,8 @@ is used only when every read of it agrees (each staff of its system, and two pas
 that take out the staff lines at their exact thickness and a pixel thicker), when its
 numbers are a meter (1 to 32 beats of 1, 2, 4, 8, 16 or 32), and when the transformer
 put a time-signature token with the same beat type within six staff spaces of it. The
-read meter then replaces the inferred beat count for the token's section.
+read meter then replaces the inferred beat count for the token's section, and common and
+cut time are written as their symbols (``<time symbol="common">`` and ``symbol="cut"``).
 
 A caller writing a score page by page passes the meter the previous page ended in as
 ``time_signature_from_previous_page``; ``ProcessingResult.time_signature_at_end``

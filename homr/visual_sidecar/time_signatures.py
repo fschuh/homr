@@ -629,6 +629,13 @@ class TimeSignatureLinks:
             return None
         return record.read.beats, record.read.beat_type
 
+    def symbol_of(self, symbol_id: int) -> str | None:
+        """The printed symbol, "common" or "cut", of a token a trusted read of one lands on."""
+        if self.meter_of(symbol_id) is None:
+            return None
+        record = self._decided[symbol_id]
+        return record.read.symbol if record.read is not None else None
+
     def _decide(self) -> None:
         """Ties every token not yet decided to the nearest read no token holds yet."""
         if self._reads is None:

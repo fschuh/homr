@@ -165,7 +165,7 @@ page.
 
 With `--read-time-signatures` (and `--output-visual-sidecar`), homr reads the time
 signature printed on the page, as two stacked numbers, common time or cut time, and
-writes it instead of the guess. A read counts only when every staff of the system and
+writes it instead of the guess; common and cut time keep their symbols. A read counts only when every staff of the system and
 two passes over the page agree, and when the transformer saw a time signature with
 the same bottom number there. A program that runs homr page by page can pass the
 meter each page ends in (`ProcessingResult.time_signature_at_end`) on to the next

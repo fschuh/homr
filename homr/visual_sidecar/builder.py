@@ -645,6 +645,10 @@ class VisualSidecarBuilder:
         """The printed meter of a time-signature token, when a trusted read lands on it."""
         return self.time_signatures.meter_of(symbol.visual_match_id)
 
+    def printed_time_symbol(self, symbol: EncodedSymbol) -> str | None:
+        """ "common" or "cut" where the token's trusted read is that symbol, else None."""
+        return self.time_signatures.symbol_of(symbol.visual_match_id)
+
     def _add_time_signature_tokens(
         self, symbols: list[EncodedSymbol], canvas_transform: StaffCanvasTransform | None
     ) -> None:

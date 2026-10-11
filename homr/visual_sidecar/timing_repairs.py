@@ -87,6 +87,8 @@ class SharedNoteheadSource(Protocol):
 
     def read_time_signature(self, symbol: EncodedSymbol) -> Meter | None: ...
 
+    def printed_time_symbol(self, symbol: EncodedSymbol) -> str | None: ...
+
     def time_signature_status(self, symbol: EncodedSymbol) -> str | None: ...
 
     def carried_meter(self) -> Meter | None: ...
@@ -170,6 +172,7 @@ class TimingRepairs:
         self._division, self._nominator = writer.find_division_and_time_signature_nominator(groups)
         self._sections = writer.time_signature_section_nominators(groups)
         self._printed: dict[int, Fraction] = {}
+        self._printed_symbols: dict[int, str] = {}
         self._ignored: set[int] = set()
         self._carried: Meter | None = None
         if source is not None:
@@ -191,6 +194,15 @@ class TimingRepairs:
     def ignores(self, symbol: EncodedSymbol) -> bool:
         """Whether a time-signature token is left unwritten: nothing is printed there."""
         return id(symbol) in self._ignored
+
+    def name_time_symbol(self, symbol: EncodedSymbol, attributes: mxl.XMLAttributes) -> None:
+        """Writes the time signature just written for this token as common or cut time where
+        the page prints that symbol."""
+        printed_symbol = self._printed_symbols.get(id(symbol))
+        if printed_symbol is None:
+            return
+        times = [child for child in attributes.get_children() if isinstance(child, mxl.XMLTime)]
+        times[-1].symbol = printed_symbol
 
     def restate_carried_meter(
         self, attributes: mxl.XMLAttributes, state: "ConversionState"
@@ -220,6 +232,9 @@ class TimingRepairs:
                 read = source.read_time_signature(symbol)
                 if read is not None:
                     self._printed[id(symbol)] = Fraction(*read)
+                    printed_symbol = source.printed_time_symbol(symbol)
+                    if printed_symbol is not None:
+                        self._printed_symbols[id(symbol)] = printed_symbol
                     trusted = read
                 elif trusted is not None and source.time_signature_status(symbol) == NO_READ:
                     self._ignored.add(id(symbol))
