@@ -159,6 +159,7 @@ class TimingRepairs:
         groups: list["SymbolChord"],
         source: SharedNoteheadSource | None,
         enabled: bool = True,
+        guess_meter_per_section: bool = False,
     ) -> None:
         from homr import (  # noqa: PLC0415 - it imports this module
             music_xml_generator as writer,
@@ -166,12 +167,12 @@ class TimingRepairs:
 
         self._writer = writer
         self._groups = groups
+        self._per_section = guess_meter_per_section
         self._readings: dict[int, SharedNoteheadReading] = {}
         self._candidates: dict[int, Fraction] = {}
         self._outcomes: dict[int, tuple[str, str]] = {}
         self._accepted: dict[int, Fraction] = {}
-        self._division, self._nominator = writer.find_division_and_time_signature_nominator(groups)
-        self._sections = writer.time_signature_section_nominators(groups)
+        self._division, self._nominator, self._sections = self._guess_meter(groups)
         self._printed: dict[int, Fraction] = {}
         self._printed_symbols: dict[int, str] = {}
         self._ignored: set[int] = set()
@@ -249,6 +250,28 @@ class TimingRepairs:
         self._sections.update(self._printed)
         source.record_final_meter(trusted)
 
+    def _guess_meter(
+        self, groups: list["SymbolChord"]
+    ) -> tuple[int, Fraction, dict[int, Fraction]]:
+        """The division, the typical bar length, and with ``guess_meter_per_section`` the
+        typical bar length of each time signature's section, as the writer guesses them."""
+        division, nominator = self._writer.find_division_and_time_signature_nominator(groups)
+        if not self._per_section:
+            return division, nominator, {}
+        return (
+            division,
+            self._writer.sounding_time_signature_nominator(groups),
+            self._writer.time_signature_section_nominators(groups),
+        )
+
+    def _typical_length_of(self, chords: list[list[EncodedSymbol]]) -> Fraction:
+        """A bar's length as ``_guess_meter`` measures it for the typical bar length."""
+        if self._per_section:
+            return self._writer._bar_length_evidence(chords)
+        return sum(
+            (self._writer.SymbolChord(chord).get_duration() for chord in chords), Fraction(0)
+        )
+
     def _starts_with_time_signature(self) -> bool:
         """Whether a written time signature comes before the voice's first note or rest."""
         for group in self._groups:
@@ -322,8 +345,7 @@ class TimingRepairs:
         writer = self._writer
         bars = self._bars()
         with_candidates = self._measured(self._candidates)
-        _, nominator = writer.find_division_and_time_signature_nominator(with_candidates)
-        sections_with = writer.time_signature_section_nominators(with_candidates)
+        _, nominator, sections_with = self._guess_meter(with_candidates)
 
         # Lengths of the bars no repair touches: a typical length the repairs produce
         # must be one of these, or the repairs would be confirming a meter they made.
@@ -332,7 +354,7 @@ class TimingRepairs:
         for bar in bars:
             if bar.candidates:
                 continue
-            length = writer._bar_length_evidence(bar.chords)
+            length = self._typical_length_of(bar.chords)
             if length > 0:
                 unrepaired.add(length)
                 unrepaired_by_section[bar.section].add(length)

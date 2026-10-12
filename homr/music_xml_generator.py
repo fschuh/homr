@@ -141,12 +141,15 @@ class XmlGeneratorArguments:
         read_time_signatures: bool = False,
         repair_tuplets: bool = False,
         time_signature_from_previous_page: tuple[int, int] | None = None,
+        guess_meter_per_section: bool = False,
     ):
         self.large_page = large_page
         self.metronome = metronome
         self.tempo = tempo
         # Needs the visual sidecar; see homr.visual_sidecar.timing_repairs.
         self.repair_shared_notehead_timing = repair_shared_notehead_timing
+        # See sounding_time_signature_nominator and time_signature_section_nominators.
+        self.guess_meter_per_section = guess_meter_per_section
         # These need the visual sidecar too; see homr.visual_sidecar.time_signatures and
         # homr.visual_sidecar.tuplet_repairs.
         validate_meter_options(
@@ -233,7 +236,12 @@ def build_measures(
     groups = split_mixed_chords(add_tuplet_start_stop(group_into_chords(voice)))
     if args.repair_tuplets and visual_sidecar is not None:
         groups = repair_tuplets(groups, visual_sidecar)
-    timing_repairs = TimingRepairs(groups, visual_sidecar, args.repair_shared_notehead_timing)
+    timing_repairs = TimingRepairs(
+        groups,
+        visual_sidecar,
+        args.repair_shared_notehead_timing,
+        guess_meter_per_section=args.guess_meter_per_section,
+    )
     division, nominator = timing_repairs.division_and_nominator()
     state = ConversionState(division, nominator)
     state.section_nominators = timing_repairs.section_nominators()
@@ -362,11 +370,11 @@ def build_measures(
 def _measure_length(chords: list[list[EncodedSymbol]], rule: str = EARLIEST_END) -> Fraction:
     """When the last note of a bar's chord groups ends, placing groups by ``rule``.
 
-    The typical bar length, from which a meter the page does not show gets its beat count,
-    is measured by the earliest end: summing each group's shortest note instead overstates
-    every bar in which one hand moves under a note the other hand holds. A misread length
-    can shorten a bar measured so, but such a meter never decides where a bar's groups
-    start; see homr.bar_placement.
+    With guess_meter_per_section, the typical bar length from which a meter the page does
+    not show gets its beat count is measured by the earliest end: summing each group's
+    shortest note overstates every bar in which one hand moves under a note the other
+    hand holds. A misread length can shorten a bar measured so, but such a meter never
+    decides where a bar's groups start; see homr.bar_placement.
     """
     clock = Fraction(0)
     sounding: list[Fraction] = []
@@ -1084,14 +1092,12 @@ def find_common_division(durations: list[Fraction]) -> int:
 
 def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tuple[int, Fraction]:
     durations = [Fraction(1, 4)]
-    measure_chords: list[list[EncodedSymbol]] = []
+    duration_in_measure = Fraction(0)
     measure_duration = []
     for chord in voice:
-        if chord.is_barline():
-            length = _bar_length_evidence(measure_chords)
-            if length > Fraction(0):
-                measure_duration.append(length)
-            measure_chords = []
+        if chord.is_barline() and duration_in_measure > Fraction(0):
+            measure_duration.append(duration_in_measure)
+            duration_in_measure = Fraction(0)
         else:
             for symbol in chord.symbols:
                 if symbol.rhythm.startswith(("note", "rest")):
@@ -1101,11 +1107,13 @@ def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tupl
                 elif symbol.rhythm.startswith("timeSignature/"):
                     # A measure rest lasts a whole bar of this time signature.
                     durations.append(Fraction(1, int(symbol.rhythm.split("/")[1])))
-            measure_chords.append(chord.symbols)
+            duration = chord.get_duration()
+            if duration > Fraction(0):
+                duration_in_measure += duration
 
-    length = _bar_length_evidence(measure_chords)
-    if length > Fraction(0):
-        measure_duration.append(length)
+    if duration_in_measure > Fraction(0):
+        measure_duration.append(duration_in_measure)
+        duration_in_measure = Fraction(0)
 
     if len(measure_duration) == 0:
         return find_common_division(durations), Fraction(1)
@@ -1113,6 +1121,30 @@ def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tupl
     nominator: Fraction = np.median(measure_duration)  # type: ignore
 
     return find_common_division(durations), nominator
+
+
+def sounding_time_signature_nominator(voice: list[SymbolChord]) -> Fraction:
+    """The typical bar length, with each bar measured as it sounds.
+
+    Summing each group's shortest note, as find_division_and_time_signature_nominator
+    does, overstates every bar in which one hand moves under a note the other hand holds.
+    This measures a bar by the earliest end instead, without a staff whose only content
+    is a rest, and leaves out the bars in which nothing says how long they are.
+    """
+    lengths: list[Fraction] = []
+    bar: list[list[EncodedSymbol]] = []
+    for chord in [*voice, SymbolChord([EncodedSymbol("barline")])]:
+        if chord.is_barline():
+            length = _bar_length_evidence(bar)
+            if length > Fraction(0):
+                lengths.append(length)
+            bar = []
+        else:
+            bar.append(chord.symbols)
+    if len(lengths) == 0:
+        return Fraction(1)
+    nominator: Fraction = np.median(lengths)  # type: ignore
+    return nominator
 
 
 def time_signature_section_nominators(voice: list[SymbolChord]) -> dict[int, Fraction]:

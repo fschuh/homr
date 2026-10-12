@@ -15,6 +15,7 @@ from homr.music_xml_generator import (
     find_division_and_time_signature_nominator,
     generate_xml,
     rebalance_measure_voices,
+    sounding_time_signature_nominator,
 )
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar.time_signatures import READ
@@ -429,8 +430,8 @@ barline . . . . ."""
     def test_time_signature_counts_held_notes_once(self) -> None:
         """
         The time signature token carries only the beat type; the beat count comes from
-        the typical bar length. A bar in which the bass holds a quarter under the treble's
-        quarter chord is one 2/2 bar, not 9/8 of one.
+        the typical bar length. Measured as it sounds, a bar in which the bass holds a
+        quarter under the treble's quarter chord is one 2/2 bar, not 9/8 of one.
         """
         staggered_bar = [
             [
@@ -455,8 +456,7 @@ barline . . . . ."""
             [EncodedSymbol("barline")],
         ]
         groups = [SymbolChord(symbols) for symbols in staggered_bar * 3]
-        _, nominator = find_division_and_time_signature_nominator(groups)
-        self.assertEqual(nominator, Fraction(1))
+        self.assertEqual(sounding_time_signature_nominator(groups), Fraction(1))
 
     def test_lone_rest_does_not_set_the_beat_count(self) -> None:
         """
@@ -474,8 +474,7 @@ barline . . . . ."""
             SymbolChord([EncodedSymbol("note_8", "E5", position="upper")]),
             SymbolChord([EncodedSymbol("bolddoublebarline")]),
         ]
-        _, nominator = find_division_and_time_signature_nominator(coin)
-        self.assertEqual(nominator, Fraction(1, 4))
+        self.assertEqual(sounding_time_signature_nominator(coin), Fraction(1, 4))
 
     def test_bars_of_only_rests_do_not_vote_on_the_beat_count(self) -> None:
         """
@@ -506,8 +505,9 @@ barline . . . . ."""
             ),
             SymbolChord([EncodedSymbol("barline")]),
         ]
-        _, nominator = find_division_and_time_signature_nominator(rest_bar + rest_bar + full_bar)
-        self.assertEqual(nominator, Fraction(1))
+        self.assertEqual(
+            sounding_time_signature_nominator(rest_bar + rest_bar + full_bar), Fraction(1)
+        )
 
     def test_lone_rest_is_written_as_a_measure_rest(self) -> None:
         """
@@ -732,7 +732,8 @@ barline . . . . ."""
     def test_each_time_signature_counts_the_beats_of_its_own_section(self) -> None:
         """
         Chrono Trigger's Lucca's Theme opens in 6/8 and changes to 2/4. One typical bar for
-        the whole page gave both sections the same length; each section has its own.
+        the whole page gives both sections the same length, as upstream homr guesses it;
+        guessed per section, each section has its own.
         """
         six_eight_then_two_four = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
 keySignature_2 . . . . .
@@ -746,9 +747,14 @@ barline . . . . .
 timeSignature/4 . . . . .
 note_2 A5 _ _ _ upper&note_2 A3 _ _ _ lower
 barline . . . . ."""
-        root = self._generate_root(six_eight_then_two_four)
-        times = [(t.findtext("beats"), t.findtext("beat-type")) for t in root.iter("time")]
-        self.assertEqual(times, [("6", "8"), ("2", "4")])
+        for args, expected in (
+            (XmlGeneratorArguments(guess_meter_per_section=True), [("6", "8"), ("2", "4")]),
+            (XmlGeneratorArguments(), [("6", "8"), ("3", "4")]),
+        ):
+            with self.subTest(per_section=args.guess_meter_per_section):
+                root = self._generate_root(six_eight_then_two_four, args)
+                times = [(t.findtext("beats"), t.findtext("beat-type")) for t in root.iter("time")]
+                self.assertEqual(times, expected)
 
     def test_time_signature_without_measured_bars_uses_the_typical_bar(self) -> None:
         """A section whose bars hold only rests says nothing about its own bar length."""
@@ -760,7 +766,8 @@ barline . . . . .
 timeSignature/8 . . . . .
 rest_1 _ _ _ _ upper&rest_1 _ _ _ _ lower
 barline . . . . ."""
-        root = self._generate_root(resting_section)
+        args = XmlGeneratorArguments(guess_meter_per_section=True)
+        root = self._generate_root(resting_section, args)
         times = [(t.findtext("beats"), t.findtext("beat-type")) for t in root.iter("time")]
         self.assertEqual(times, [("4", "4"), ("8", "8")])
 
@@ -780,9 +787,11 @@ barline . . . . ."""
         pitches = sorted(n.findtext("pitch/step", "") for n in root.iter("note"))
         self.assertEqual(pitches, ["C", "C", "D", "D"])
 
-    def _generate_root(self, token_lines: str) -> ET.Element:
+    def _generate_root(
+        self, token_lines: str, args: XmlGeneratorArguments | None = None
+    ) -> ET.Element:
         tokens = read_token_lines(token_lines.splitlines())
-        xml = generate_xml(XmlGeneratorArguments(), [tokens], "")
+        xml = generate_xml(args or XmlGeneratorArguments(), [tokens], "")
         return ET.fromstring(xml.to_string())  # noqa: S314 - generated by the test itself
 
     def test_triplets_over_eighths_start_on_their_beats(self) -> None:

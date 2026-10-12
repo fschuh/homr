@@ -536,6 +536,13 @@ def main() -> None:
         + "start when the shorter voice's note ends. This writes them as recognized instead.",
     )
     parser.add_argument(
+        "--guess-meter-per-section",
+        action="store_true",
+        help="Infers the beat count of each time signature from the bars it governs, "
+        + "measured by when their notes end, instead of one for the page from the sum of "
+        + "each chord's shortest note.",
+    )
+    parser.add_argument(
         "--read-time-signatures",
         action="store_true",
         help="With --output-visual-sidecar, writes the time signature printed on the page "
@@ -617,6 +624,7 @@ def main() -> None:
         repair_shared_notehead_timing=not args.no_timing_repairs,
         read_time_signatures=args.read_time_signatures,
         repair_tuplets=args.repair_tuplets,
+        guess_meter_per_section=args.guess_meter_per_section,
     )
     if args.debug:
         eprint(f"Using Log Level {2} for OnnxRuntime")

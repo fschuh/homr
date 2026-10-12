@@ -296,8 +296,10 @@ Printed time signatures
 
 The transformer's time-signature token carries only the beat type
 (``timeSignature/4``), and the writer infers the beat count from the typical bar
-length of the bars the token governs. Missed tuplets make those bars too long, so the
-inferred meter goes wrong with them, as 4/4 written as 3/2.
+length: one for the page, or with ``--guess-meter-per-section``
+(``XmlGeneratorArguments(guess_meter_per_section=True)``) one for the bars each token
+governs. Missed tuplets make those bars too long, so the inferred meter goes wrong with
+them, as 4/4 written as 3/2.
 
 With ``--read-time-signatures`` (``XmlGeneratorArguments(read_time_signatures=True)``,
 which needs the visual sidecar), homr reads the time signatures printed on the page

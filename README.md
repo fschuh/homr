@@ -99,14 +99,18 @@ barline where starting after the shortest note does not. Every other bar is plac
 after the shortest note. A guessed meter proves nothing, so without
 `--read-time-signatures` every bar is placed that way. No note changes its value.
 
-The time signature's beat count, when it is guessed, comes from the typical bar
-length, measured by the earliest end and separately for each meter section, without
-counting a staff whose only content in a bar is a rest. Such a rest is written as a
-measure rest filling the bar, whatever glyph was read. Where both the rest as read
-and the bar's other staves are shorter than the meter, as in a pickup, a cadenza or
-under a meter guessed too long, the rest lasts as long as the longer of the two, and
-keeps its value where that is its own. Symbols the transformer chords with notes,
-such as a barline, are no longer written as rests.
+A staff whose only content in a bar is a rest is written as a measure rest filling
+the bar, whatever glyph was read. Where both the rest as read and the bar's other
+staves are shorter than the meter, as in a pickup, a cadenza or under a meter
+guessed too long, the rest lasts as long as the longer of the two, and keeps its
+value where that is its own. Symbols the transformer chords with notes, such as a
+barline, are no longer written as rests.
+
+The time signature's beat count, when it is guessed, comes as in upstream homr from
+one typical bar for the page: the sum of each chord's shortest note, which every
+hand moving under a held note lengthens. With `--guess-meter-per-section`, each time
+signature gets the typical length of the bars it governs instead, each bar measured
+by the earliest end and without a staff whose only content is a rest.
 
 Measured against MuseScore scores of 26 pieces (1,943 bars; see below), bars as
 long as the score's rose from 1,192 to 1,230, and to 1,423 with

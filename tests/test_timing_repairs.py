@@ -13,6 +13,7 @@ from homr.music_xml_generator import (
     find_division_and_time_signature_nominator,
     generate_xml,
     group_into_chords,
+    sounding_time_signature_nominator,
     time_signature_section_nominators,
 )
 from homr.transformer.vocabulary import EncodedSymbol
@@ -125,8 +126,11 @@ def write(
     lines: list[str],
     sidecar: VisualSidecarBuilder | None,
     repair: bool = True,
+    per_section: bool = False,
 ) -> Any:
-    args = XmlGeneratorArguments(repair_shared_notehead_timing=repair)
+    args = XmlGeneratorArguments(
+        repair_shared_notehead_timing=repair, guess_meter_per_section=per_section
+    )
     return generate_xml(args, [tokens(lines)], "", visual_sidecar=sidecar)
 
 
@@ -232,16 +236,25 @@ class TestTimingRepairs(unittest.TestCase):
     def test_without_shared_heads_the_writer_measures_as_before(self) -> None:
         lines = [*GRAND_STAFF, "timeSignature/4 . . . . .", *butterfly_bar("B4", "D5"), *CLEAN_BAR]
         groups = add_tuplet_start_stop(group_into_chords(tokens(lines)))
-        for sidecar in (None, StubbedSidecar()):
-            repairs = TimingRepairs(groups, sidecar)
-            self.assertEqual(
-                repairs.division_and_nominator(), find_division_and_time_signature_nominator(groups)
-            )
-            self.assertEqual(
-                repairs.section_nominators(), time_signature_section_nominators(groups)
-            )
-            ends = [repairs.shared_notehead_ends(g, Fraction(0), part=1, measure=1) for g in groups]
-            self.assertEqual(ends, [[]] * len(groups))
+        division, nominator = find_division_and_time_signature_nominator(groups)
+        guesses = {
+            False: ((division, nominator), {}),
+            True: (
+                (division, sounding_time_signature_nominator(groups)),
+                time_signature_section_nominators(groups),
+            ),
+        }
+        for per_section, (division_and_nominator, sections) in guesses.items():
+            for sidecar in (None, StubbedSidecar()):
+                with self.subTest(per_section=per_section, sidecar=sidecar is not None):
+                    repairs = TimingRepairs(groups, sidecar, guess_meter_per_section=per_section)
+                    self.assertEqual(repairs.division_and_nominator(), division_and_nominator)
+                    self.assertEqual(repairs.section_nominators(), sections)
+                    ends = [
+                        repairs.shared_notehead_ends(g, Fraction(0), part=1, measure=1)
+                        for g in groups
+                    ]
+                    self.assertEqual(ends, [[]] * len(groups))
 
     def test_a_bar_that_already_adds_up_is_left_alone(self) -> None:
         lines = [*GRAND_STAFF, "timeSignature/4 . . . . .", *CLEAN_BAR, *CLEAN_BAR]
@@ -271,16 +284,22 @@ class TestTimingRepairs(unittest.TestCase):
         # bars make five eighths long. One bar read right confirms the repaired length.
         broken = butterfly_bar("B4", "D5") * 3
         readings = {"B4": EIGHTH_OVER_16TH, "D5": EIGHTH_OVER_16TH}
-        confirmed = StubbedSidecar(readings)
-        xml = write([*GRAND_STAFF, *broken, *CLEAN_BAR], confirmed)
-        self.assertEqual({o[1] for o in outcomes(confirmed)}, {APPLIED})
-        self.assertEqual(measure_onsets(xml, 2), BUTTERFLY_ONSETS)
+        for per_section in (False, True):
+            with self.subTest(per_section=per_section):
+                confirmed = StubbedSidecar(readings)
+                xml = write([*GRAND_STAFF, *broken, *CLEAN_BAR], confirmed, per_section=per_section)
+                self.assertEqual({o[1] for o in outcomes(confirmed)}, {APPLIED})
+                self.assertEqual(measure_onsets(xml, 2), BUTTERFLY_ONSETS)
 
-        unconfirmed = StubbedSidecar(readings)
-        write([*GRAND_STAFF, *broken, *butterfly_bar("B4", "D5")], unconfirmed)
-        self.assertEqual(
-            {o[1:3] for o in outcomes(unconfirmed)}, {(DECLINED, "bar_already_adds_up")}
-        )
+                unconfirmed = StubbedSidecar(readings)
+                write(
+                    [*GRAND_STAFF, *broken, *butterfly_bar("B4", "D5")],
+                    unconfirmed,
+                    per_section=per_section,
+                )
+                self.assertEqual(
+                    {o[1:3] for o in outcomes(unconfirmed)}, {(DECLINED, "bar_already_adds_up")}
+                )
 
     def test_the_repairs_set_a_sections_beat_count_only_where_an_unrepaired_bar_has_it(
         self,
@@ -290,12 +309,12 @@ class TestTimingRepairs(unittest.TestCase):
         header = [*GRAND_STAFF, "timeSignature/8 . . . . ."]
 
         confirmed = StubbedSidecar(readings)
-        xml = write([*header, *broken, *six_eight_bar(None, None)], confirmed)
+        xml = write([*header, *broken, *six_eight_bar(None, None)], confirmed, per_section=True)
         self.assertEqual(time_signatures(xml), [("6", "8")])
         self.assertEqual({o[1] for o in outcomes(confirmed)}, {APPLIED})
 
         unconfirmed = StubbedSidecar(readings)
-        xml = write([*header, *broken, *six_eight_bar("B4", "D5")], unconfirmed)
+        xml = write([*header, *broken, *six_eight_bar("B4", "D5")], unconfirmed, per_section=True)
         self.assertEqual(time_signatures(xml), [("7", "8")])
         self.assertEqual(
             {o[1:3] for o in outcomes(unconfirmed)}, {(DECLINED, "bar_already_adds_up")}
@@ -331,15 +350,17 @@ class TestTimingRepairs(unittest.TestCase):
             *butterfly_bar("B4", "D5"),
         ]
         groups = add_tuplet_start_stop(group_into_chords(tokens(lines)))
-        sidecar = StubbedSidecar({"B4": EIGHTH_OVER_16TH})
-        repairs = TimingRepairs(groups, sidecar)
-        self.assertEqual(
-            repairs.division_and_nominator(), find_division_and_time_signature_nominator(groups)
-        )
-        self.assertEqual(repairs.division_and_nominator()[1], Fraction(19, 32))
-        for group in groups:
-            repairs.shared_notehead_ends(group, Fraction(0), part=1, measure=1)
-        self.assertEqual({o[1:3] for o in outcomes(sidecar)}, {(DECLINED, "no_bar_length")})
+        division, summed = find_division_and_time_signature_nominator(groups)
+        sounding = sounding_time_signature_nominator(groups)
+        for per_section, nominator in ((False, summed), (True, sounding)):
+            with self.subTest(per_section=per_section):
+                sidecar = StubbedSidecar({"B4": EIGHTH_OVER_16TH})
+                repairs = TimingRepairs(groups, sidecar, guess_meter_per_section=per_section)
+                self.assertEqual(repairs.division_and_nominator(), (division, nominator))
+                self.assertEqual(nominator, Fraction(19, 32))
+                for group in groups:
+                    repairs.shared_notehead_ends(group, Fraction(0), part=1, measure=1)
+                self.assertEqual({o[1:3] for o in outcomes(sidecar)}, {(DECLINED, "no_bar_length")})
 
     def test_a_bar_is_checked_as_the_writer_places_it_before_the_repair_too(self) -> None:
         # The bass's dotted eighth ends where the lost 16th does, so the earliest end
