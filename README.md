@@ -112,22 +112,20 @@ hand moving under a held note lengthens. With `--guess-meter-per-section`, each 
 signature gets the typical length of the bars it governs instead, each bar measured
 by the earliest end and without a staff whose only content is a rest.
 
-Measured against MuseScore scores of 26 pieces (1,943 bars; see below), bars as
-long as the score's rose from 1,192 to 1,230, and to 1,423 with
-`--read-time-signatures --repair-tuplets`. On the 240-page corpus, the pieces with
-such a score (1,548 bars) went from 894 to 962 and 1,080. No bar on the MuseScore
-pages ends earlier than before; with the options, one note starts a 32nd early,
-where a double-dotted note is read as dotted, in a bar that still ends on its
-barline. On the corpus two bars end earlier. In one the comparison errs: aligned by
-pitch, a repeated figure matches the bar before, and the bar is right. In the other,
-two bars merged by a lost barline no longer stall five beats on a rest read where
-none is printed, and end half a beat short where two eighths are read as triplets.
-Three bars end later than before (one with the options): two where a staff holding
-only a rest fills a guessed meter longer than the bar, and one where a chord the
-transformer merged is split again. On the rest of the corpus and on 131 video-game
-pages, every bar that starts a note earlier than before ends exactly on the meter
-printed for it, here or on an earlier page, except one bar on a page where none is
-read, which now fills its guessed 6/8 evenly.
+Measured against MuseScore scores of 26 pieces (1,943 bars; see below), bars as long
+as the score's rose from 1,192 to 1,209 with the default options, and to 1,423 with
+all of this fork's options as the viewer runs homr (`--guess-meter-per-section
+--repair-shared-notehead-timing --read-time-signatures --repair-tuplets`). On the
+240-page corpus, the pieces with such a score (1,549 bars) went from 895 to 920 and
+1,081. Either way no bar on the MuseScore pages ends earlier than before, and on the
+corpus one does, where the comparison errs: aligned by pitch, a repeated figure
+matches the bar before, and the bar is right. One bar on the MuseScore pages and one
+on the corpus end later, where a grace note read in one chord with a note made the
+notes after it start with that chord; they now start when the note ends. With the
+default options, every other bar that changed length on these pages and on 131
+video-game pages got shorter and ends on the meter printed for it, here or on an
+earlier page, except one corpus bar that now overruns its meter by half a beat
+instead of a whole one.
 
 ### Notes after a shared notehead
 
