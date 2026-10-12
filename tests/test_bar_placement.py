@@ -22,6 +22,7 @@ from homr.music_xml_generator import (
     add_tuplet_start_stop,
     generate_xml,
     group_into_chords,
+    split_mixed_chords,
 )
 from homr.transformer.vocabulary import EncodedSymbol
 from homr.visual_sidecar.time_signatures import (
@@ -295,7 +296,7 @@ def bars_of(
     lines: list[str],
 ) -> tuple[list[SymbolChord], list[list[SymbolChord]], dict[int, Fraction]]:
     """The writer's groups for these tokens, the groups of each bar, and the lone rests."""
-    groups = add_tuplet_start_stop(group_into_chords(read_token_lines(lines)))
+    groups = split_mixed_chords(add_tuplet_start_stop(group_into_chords(read_token_lines(lines))))
     bars: list[list[SymbolChord]] = [[]]
     for group in groups:
         if group.is_barline():
@@ -589,8 +590,8 @@ class TestBarPlacement(unittest.TestCase):
                 "note_2 F5 _ _ _ upper&note_2 G2 _ _ _ lower",
                 "barline . . . . .",
             ],
-            # The writer reads a group led by something other than a note or rest as that
-            # symbol, and does not write the notes chorded with it.
+            # The writer splits a time signature chorded with notes out of the group, and
+            # writes the notes.
             "note under a time signature": [
                 "note_4 C5 _ _ _ upper&note_4 C3 _ _ _ lower",
                 "timeSignature/4 . . . . .&note_4 E3 _ _ _ lower",
