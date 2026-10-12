@@ -246,17 +246,18 @@ or beams, as when an eighth note sits on the first note of a 16th run. The trans
 gives such a head one token, usually with the longer value, so the MusicXML writer
 starts the next notes when that value ends and the rest of the bar runs late.
 
-When the visual sidecar is written, the writer reads both stems of every notehead that
-stands alone on its staff at its moment. Where one stem carries a shorter value than
-the token, it starts the next notes when that shorter value ends, as if the lost note
-were still in its group. No note is added, and the token keeps its value and its
-notehead. A bar's repairs are applied together, and only when the bar does not add up
-to its time signature as recognized and adds up exactly with them, each placed as the
-writer places the bar: after the shortest note, or by the earliest end where a trusted
-meter lets the bar prove that (see ``homr.bar_placement``). The time signature's beat
-count is itself measured from the typical bar, so the repairs may change it only to a
-length that a bar needing no repair already has. ``--no-timing-repairs`` turns the
-repair off; the MusicXML is then written exactly as without it.
+With ``--repair-shared-notehead-timing``
+(``XmlGeneratorArguments(repair_shared_notehead_timing=True)``, which needs the visual
+sidecar), the writer reads both stems of every notehead that stands alone on its staff
+at its moment. Where one stem carries a shorter value than the token, it starts the
+next notes when that shorter value ends, as if the lost note were still in its group.
+No note is added, and the token keeps its value and its notehead. A bar's repairs are
+applied together, and only when the bar does not add up to its time signature as
+recognized and adds up exactly with them, each placed as the writer places the bar:
+after the shortest note, or by the earliest end where a trusted meter lets the bar
+prove that (see ``homr.bar_placement``). The time signature's beat count is itself
+measured from the typical bar, so the repairs may change it only to a length that a
+bar needing no repair already has. The repair is off unless asked for.
 
 Schema v3 then contains ``timing_repairs`` with ``version: 1``, ``enabled`` (whether
 the repair was on) and a ``shared_noteheads`` array, with one record, in writing order,

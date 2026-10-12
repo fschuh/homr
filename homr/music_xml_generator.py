@@ -137,7 +137,7 @@ class XmlGeneratorArguments:
         large_page: bool | None = None,
         metronome: int | None = None,
         tempo: int | None = None,
-        repair_shared_notehead_timing: bool = True,
+        repair_shared_notehead_timing: bool = False,
         read_time_signatures: bool = False,
         repair_tuplets: bool = False,
         time_signature_from_previous_page: tuple[int, int] | None = None,

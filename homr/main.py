@@ -530,10 +530,10 @@ def main() -> None:
         help="Writes input.homr.visual.json beside the MusicXML with visual note geometry.",
     )
     parser.add_argument(
-        "--no-timing-repairs",
+        "--repair-shared-notehead-timing",
         action="store_true",
         help="With --output-visual-sidecar, notes after a notehead that two voices share "
-        + "start when the shorter voice's note ends. This writes them as recognized instead.",
+        + "start when the shorter voice's note ends, as printed, instead of as recognized.",
     )
     parser.add_argument(
         "--guess-meter-per-section",
@@ -582,6 +582,8 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.repair_shared_notehead_timing and not args.output_visual_sidecar:
+        parser.error("--repair-shared-notehead-timing needs --output-visual-sidecar")
     if args.read_time_signatures and not args.output_visual_sidecar:
         parser.error("--read-time-signatures needs --output-visual-sidecar")
     if args.repair_tuplets and not args.read_time_signatures:
@@ -621,7 +623,7 @@ def main() -> None:
         args.output_large_page,
         args.output_metronome,
         args.output_tempo,
-        repair_shared_notehead_timing=not args.no_timing_repairs,
+        repair_shared_notehead_timing=args.repair_shared_notehead_timing,
         read_time_signatures=args.read_time_signatures,
         repair_tuplets=args.repair_tuplets,
         guess_meter_per_section=args.guess_meter_per_section,

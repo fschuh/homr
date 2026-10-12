@@ -233,6 +233,14 @@ class TestTimingRepairs(unittest.TestCase):
         self.assertEqual(sidecar.state.shared_notehead_records, [])
         self.assertNotEqual(measure_onsets(off), BUTTERFLY_ONSETS)
 
+    def test_the_repair_is_off_unless_asked_for(self) -> None:
+        lines = [*GRAND_STAFF, "timeSignature/4 . . . . .", *butterfly_bar("B4", "D5"), *CLEAN_BAR]
+        sidecar = StubbedSidecar({"B4": EIGHTH_OVER_16TH, "D5": EIGHTH_OVER_16TH})
+        xml = generate_xml(XmlGeneratorArguments(), [tokens(lines)], "", visual_sidecar=sidecar)
+        self.assertEqual(xml.to_string(), write(lines, StubbedSidecar(), repair=False).to_string())
+        self.assertEqual(sidecar.read, [])
+        self.assertIs(sidecar.state.timing_repairs_enabled, False)
+
     def test_without_shared_heads_the_writer_measures_as_before(self) -> None:
         lines = [*GRAND_STAFF, "timeSignature/4 . . . . .", *butterfly_bar("B4", "D5"), *CLEAN_BAR]
         groups = add_tuplet_start_stop(group_into_chords(tokens(lines)))
@@ -498,7 +506,8 @@ class TestTimingRepairs(unittest.TestCase):
         sidecar.matches_by_symbol_id[b4.visual_match_id] = VisualMatch(
             b4, "vnote-1", 0.9, "structural"
         )
-        generate_xml(XmlGeneratorArguments(), [voice], "", visual_sidecar=sidecar)
+        args = XmlGeneratorArguments(repair_shared_notehead_timing=True)
+        generate_xml(args, [voice], "", visual_sidecar=sidecar)
         block = json.loads(json.dumps(sidecar.to_json_dict()))["timing_repairs"]
         self.assertEqual((block["version"], block["enabled"]), (1, True))
         self.assertEqual(

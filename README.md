@@ -137,24 +137,25 @@ on the first note of an arpeggio. The transformer reads such a head once,
 usually with the longer value, so the notes after it started late and the bar
 overflowed; in Chopin's Op. 25 No. 9, 38 of 51 bars did.
 
-With `--output-visual-sidecar`, homr now reads both stems of such a head on the
-page. Where one carries a shorter value than the token, the notes after the head
-start when that shorter value ends, as printed. No note is added and none changes
-its value. A bar's repairs are applied together, and only when the bar, placed as
-it is written (see above), overflows or falls short as recognized and adds up
-exactly to its time signature with them. Tuplets are not read, so where the shorter note is an unmarked triplet the
-notes after it start after a plain eighth, as the transformer reads the rest of
-that run. Each shared notehead and what became of it is recorded in the sidecar.
-`--no-timing-repairs` turns this off.
+With `--repair-shared-notehead-timing` (and `--output-visual-sidecar`), homr reads
+both stems of such a head on the page. Where one carries a shorter value than the
+token, the notes after the head start when that shorter value ends, as printed. No
+note is added and none changes its value. A bar's repairs are applied together,
+and only when the bar, placed as it is written (see above), overflows or falls
+short as recognized and adds up exactly to its time signature with them. Tuplets
+are not read, so where the shorter note is an unmarked triplet the notes after it
+start after a plain eighth, as the transformer reads the rest of that run. Each
+shared notehead and what became of it is recorded in the sidecar.
 
-On the 240-page corpus this changes 13 pages of 8 pieces. The 124 repairs were
-each checked against the page: every one sits on a shared notehead, and in all but
-one the next notes now start after the value printed on its shorter stem. That one
-reads a triplet eighth's stem as a 16th, and its bar's bass ends a 16th early. Bars
-in which a staff runs past the time signature fall from 1,022 to 968 of 3,885, and
-no other page gains a bar that runs over or falls short. On 131 engraved pages with
-MIDI exports of their source files, the 5 affected bars now start every note where
-the MIDI does, from 14–42% of notes before, and no note in any other bar moved.
+Measured with the meter guessed per section, on the 240-page corpus this changes
+13 pages of 8 pieces. The 124 repairs were each checked against the page: every
+one sits on a shared notehead, and in all but one the next notes now start after
+the value printed on its shorter stem. That one reads a triplet eighth's stem as a
+16th, and its bar's bass ends a 16th early. Bars in which a staff runs past the
+time signature fall from 1,022 to 968 of 3,885, and no other page gains a bar that
+runs over or falls short. On 131 engraved pages with MIDI exports of their source
+files, the 5 affected bars now start every note where the MIDI does, from 14–42%
+of notes before, and no note in any other bar moved.
 
 ### Printed time signatures and tuplets
 
