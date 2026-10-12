@@ -427,25 +427,29 @@ def _lone_rest_ids(groups: list[SymbolChord]) -> dict[int, Fraction]:
 def _with_measure_rests(
     group: SymbolChord, lone_rests: dict[int, Fraction], bar_length: Fraction
 ) -> SymbolChord:
-    """Write each lone rest in ``group`` as a measure rest lasting ``bar_length``.
+    """Write each lone rest in ``group`` as a measure rest filling the bar.
 
-    A rest that lasts as read exactly as long as the bar's other staves, and shorter than
-    the bar, keeps its value. The page agrees with itself there, and the bar is short on
-    it: a pickup, or the bar after a repeat sign. Filling the bar would lengthen it.
+    The bar lasts ``bar_length``, unless both the rest as read and the bar's other staves
+    are shorter. The bar is then short on the page, as a pickup or the bar after a repeat
+    sign is, or its meter was guessed too long, and the rest lasts as long as the longer
+    of the two. Where that is the rest itself, it keeps its value.
     """
 
-    def fills_the_bar(symbol: EncodedSymbol) -> bool:
+    def filled(symbol: EncodedSymbol) -> Fraction | None:
+        """How long the rest is written, or None where it keeps its value."""
         if id(symbol) not in lone_rests:
-            return False
+            return None
         read = symbol.get_duration().fraction
-        return not (read == lone_rests[id(symbol)] and read < bar_length)
+        length = min(bar_length, max(read, lone_rests[id(symbol)]))
+        return None if length == read and read < bar_length else length
 
-    if not any(fills_the_bar(symbol) for symbol in group.symbols):
+    lengths = [filled(symbol) for symbol in group.symbols]
+    if all(length is None for length in lengths):
         return group
     return SymbolChord(
         [
-            _MeasureRest(symbol, bar_length) if fills_the_bar(symbol) else symbol
-            for symbol in group.symbols
+            symbol if length is None else _MeasureRest(symbol, length)
+            for symbol, length in zip(group.symbols, lengths, strict=True)
         ],
         group.tuplet_mark,
     )

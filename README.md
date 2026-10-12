@@ -102,10 +102,11 @@ after the shortest note. A guessed meter proves nothing, so without
 The time signature's beat count, when it is guessed, comes from the typical bar
 length, measured by the earliest end and separately for each meter section, without
 counting a staff whose only content in a bar is a rest. Such a rest is written as a
-measure rest filling the bar, whatever glyph was read. Only in a bar shorter than
-the meter, such as a pickup, does a rest that lasts as read exactly as long as the
-other staff keep its value. Symbols the transformer chords with notes, such as a
-barline, are no longer written as rests.
+measure rest filling the bar, whatever glyph was read. Where both the rest as read
+and the bar's other staves are shorter than the meter, as in a pickup, a cadenza or
+under a meter guessed too long, the rest lasts as long as the longer of the two, and
+keeps its value where that is its own. Symbols the transformer chords with notes,
+such as a barline, are no longer written as rests.
 
 Measured against MuseScore scores of 26 pieces (1,943 bars; see below), bars as
 long as the score's rose from 1,192 to 1,230, and to 1,423 with

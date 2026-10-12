@@ -649,6 +649,41 @@ barline . . . . ."""
         self.assertIsNone(rest.find("rest").get("measure"))  # type: ignore[union-attr]
         self.assertEqual(rest.findtext("type"), "whole")
 
+    def test_lone_rest_fills_no_more_than_the_bar_under_a_longer_meter(self) -> None:
+        """
+        A bar can be shorter than its guessed meter, as a cadenza bar is. A staff's only
+        rest there lasts as long as the bar's other staves, or as read where that is
+        longer: filling the meter made the bar run on in silence.
+        """
+        six_four_bar = """note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+note_2 D5 _ _ _ upper&note_2 D3 _ _ _ lower
+note_2 E5 _ _ _ upper&note_2 E3 _ _ _ lower
+barline . . . . .
+"""
+        four_quarters_over_a_half_rest = """note_4 C5 _ _ _ upper&rest_2 _ _ _ _ lower
+note_4 D5 _ _ _ upper
+note_4 E5 _ _ _ upper
+note_4 F5 _ _ _ upper
+barline . . . . ."""
+        two_quarters_over_a_whole_rest = """note_4 C5 _ _ _ upper&rest_1 _ _ _ _ lower
+note_4 D5 _ _ _ upper
+barline . . . . ."""
+        for short_bar, measure, quarters in (
+            (four_quarters_over_a_half_rest, "yes", 4),
+            (two_quarters_over_a_whole_rest, None, 4),
+        ):
+            with self.subTest(measure=measure):
+                tokens = f"""clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+{six_four_bar * 3}{short_bar}"""
+                root = self._generate_root(tokens)
+                divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+                self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "6")
+                rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+                self.assertEqual(rest.find("rest").get("measure"), measure)  # type: ignore[union-attr]
+                self.assertEqual(int(rest.findtext("duration", "0")), quarters * divisions)
+
     def test_written_time_signature_sets_the_measure_rest_length(self) -> None:
         """
         Once a time signature is written its bar is what a measure rest fills, even when
