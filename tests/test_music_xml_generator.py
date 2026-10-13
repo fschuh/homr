@@ -3,6 +3,7 @@
 import re
 import unittest
 import xml.etree.ElementTree as ET
+from fractions import Fraction
 from typing import Any
 
 import musicxml.xmlelement.xmlelement as mxl
@@ -11,10 +12,14 @@ from homr.music_xml_generator import (
     SymbolChord,
     XmlGeneratorArguments,
     _split_mixed_chord,
+    find_division_and_time_signature_nominator,
     generate_xml,
     rebalance_measure_voices,
+    sounding_time_signature_nominator,
 )
 from homr.transformer.vocabulary import EncodedSymbol
+from homr.visual_sidecar.time_signatures import READ
+from tests.test_timing_repairs import MeterSidecar
 from training.transformer.training_vocabulary import (
     read_token_lines,
 )
@@ -55,13 +60,16 @@ def _first_measure(xml: ET.Element) -> ET.Element:
     return m
 
 
-def _onsets(xml: ET.Element) -> list[tuple[str, str, float]]:
+def _onsets(xml: Any, rests: bool = True) -> list[tuple[str, str, float]]:
     """(staff, pitch with octave, onset in quarter notes) for every note of the first measure."""
-    part = xml.find("part")
+    root = xml if isinstance(xml, ET.Element) else ET.fromstring(xml.to_string())  # noqa: S314
+    part = root.find("part")
     assert part is not None
     divisions = int(part.findtext("measure/attributes/divisions", "1"))
+    measure = part.find("measure")
+    assert measure is not None
     time, onset, result = 0, 0, []
-    for element in _first_measure(xml):
+    for element in measure:
         if element.tag == "backup":
             time -= int(element.findtext("duration", "0"))
         elif element.tag == "forward":
@@ -69,12 +77,24 @@ def _onsets(xml: ET.Element) -> list[tuple[str, str, float]]:
         elif element.tag == "note":
             if element.find("chord") is None:
                 onset = time
-                time += _duration(element)
+                time += int(element.findtext("duration", "0"))
             pitch = element.find("pitch")
-            if pitch is not None:
-                name = pitch.findtext("step", "") + pitch.findtext("octave", "")
-                result.append((_staff(element), name, onset / divisions))
+            name = (
+                "rest"
+                if pitch is None
+                else pitch.findtext("step", "") + pitch.findtext("octave", "")
+            )
+            if rests or pitch is not None:
+                result.append((element.findtext("staff", "1"), name, onset / divisions))
     return sorted(result)
+
+
+def _write_under_read_meter(tokens: list[EncodedSymbol], meter: tuple[int, int]) -> Any:
+    """Writes tokens whose time signature a read of the page confirms as ``meter``. Under
+    such a trusted meter a bar may prove the earliest-end placement; see
+    homr.bar_placement."""
+    sidecar = MeterSidecar([(meter, READ)])
+    return generate_xml(XmlGeneratorArguments(), [tokens], "", visual_sidecar=sidecar)
 
 
 class TestMusicXmlGenerator(unittest.TestCase):
@@ -277,6 +297,529 @@ XMLNotations()])])])])"""
         self.assertEqual(self._read_note_voice(note4), "1")
         self.assertEqual(self._read_note_voice(note5), "6")
         self.assertEqual(self._read_note_voice(note6), "5")
+
+    def test_next_group_starts_when_the_earliest_sounding_note_ends(self) -> None:
+        """
+        Tokens tell which notes start together, not when each group starts. Here the left
+        hand's quarter note E3 starts under the right hand's quarter note C5, so the right
+        hand's D5 starts when C5 ends (beat 1), while E3 is still sounding. Advancing by the
+        shortest note of the group just written would put D5 at beat 1.5 instead.
+        """
+        hands_moving_independently = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_4 C5 _ _ _ upper&note_8 C3 _ _ _ lower
+note_4 E3 _ _ _ lower
+note_4 D5 _ _ _ upper
+note_8 G3 _ _ _ lower
+note_2 E5 _ _ _ upper&note_2 C3 _ _ _ lower
+barline . . . . ."""
+        tokens = read_token_lines(hands_moving_independently.splitlines())
+        xml = _write_under_read_meter(tokens, (4, 4))
+        self.assertEqual(
+            _onsets(xml),
+            sorted(
+                [
+                    ("1", "C5", 0.0),
+                    ("1", "D5", 1.0),
+                    ("1", "E5", 2.0),
+                    ("2", "C3", 0.0),
+                    ("2", "E3", 0.5),
+                    ("2", "G3", 1.5),
+                    ("2", "C3", 2.0),
+                ]
+            ),
+        )
+
+    def test_independent_hands_in_elijah_measure(self) -> None:
+        """
+        Measure 6 of the Elijah page from upstream issue #142: the right hand plays a
+        quarter chord and dotted rhythms while the left hand holds A2 and moves in eighths
+        and quarters. Every note must start on its beat, so that no staff runs past the end
+        of the 4/4 measure. Upstream writes the held A2 as a second lower voice
+        (``lower2``); this vocabulary has one lower position, so it shares ``lower``.
+        """
+        elijah_measure_6 = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_-4 . . . . .
+timeSignature/4 . . . . .
+note_4 A4 b _ _ upper&note_4 E4 b _ _ upper&note_4 C4 _ _ _ upper&note_2 A2 b _ _ lower&note_8 A2 b _ _ lower
+note_4 A3 b _ _ lower
+note_8. A4 b _ _ upper&note_8. E4 b _ _ upper&note_8. C4 _ _ _ upper
+note_8 A3 b _ _ lower
+note_16 C5 _ _ _ upper&note_16 A4 b _ _ upper&note_16 E4 b _ _ upper
+note_8. C5 _ _ _ upper&note_8. A4 b _ _ upper&note_8. G4 b _ _ upper&note_8. E4 b _ _ upper&note_8 A2 b _ _ lower
+note_4 C4 _ _ _ lower&note_4 A3 b _ _ lower
+note_16 E5 b _ _ upper&note_16 A4 b _ _ upper&note_16 G4 b _ _ upper
+note_8. E5 b _ _ upper&note_8. A4 b _ _ upper&note_8. G4 b _ _ upper
+note_8 E4 b _ _ lower&note_8 C4 _ _ _ lower&note_8 A3 b _ _ lower
+note_16 E5 b _ _ upper&note_16 A4 b _ _ upper&note_16 G4 b _ _ upper
+barline . . . . ."""
+        tokens = read_token_lines(elijah_measure_6.splitlines())
+        xml = _write_under_read_meter(tokens, (4, 4))
+        onsets = _onsets(xml)
+        upper = sorted({onset for staff, _, onset in onsets if staff == "1"})
+        lower = sorted({onset for staff, _, onset in onsets if staff == "2"})
+        self.assertEqual(upper, [0.0, 1.0, 1.75, 2.0, 2.75, 3.0, 3.75])
+        self.assertEqual(lower, [0.0, 0.5, 1.5, 2.0, 2.5, 3.5])
+
+    def test_grace_notes_take_no_time(self) -> None:
+        """A group of only grace notes must not move later notes (the next note stays on beat 1)."""
+        with_grace_note = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_4 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+note_8G D5 _ _ _ upper
+note_4 E5 _ _ _ upper
+note_2 F5 _ _ _ upper&note_2 G2 _ _ _ lower
+barline . . . . ."""
+        tokens = read_token_lines(with_grace_note.splitlines())
+        xml = generate_xml(XmlGeneratorArguments(), [tokens], "")
+        by_pitch = {name: onset for _, name, onset in _onsets(xml)}
+        self.assertEqual(by_pitch["E5"], 1.0)
+        self.assertEqual(by_pitch["F5"], 2.0)
+        self.assertEqual(by_pitch["G2"], 2.0)
+
+    def test_rest_under_a_held_note_starts_when_the_note_ends(self) -> None:
+        """
+        Super Mario Bros Ground Theme, measure 19, as the transformer reads it. The bass
+        quarter A2 is still sounding when the treble's quarter chord starts on the second
+        eighth, so the bass eighth rest starts when A2 ends (beat 1), not when the treble
+        chord does (beat 1.5). The late start left a gap that renderers filled with an
+        extra rest in each staff and overfilled the 2/2 measure.
+        """
+        ground_theme_measure_19 = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/2 . . . . .
+note_8 C5 _ _ _ upper&note_8 A4 b _ _ upper&note_4 A2 b _ _ lower
+note_4 C5 _ _ _ upper&note_4 A4 b _ _ upper
+rest_8 _ _ _ _ lower
+note_8 C5 _ _ _ upper&note_8 A4 b _ _ upper&note_8 E3 b _ _ lower
+rest_8 _ _ _ _ upper&rest_4 _ _ _ _ lower
+note_8 C5 _ _ _ upper&note_8 A4 b _ _ upper
+note_4 D5 _ _ _ upper&note_4 B4 b _ _ upper&note_4 A3 b _ _ lower
+barline . . . . ."""
+        tokens = read_token_lines(ground_theme_measure_19.splitlines())
+        xml = _write_under_read_meter(tokens, (2, 2))
+        onsets = _onsets(xml)
+        self.assertIn(("2", "rest", 1.0), onsets)
+        self.assertIn(("2", "E3", 1.5), onsets)
+        self.assertIn(("2", "A3", 3.0), onsets)
+        self.assertIn(("1", "D5", 3.0), onsets)
+        self.assertEqual(max(onset for _, _, onset in onsets), 3.0)
+
+    def test_divisions_represent_notes_that_are_not_the_shortest_of_their_group(self) -> None:
+        """
+        The triplet quarter is never the shortest note of its group, yet its length and
+        the backup after it must be whole numbers of divisions. Counting only each group's
+        shortest note left the triplet's denominator out of the LCM, which truncated
+        durations to zero.
+        """
+        groups = [
+            SymbolChord(
+                [
+                    EncodedSymbol("note_6", "C5", position="upper"),
+                    EncodedSymbol("note_8", "C3", position="lower"),
+                ]
+            ),
+            SymbolChord([EncodedSymbol("note_8", "E3", position="lower")]),
+            SymbolChord([EncodedSymbol("barline")]),
+        ]
+        division, _ = find_division_and_time_signature_nominator(groups)
+        self.assertEqual(division % 3, 0)
+
+    def test_time_signature_counts_held_notes_once(self) -> None:
+        """
+        The time signature token carries only the beat type; the beat count comes from
+        the typical bar length. Measured as it sounds, a bar in which the bass holds a
+        quarter under the treble's quarter chord is one 2/2 bar, not 9/8 of one.
+        """
+        staggered_bar = [
+            [
+                EncodedSymbol("note_8", "C5", position="upper"),
+                EncodedSymbol("note_4", "A2", position="lower"),
+            ],
+            [EncodedSymbol("note_4", "C5", position="upper")],
+            [EncodedSymbol("rest_8", "_", position="lower")],
+            [
+                EncodedSymbol("note_8", "C5", position="upper"),
+                EncodedSymbol("note_8", "E3", position="lower"),
+            ],
+            [
+                EncodedSymbol("rest_8", "_", position="upper"),
+                EncodedSymbol("rest_4", "_", position="lower"),
+            ],
+            [EncodedSymbol("note_8", "C5", position="upper")],
+            [
+                EncodedSymbol("note_4", "D5", position="upper"),
+                EncodedSymbol("note_4", "A3", position="lower"),
+            ],
+            [EncodedSymbol("barline")],
+        ]
+        groups = [SymbolChord(symbols) for symbols in staggered_bar * 3]
+        self.assertEqual(sounding_time_signature_nominator(groups), Fraction(1))
+
+    def test_lone_rest_does_not_set_the_beat_count(self) -> None:
+        """
+        Super Mario Bros Coin: two treble eighths over a bass whose bar is a single rest,
+        read as a half rest. That rest fills the 1/4 bar whatever glyph was read, so only
+        the treble says how long the bar is.
+        """
+        coin = [
+            SymbolChord(
+                [
+                    EncodedSymbol("note_8", "B4", position="upper"),
+                    EncodedSymbol("rest_2", "_", position="lower"),
+                ]
+            ),
+            SymbolChord([EncodedSymbol("note_8", "E5", position="upper")]),
+            SymbolChord([EncodedSymbol("bolddoublebarline")]),
+        ]
+        self.assertEqual(sounding_time_signature_nominator(coin), Fraction(1, 4))
+
+    def test_bars_of_only_rests_do_not_vote_on_the_beat_count(self) -> None:
+        """
+        A bar in which every staff holds a single rest says nothing about the bar length;
+        it must neither count as a bar nor run into the next one.
+        """
+        full_bar = [
+            SymbolChord(
+                [
+                    EncodedSymbol("note_2", "C5", position="upper"),
+                    EncodedSymbol("note_2", "C3", position="lower"),
+                ]
+            ),
+            SymbolChord(
+                [
+                    EncodedSymbol("note_2", "D5", position="upper"),
+                    EncodedSymbol("note_2", "D3", position="lower"),
+                ]
+            ),
+            SymbolChord([EncodedSymbol("barline")]),
+        ]
+        rest_bar = [
+            SymbolChord(
+                [
+                    EncodedSymbol("rest_8", "_", position="upper"),
+                    EncodedSymbol("rest_8", "_", position="lower"),
+                ]
+            ),
+            SymbolChord([EncodedSymbol("barline")]),
+        ]
+        self.assertEqual(
+            sounding_time_signature_nominator(rest_bar + rest_bar + full_bar), Fraction(1)
+        )
+
+    def test_lone_rest_is_written_as_a_measure_rest(self) -> None:
+        """
+        Super Mario Bros Coin: the bass's only symbol in the 1/4 bar is a rest read as a
+        half rest. Written as read it overfills the bar; as a measure rest it fills it.
+        """
+        coin = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_8 B4 _ _ _ upper&rest_2 _ _ _ _ lower
+note_8 E5 _ _ _ upper
+bolddoublebarline . . . . ."""
+        root = self._generate_root(coin)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        rests = [n for n in root.iter("note") if n.find("rest") is not None]
+        self.assertEqual(len(rests), 1)
+        self.assertEqual(rests[0].find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+        self.assertEqual(int(rests[0].findtext("duration", "0")), divisions)
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "1")
+
+    def test_lone_rest_after_the_bar_start_stays_as_read(self) -> None:
+        """A measure rest starts its bar, so a staff's only rest read mid-bar keeps its value."""
+        late_rest = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2 C5 _ _ _ upper
+note_2 D5 _ _ _ upper&rest_2 _ _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(late_rest)
+        rests = [n for n in root.iter("note") if n.find("rest") is not None]
+        self.assertEqual(len(rests), 1)
+        self.assertIsNone(rests[0].find("rest").get("measure"))  # type: ignore[union-attr]
+        self.assertEqual(rests[0].findtext("type"), "half")
+
+    def test_lone_rest_as_long_as_the_other_staff_stays_as_read(self) -> None:
+        """
+        Für Elise opens with a pickup: two treble sixteenths over a bass eighth rest. The
+        staves agree on an eighth, so the rest keeps its value; filling the 3/8 bar would
+        add two eighths of silence before the first full bar.
+        """
+        pickup = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/8 . . . . .
+note_16 E5 _ _ _ upper&rest_8 _ _ _ _ lower
+note_16 D5 _ _ _ upper
+barline . . . . .
+note_4. A4 _ _ _ upper&note_4. A2 _ _ _ lower
+barline . . . . .
+note_4. B4 _ _ _ upper&note_4. B2 _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(pickup)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "3")
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertIsNone(rest.find("rest").get("measure"))  # type: ignore[union-attr]
+        self.assertEqual(rest.findtext("type"), "eighth")
+        self.assertEqual(2 * int(rest.findtext("duration", "0")), divisions)
+
+    def test_lone_rest_after_a_repeat_sign_as_long_as_the_other_staff_stays_as_read(
+        self,
+    ) -> None:
+        """
+        The Turkish March's sections each start after a repeat sign with a pickup: four
+        treble sixteenths over a bass quarter rest, in 2/4.
+        """
+        repeated_pickup = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+barline . . . . .
+note_2 D5 _ _ _ upper&note_2 D3 _ _ _ lower
+repeatStart . . . . .
+note_16 B4 _ _ _ upper&rest_4 _ _ _ _ lower
+note_16 A4 _ _ _ upper
+note_16 G4 _ _ _ upper
+note_16 A4 _ _ _ upper
+barline . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(repeated_pickup)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "2")
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertIsNone(rest.find("rest").get("measure"))  # type: ignore[union-attr]
+        self.assertEqual(rest.findtext("type"), "quarter")
+        self.assertEqual(int(rest.findtext("duration", "0")), divisions)
+
+    def test_lone_rest_as_long_as_the_other_staff_keeps_its_value_only_in_a_short_bar(
+        self,
+    ) -> None:
+        """
+        Only a bar shorter than the meter is a pickup. Where the other staff fills the 2/4
+        bar the rest is still the bar's measure rest, and where the staves agree on more
+        than the bar it still fills the bar, as before.
+        """
+        for upper, lower in (("note_2", "rest_2"), ("note_2.", "rest_2.")):
+            with self.subTest(read=lower):
+                tokens = f"""clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+barline . . . . .
+note_2 D5 _ _ _ upper&note_2 D3 _ _ _ lower
+barline . . . . .
+{upper} E5 _ _ _ upper&{lower} _ _ _ _ lower
+barline . . . . ."""
+                root = self._generate_root(tokens)
+                divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+                self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "2")
+                rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+                self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+                self.assertEqual(int(rest.findtext("duration", "0")), 2 * divisions)
+
+    def test_lone_rest_without_time_signature_fills_a_plausible_typical_bar(self) -> None:
+        """
+        Pages after the first carry no time signature, so the typical bar length stands in,
+        but only when it is a whole number of eighths: misread bars can push it elsewhere.
+        """
+        three_four = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+note_2. C5 _ _ _ upper&note_2. C3 _ _ _ lower
+barline . . . . .
+note_2. D5 _ _ _ upper&rest_1 _ _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(three_four)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+        self.assertEqual(int(rest.findtext("duration", "0")), 3 * divisions)
+
+        seventeen_sixteenths = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+note_1 C5 _ _ _ upper&note_1 C3 _ _ _ lower
+note_16 E5 _ _ _ upper
+barline . . . . .
+note_1 D5 _ _ _ upper&rest_1 _ _ _ _ lower
+note_16 F5 _ _ _ upper
+barline . . . . ."""
+        root = self._generate_root(seventeen_sixteenths)
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertIsNone(rest.find("rest").get("measure"))  # type: ignore[union-attr]
+        self.assertEqual(rest.findtext("type"), "whole")
+
+    def test_lone_rest_fills_no_more_than_the_bar_under_a_longer_meter(self) -> None:
+        """
+        A bar can be shorter than its guessed meter, as a cadenza bar is. A staff's only
+        rest there lasts as long as the bar's other staves, or as read where that is
+        longer: filling the meter made the bar run on in silence.
+        """
+        six_four_bar = """note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+note_2 D5 _ _ _ upper&note_2 D3 _ _ _ lower
+note_2 E5 _ _ _ upper&note_2 E3 _ _ _ lower
+barline . . . . .
+"""
+        four_quarters_over_a_half_rest = """note_4 C5 _ _ _ upper&rest_2 _ _ _ _ lower
+note_4 D5 _ _ _ upper
+note_4 E5 _ _ _ upper
+note_4 F5 _ _ _ upper
+barline . . . . ."""
+        two_quarters_over_a_whole_rest = """note_4 C5 _ _ _ upper&rest_1 _ _ _ _ lower
+note_4 D5 _ _ _ upper
+barline . . . . ."""
+        for short_bar, measure, quarters in (
+            (four_quarters_over_a_half_rest, "yes", 4),
+            (two_quarters_over_a_whole_rest, None, 4),
+        ):
+            with self.subTest(measure=measure):
+                tokens = f"""clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+{six_four_bar * 3}{short_bar}"""
+                root = self._generate_root(tokens)
+                divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+                self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "6")
+                rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+                self.assertEqual(rest.find("rest").get("measure"), measure)  # type: ignore[union-attr]
+                self.assertEqual(int(rest.findtext("duration", "0")), quarters * divisions)
+
+    def test_written_time_signature_sets_the_measure_rest_length(self) -> None:
+        """
+        Once a time signature is written its bar is what a measure rest fills, even when
+        the typical bar read from the page (here 15/16, one sixteenth missing per bar) is
+        no length a meter has.
+        """
+        missing_sixteenth = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2. C5 _ _ _ upper&note_2. C3 _ _ _ lower
+note_8. D5 _ _ _ upper
+barline . . . . .
+note_2. E5 _ _ _ upper&rest_1 _ _ _ _ lower
+note_8. F5 _ _ _ upper
+barline . . . . ."""
+        root = self._generate_root(missing_sixteenth)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "3")
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+        self.assertEqual(int(rest.findtext("duration", "0")), 3 * divisions)
+
+    def test_divisions_represent_the_measure_rest_of_the_written_time_signature(self) -> None:
+        """
+        Bars of a half, a quarter and a triplet quarter need only 12 divisions per whole
+        note, but in eighths they make a 7/8 bar, and a measure rest of 7/8 needs 24.
+        """
+        triplet_bars = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/8 . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+note_4 D5 _ _ _ upper&note_4 D3 _ _ _ lower
+note_6 E5 _ _ _ upper&note_6 E3 _ _ _ lower
+barline . . . . .
+note_2 C5 _ _ _ upper&rest_2 _ _ _ _ lower
+note_4 D5 _ _ _ upper
+note_6 E5 _ _ _ upper
+barline . . . . ."""
+        root = self._generate_root(triplet_bars)
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(root.findtext("part/measure/attributes/time/beats"), "7")
+        rest = next(n for n in root.iter("note") if n.find("rest") is not None)
+        self.assertEqual(rest.find("rest").get("measure"), "yes")  # type: ignore[union-attr]
+        self.assertEqual(2 * int(rest.findtext("duration", "0")), 7 * divisions)
+
+    def test_each_time_signature_counts_the_beats_of_its_own_section(self) -> None:
+        """
+        Chrono Trigger's Lucca's Theme opens in 6/8 and changes to 2/4. One typical bar for
+        the whole page gives both sections the same length, as upstream homr guesses it;
+        guessed per section, each section has its own.
+        """
+        six_eight_then_two_four = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_2 . . . . .
+timeSignature/8 . . . . .
+note_4. D5 _ _ _ upper&note_4. D3 _ _ _ lower
+note_4. E5 _ _ _ upper&note_4. E3 _ _ _ lower
+barline . . . . .
+note_4. F5 _ _ _ upper&note_4. F3 _ _ _ lower
+note_4. G5 _ _ _ upper&note_4. G3 _ _ _ lower
+barline . . . . .
+timeSignature/4 . . . . .
+note_2 A5 _ _ _ upper&note_2 A3 _ _ _ lower
+barline . . . . ."""
+        for args, expected in (
+            (XmlGeneratorArguments(guess_meter_per_section=True), [("6", "8"), ("2", "4")]),
+            (XmlGeneratorArguments(), [("6", "8"), ("3", "4")]),
+        ):
+            with self.subTest(per_section=args.guess_meter_per_section):
+                root = self._generate_root(six_eight_then_two_four, args)
+                times = [(t.findtext("beats"), t.findtext("beat-type")) for t in root.iter("time")]
+                self.assertEqual(times, expected)
+
+    def test_time_signature_without_measured_bars_uses_the_typical_bar(self) -> None:
+        """A section whose bars hold only rests says nothing about its own bar length."""
+        resting_section = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_1 C5 _ _ _ upper&note_1 C3 _ _ _ lower
+barline . . . . .
+timeSignature/8 . . . . .
+rest_1 _ _ _ _ upper&rest_1 _ _ _ _ lower
+barline . . . . ."""
+        args = XmlGeneratorArguments(guess_meter_per_section=True)
+        root = self._generate_root(resting_section, args)
+        times = [(t.findtext("beats"), t.findtext("beat-type")) for t in root.iter("time")]
+        self.assertEqual(times, [("4", "4"), ("8", "8")])
+
+    def test_symbols_chorded_with_notes_are_not_written_as_rests(self) -> None:
+        """
+        The transformer sometimes chords a barline with a note. Only notes and rests are
+        written from a chord group; the barline used to come out as a rest.
+        """
+        barline_in_chord = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_2 C5 _ _ _ upper&note_2 C3 _ _ _ lower
+note_2 D5 _ _ _ upper&barline . . . . .&note_2 D3 _ _ _ lower
+barline . . . . ."""
+        root = self._generate_root(barline_in_chord)
+        self.assertEqual([n for n in root.iter("note") if n.find("rest") is not None], [])
+        pitches = sorted(n.findtext("pitch/step", "") for n in root.iter("note"))
+        self.assertEqual(pitches, ["C", "C", "D", "D"])
+
+    def _generate_root(
+        self, token_lines: str, args: XmlGeneratorArguments | None = None
+    ) -> ET.Element:
+        tokens = read_token_lines(token_lines.splitlines())
+        xml = generate_xml(args or XmlGeneratorArguments(), [tokens], "")
+        return ET.fromstring(xml.to_string())  # noqa: S314 - generated by the test itself
+
+    def test_triplets_over_eighths_start_on_their_beats(self) -> None:
+        """
+        A triplet quarter beside an eighth: the next eighth starts under the held triplet,
+        and every duration and backup is a whole number of divisions.
+        """
+        triplet_over_eighths = """clef_G2 _ _ _ _ upper&clef_F4 _ _ _ _ lower
+keySignature_0 . . . . .
+timeSignature/4 . . . . .
+note_6 C5 _ _ _ upper&note_8 C3 _ _ _ lower
+note_8 E3 _ _ _ lower
+note_6 D5 _ _ _ upper
+note_4 G3 _ _ _ lower
+note_6 E5 _ _ _ upper
+note_2 F5 _ _ _ upper&note_2 C3 _ _ _ lower
+barline . . . . ."""
+        tokens = read_token_lines(triplet_over_eighths.splitlines())
+        xml = _write_under_read_meter(tokens, (4, 4))
+        root = ET.fromstring(xml.to_string())  # noqa: S314 - generated by the test itself
+        divisions = int(root.findtext("part/measure/attributes/divisions", "0"))
+        self.assertEqual(divisions % 3, 0)
+        durations = [int(d.text or "0") for d in root.iter("duration")]
+        self.assertTrue(all(d > 0 for d in durations))
+        by_pitch = {name: onset for _, name, onset in _onsets(xml)}
+        self.assertAlmostEqual(by_pitch["E3"], 0.5)
+        self.assertAlmostEqual(by_pitch["D5"], 2 / 3)
+        self.assertAlmostEqual(by_pitch["F5"], 2.0)
 
     def _norm_expected(self, expected: str) -> str:
         norm = expected.replace("\n", "")
@@ -513,7 +1056,7 @@ barline . . . . ."""
             c.findtext("sign") for c in _first_measure(xml).iter("clef") if c.get("number") == "2"
         ]
         self.assertEqual(lower_clefs, ["F", "G"])
-        self.assertEqual(sorted(name for _, name, _ in _onsets(xml)), ["C5", "E4"])
+        self.assertEqual(sorted(name for _, name, _ in _onsets(xml, rests=False)), ["C5", "E4"])
 
     def test_repeat_joined_to_a_chord_of_notes_is_kept(self) -> None:
         """
@@ -591,7 +1134,7 @@ barline . . . . ."""
         # The fork's writer knows no upper2 and lower2 positions, which upstream's
         # vocabulary has, and writes those voices in its own order and staff. So the
         # notes are compared by pitch and onset only.
-        onsets = sorted((name, onset) for _, name, onset in _onsets(xml))
+        onsets = sorted((name, onset) for _, name, onset in _onsets(xml, rests=False))
         self.assertEqual(
             onsets,
             sorted(

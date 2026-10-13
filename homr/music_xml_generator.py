@@ -8,6 +8,12 @@ import musicxml.xmlelement.xmlelement as mxl
 import numpy as np
 
 from homr import constants
+from homr.bar_placement import (
+    EARLIEST_END,
+    BarPlacement,
+    after_shortest_advance,
+    placement_rule,
+)
 from homr.simple_logging import eprint
 from homr.transformer.vocabulary import (
     EncodedSymbol,
@@ -16,6 +22,9 @@ from homr.transformer.vocabulary import (
     nonote,
     sort_token_chords,
 )
+from homr.visual_sidecar.time_signatures import validate_meter_options
+from homr.visual_sidecar.timing_repairs import TimingRepairs
+from homr.visual_sidecar.tuplet_repairs import repair_tuplets
 
 if TYPE_CHECKING:
     from homr.visual_sidecar import VisualSidecarBuilder
@@ -26,6 +35,18 @@ class ConversionState:
         self.beats = 4 * constants.duration_of_quarter
         self.division = division
         self.nominator = nominator
+        # The typical bar length of the bars each time signature governs, keyed by the
+        # identity of its token; a piece that changes meter has one per section.
+        self.section_nominators: dict[int, Fraction] = {}
+        # The bar length a lone rest is written to fill: the time signature's once one is
+        # written, until then the typical bar length of this voice if it is a whole number
+        # of eighths. Misread bars can push the typical length to values no meter has.
+        self.bar_length: Fraction | None = (
+            nominator if nominator > 0 and (nominator * 8).denominator == 1 else None
+        )
+        # The bar length while the meter is trusted: read on the page or carried from the
+        # previous page. Only such a bar length can prove a bar placed by the earliest end.
+        self.trusted_bar_length: Fraction | None = None
         self.tremolo_state = "stop"
         self.volta_number = 1
         self.last_volta_measure = -10
@@ -47,6 +68,23 @@ class ConversionState:
         else:
             self.tremolo_state = "start"
         return self.tremolo_state
+
+
+class _MeasureRest(EncodedSymbol):
+    """A staff's only rest in a bar, written to fill the bar whatever glyph was read."""
+
+    def __init__(self, rest: EncodedSymbol, bar_length: Fraction) -> None:
+        super().__init__(
+            rest.rhythm,
+            rest.pitch,
+            rest.lift,
+            rest.articulation,
+            rest.slur,
+            rest.position,
+            rest.coordinates,
+        )
+        self.visual_match_id = rest.visual_match_id
+        self._duration = SymbolDuration(bar_length, 0, 1, 1, 1)
 
 
 class SymbolChord:
@@ -95,11 +133,31 @@ class SymbolChord:
 
 class XmlGeneratorArguments:
     def __init__(
-        self, large_page: bool | None = None, metronome: int | None = None, tempo: int | None = None
+        self,
+        large_page: bool | None = None,
+        metronome: int | None = None,
+        tempo: int | None = None,
+        repair_shared_notehead_timing: bool = False,
+        read_time_signatures: bool = False,
+        repair_tuplets: bool = False,
+        time_signature_from_previous_page: tuple[int, int] | None = None,
+        guess_meter_per_section: bool = False,
     ):
         self.large_page = large_page
         self.metronome = metronome
         self.tempo = tempo
+        # Needs the visual sidecar; see homr.visual_sidecar.timing_repairs.
+        self.repair_shared_notehead_timing = repair_shared_notehead_timing
+        # See sounding_time_signature_nominator and time_signature_section_nominators.
+        self.guess_meter_per_section = guess_meter_per_section
+        # These need the visual sidecar too; see homr.visual_sidecar.time_signatures and
+        # homr.visual_sidecar.tuplet_repairs.
+        validate_meter_options(
+            read_time_signatures, repair_tuplets, time_signature_from_previous_page
+        )
+        self.read_time_signatures = read_time_signatures
+        self.repair_tuplets = repair_tuplets
+        self.time_signature_from_previous_page = time_signature_from_previous_page
 
 
 def build_identification() -> mxl.XMLIdentification:
@@ -160,19 +218,40 @@ def build_measures(
     part_number: int = 1,
     visual_sidecar: "VisualSidecarBuilder | None" = None,
 ) -> list[mxl.XMLMeasure]:
+    # Tokens say which notes start together, not when each group starts. A group starts
+    # when the shortest note of the group before ends, or, in a bar that proves it, when
+    # the earliest still-sounding note ends (that is how training data is grouped); see
+    # homr.bar_placement. Track the end times of sounding notes for the latter.
+    clock = Fraction(0)
+    sounding: list[Fraction] = []
+
     def close_current_measure() -> None:
+        nonlocal clock, sounding
         rebalance_measure_voices(current_measure)
         record_visual_sidecar_note_ids(current_measure, part_number, measure_number, visual_sidecar)
         measures.append(current_measure)
+        clock, sounding = Fraction(0), []
 
     measure_number = 1
     groups = split_mixed_chords(add_tuplet_start_stop(group_into_chords(voice)))
-    division, nominator = find_division_and_time_signature_nominator(groups)
+    if args.repair_tuplets and visual_sidecar is not None:
+        groups = repair_tuplets(groups, visual_sidecar)
+    timing_repairs = TimingRepairs(
+        groups,
+        visual_sidecar,
+        args.repair_shared_notehead_timing,
+        guess_meter_per_section=args.guess_meter_per_section,
+    )
+    division, nominator = timing_repairs.division_and_nominator()
     state = ConversionState(division, nominator)
+    state.section_nominators = timing_repairs.section_nominators()
+    lone_rests = _lone_rest_ids(groups)
+    placement = BarPlacement(groups, lone_rests, timing_repairs)
     measures: list[mxl.XMLMeasure] = []
     current_measure = mxl.XMLMeasure(number=str(measure_number))
     first_attributes = build_or_get_attributes(current_measure, None)
     first_attributes.add_child(build_divisions(division))
+    timing_repairs.restate_carried_meter(first_attributes, state)
     if has_two_staves:
         first_attributes.add_child(mxl.XMLStaves(value_=2))
         first_attributes.add_child(mxl.XMLPartSymbol(value_="brace"))
@@ -191,11 +270,31 @@ def build_measures(
                 attributes = build_or_get_attributes(current_measure, last_attributes)
                 build_multi_measure_rest(symbol, attributes)
             else:
-                staff_positions = group.into_positions()
-                for pos_no, staff_pos in enumerate(staff_positions):
-                    chord_duration = (
-                        group.get_duration() if pos_no == len(staff_positions) - 1 else Fraction(0)
+                # Only notes and rests take part: anything else the transformer chorded
+                # with them, such as a barline, would otherwise be written as a rest.
+                timed = SymbolChord(
+                    [s for s in group.symbols if s.rhythm.startswith(("note", "rest"))],
+                    group.tuplet_mark,
+                )
+                # A measure rest starts its bar; a lone rest read later stays as read.
+                written = (
+                    _with_measure_rests(timed, lone_rests, state.bar_length)
+                    if clock == Fraction(0) and state.bar_length is not None
+                    else timed
+                )
+                staff_positions = written.into_positions()
+                sounding.extend(
+                    timing_repairs.shared_notehead_ends(
+                        written, clock, part=part_number, measure=measure_number
                     )
+                )
+                advance = placement.advance(
+                    group_no, written, clock, sounding, state.trusted_bar_length
+                )
+                clock += advance
+                sounding = [end for end in sounding if end > clock]
+                for pos_no, staff_pos in enumerate(staff_positions):
+                    chord_duration = advance if pos_no == len(staff_positions) - 1 else Fraction(0)
                     for note_xml in build_note_chord(
                         staff_pos, state, chord_duration, visual_sidecar
                     ):
@@ -213,9 +312,13 @@ def build_measures(
         elif rhythm.startswith("keySignature"):
             attributes = build_or_get_attributes(current_measure, last_attributes)
             build_key(symbol, attributes)
+        elif rhythm.startswith("timeSignature") and timing_repairs.ignores(symbol):
+            attributes = last_attributes  # not printed on the page; see timing_repairs
         elif rhythm.startswith("timeSignature"):
             attributes = build_or_get_attributes(current_measure, last_attributes)
             build_time_signature(symbol, attributes, state)
+            timing_repairs.name_time_symbol(symbol, attributes)
+            timing_repairs.trust_printed_meter(symbol, state)
         elif "barline" in rhythm:
             if rhythm != "barline":
                 # Standard barlines don't need extra handling
@@ -262,6 +365,141 @@ def build_measures(
     if len(current_measure.get_children()) > 0:
         close_current_measure()
     return measures
+
+
+def _measure_length(chords: list[list[EncodedSymbol]], rule: str = EARLIEST_END) -> Fraction:
+    """When the last note of a bar's chord groups ends, placing groups by ``rule``.
+
+    With guess_meter_per_section, the typical bar length from which a meter the page does
+    not show gets its beat count is measured by the earliest end: summing each group's
+    shortest note overstates every bar in which one hand moves under a note the other
+    hand holds. A misread length can shorten a bar measured so, but such a meter never
+    decides where a bar's groups start; see homr.bar_placement.
+    """
+    clock = Fraction(0)
+    sounding: list[Fraction] = []
+    for chord in chords:
+        group = SymbolChord(chord)
+        # Either way the group's notes are recorded as sounding, for where the bar ends.
+        advance = _advance_to_next_group(group, clock, sounding)
+        if rule != EARLIEST_END:
+            advance = after_shortest_advance(group)
+        clock += advance
+        sounding = [end for end in sounding if end > clock]
+    return max([clock, *sounding])
+
+
+def _lone_rest_staves(chords: list[list[EncodedSymbol]]) -> set[str]:
+    """The staves whose only timed symbol in this bar is a single rest.
+
+    Such a rest fills the bar whatever glyph was read: engravers write a whole rest for
+    an empty bar in any meter, and the transformer may read it as a half rest.
+    """
+    timed_by_staff: dict[str, list[EncodedSymbol]] = defaultdict(list)
+    for chord in chords:
+        for symbol in chord:
+            if symbol.rhythm.startswith(
+                ("note", "rest")
+            ) and symbol.get_duration().fraction > Fraction(0):
+                timed_by_staff[symbol.position].append(symbol)
+    return {
+        position
+        for position, symbols in timed_by_staff.items()
+        if len(symbols) == 1 and symbols[0].rhythm.startswith("rest")
+    }
+
+
+def _lone_rest_ids(groups: list[SymbolChord]) -> dict[int, Fraction]:
+    """Map, by object, every rest that is its staff's only timed symbol in its bar to how
+    long the bar's other staves last, or zero when nothing else in the bar is timed."""
+    result: dict[int, Fraction] = {}
+    bar: list[list[EncodedSymbol]] = []
+    for group in [*groups, SymbolChord([EncodedSymbol("barline")])]:
+        if not group.is_barline():
+            bar.append(group.symbols)
+            continue
+        lone = _lone_rest_staves(bar)
+        other_staves = _bar_length_evidence(bar)
+        result.update(
+            (id(symbol), other_staves)
+            for chord in bar
+            for symbol in chord
+            if symbol.position in lone
+            and symbol.rhythm.startswith("rest")
+            and not symbol.rhythm.endswith("m")
+        )
+        bar = []
+    return result
+
+
+def _with_measure_rests(
+    group: SymbolChord, lone_rests: dict[int, Fraction], bar_length: Fraction
+) -> SymbolChord:
+    """Write each lone rest in ``group`` as a measure rest filling the bar.
+
+    The bar lasts ``bar_length``, unless both the rest as read and the bar's other staves
+    are shorter. The bar is then short on the page, as a pickup or the bar after a repeat
+    sign is, or its meter was guessed too long, and the rest lasts as long as the longer
+    of the two. Where that is the rest itself, it keeps its value.
+    """
+
+    def filled(symbol: EncodedSymbol) -> Fraction | None:
+        """How long the rest is written, or None where it keeps its value."""
+        if id(symbol) not in lone_rests:
+            return None
+        read = symbol.get_duration().fraction
+        length = min(bar_length, max(read, lone_rests[id(symbol)]))
+        return None if length == read and read < bar_length else length
+
+    lengths = [filled(symbol) for symbol in group.symbols]
+    if all(length is None for length in lengths):
+        return group
+    return SymbolChord(
+        [
+            symbol if length is None else _MeasureRest(symbol, length)
+            for symbol, length in zip(group.symbols, lengths, strict=True)
+        ],
+        group.tuplet_mark,
+    )
+
+
+def _bar_length_evidence(chords: list[list[EncodedSymbol]]) -> Fraction:
+    """The length a bar's content gives it, or zero when nothing in the bar says.
+
+    A staff whose only content is one rest fills the bar, so it shows nothing about how
+    long the bar is; only the other staves do.
+    """
+    lone = _lone_rest_staves(chords)
+    kept = [[symbol for symbol in chord if symbol.position not in lone] for chord in chords]
+    return _measure_length([chord for chord in kept if chord])
+
+
+def _written_bar_length(
+    chords: list[list[EncodedSymbol]], trusted_bar_length: Fraction | None
+) -> Fraction:
+    """The length a bar's content gives it as ``_bar_length_evidence`` measures it, but with
+    its groups placed as the writer places them under ``trusted_bar_length``: after the
+    shortest note, or by the earliest end where the bar proves that; see
+    homr.bar_placement."""
+    lone = _lone_rest_staves(chords)
+    kept = [[symbol for symbol in chord if symbol.position not in lone] for chord in chords]
+    kept = [chord for chord in kept if chord]
+    rule = placement_rule([SymbolChord(chord) for chord in kept], trusted_bar_length, {})
+    return _measure_length(kept, rule)
+
+
+def _advance_to_next_group(
+    group: SymbolChord, clock: Fraction, sounding: list[Fraction]
+) -> Fraction:
+    """How far the next group starts after this one, updating the sounding notes in place."""
+    durations = [
+        s.get_duration().fraction for s in group.symbols if s.rhythm.startswith(("note", "rest"))
+    ]
+    timed = [d for d in durations if d > 0]  # grace notes have no duration and take no time
+    if not timed:
+        return Fraction(0)
+    sounding.extend(clock + d for d in timed)
+    return min(end for end in sounding if end > clock) - clock
 
 
 def build_work(title_text: str) -> mxl.XMLWork:
@@ -470,6 +708,16 @@ def record_visual_sidecar_note_ids(
         voice_nodes = child.get_children_of_type(mxl.XMLVoice)
         staff = int(staff_nodes[0].value_) if staff_nodes else 1
         voice = int(voice_nodes[0].value_) if voice_nodes else 1
+        if child.get_children_of_type(mxl.XMLRest):
+            visual_sidecar.record_musicxml_rest(
+                musicxml_id,
+                symbol,
+                part=part_number,
+                measure=measure_number,
+                musicxml_staff_number=staff,
+                voice=voice,
+            )
+            continue
         visual_sidecar.record_musicxml_note(
             musicxml_id,
             symbol,
@@ -497,10 +745,12 @@ def build_time_signature(
 
     denominator = model_time_signature.rhythm.split("/")[1]
     attributes.add_child(time)
-    beats = max(int(state.nominator * int(denominator)), 1)
+    nominator = state.section_nominators.get(id(model_time_signature), state.nominator)
+    beats = max(int(nominator * int(denominator)), 1)
     time.add_child(mxl.XMLBeats(value_=str(beats)))
     time.add_child(mxl.XMLBeatType(value_=denominator))
     state.beats = beats
+    state.bar_length = Fraction(beats, int(denominator))
 
 
 def build_barline_style(barline: EncodedSymbol, xml: mxl.XMLBarline) -> None:
@@ -648,6 +898,18 @@ def build_slurs(note: mxl.XMLNote, slurs: str, slur_number: int) -> None:
         raise ValueError("Unsupported slur " + slurs)
 
 
+def _identify_rest(
+    note: mxl.XMLNote, model_note: EncodedSymbol, visual_sidecar: "VisualSidecarBuilder | None"
+) -> None:
+    """Give a written rest an ID so the visual sidecar can report whether it is printed."""
+    if visual_sidecar is None:
+        return
+    rest_id = visual_sidecar.create_musicxml_rest_id()
+    note._set_attributes({"id": rest_id})
+    note._homr_musicxml_id = rest_id
+    note._homr_symbol = model_note
+
+
 def build_note_or_rest(
     model_note: EncodedSymbol,
     rhythmic_layer: int,
@@ -662,12 +924,14 @@ def build_note_or_rest(
     model_pitch = model_note.pitch
     model_duration = model_note.get_duration()
     if model_pitch == empty:
-        if model_duration.fraction.numerator == 0:
+        _identify_rest(note, model_note, visual_sidecar)
+        if model_duration.fraction.numerator == 0 or isinstance(model_note, _MeasureRest):
             note.add_child(mxl.XMLRest(measure="yes"))
         else:
             note.add_child(mxl.XMLRest())
     elif model_pitch == nonote:
         eprint("WARNING note without pitch", model_note)
+        _identify_rest(note, model_note, visual_sidecar)
         note.add_child(mxl.XMLRest())
     else:
         if visual_sidecar is not None:
@@ -693,7 +957,9 @@ def build_note_or_rest(
         base_duration = 1 if model_duration.kern == 0 else model_duration.kern
         duration_name = DURATION_NAMES[base_duration]
         note.add_child(mxl.XMLType(value_=duration_name))
-        note.add_child(mxl.XMLDuration(value_=int(model_duration.fraction * state.division)))
+        note.add_child(
+            mxl.XMLDuration(value_=max(1, int(model_duration.fraction * state.division)))
+        )
     else:
         duration_name = DURATION_NAMES[0]
         note.add_child(mxl.XMLType(value_=duration_name))
@@ -755,7 +1021,7 @@ def build_note_chord(
             is_first = False
         if i != len(sorted_durations) - 1 and group_duration > Fraction(0):
             backup = mxl.XMLBackup()
-            backup.add_child(mxl.XMLDuration(value_=int(group_duration * state.division)))
+            backup.add_child(mxl.XMLDuration(value_=max(1, int(group_duration * state.division))))
             result.append(backup)
 
         final_duration = group_duration
@@ -764,7 +1030,7 @@ def build_note_chord(
     if chord_duration < final_duration:
         backup = mxl.XMLBackup()
         backup.add_child(
-            mxl.XMLDuration(value_=int((final_duration - chord_duration) * state.division))
+            mxl.XMLDuration(value_=max(1, int((final_duration - chord_duration) * state.division)))
         )
         result.append(backup)
     return result
@@ -833,9 +1099,16 @@ def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tupl
             measure_duration.append(duration_in_measure)
             duration_in_measure = Fraction(0)
         else:
+            for symbol in chord.symbols:
+                if symbol.rhythm.startswith(("note", "rest")):
+                    frac = symbol.get_duration().fraction
+                    if frac > Fraction(0):
+                        durations.append(frac)
+                elif symbol.rhythm.startswith("timeSignature/"):
+                    # A measure rest lasts a whole bar of this time signature.
+                    durations.append(Fraction(1, int(symbol.rhythm.split("/")[1])))
             duration = chord.get_duration()
             if duration > Fraction(0):
-                durations.append(duration)
                 duration_in_measure += duration
 
     if duration_in_measure > Fraction(0):
@@ -848,6 +1121,63 @@ def find_division_and_time_signature_nominator(voice: list[SymbolChord]) -> tupl
     nominator: Fraction = np.median(measure_duration)  # type: ignore
 
     return find_common_division(durations), nominator
+
+
+def sounding_time_signature_nominator(voice: list[SymbolChord]) -> Fraction:
+    """The typical bar length, with each bar measured as it sounds.
+
+    Summing each group's shortest note, as find_division_and_time_signature_nominator
+    does, overstates every bar in which one hand moves under a note the other hand holds.
+    This measures a bar by the earliest end instead, without a staff whose only content
+    is a rest, and leaves out the bars in which nothing says how long they are.
+    """
+    lengths: list[Fraction] = []
+    bar: list[list[EncodedSymbol]] = []
+    for chord in [*voice, SymbolChord([EncodedSymbol("barline")])]:
+        if chord.is_barline():
+            length = _bar_length_evidence(bar)
+            if length > Fraction(0):
+                lengths.append(length)
+            bar = []
+        else:
+            bar.append(chord.symbols)
+    if len(lengths) == 0:
+        return Fraction(1)
+    nominator: Fraction = np.median(lengths)  # type: ignore
+    return nominator
+
+
+def time_signature_section_nominators(voice: list[SymbolChord]) -> dict[int, Fraction]:
+    """The typical bar length of each time signature's section, keyed by token identity.
+
+    The token carries only the beat type, so the beat count comes from the bars it
+    governs: those up to the next time signature. Sections without a bar that says how
+    long it is are left out, and fall back to the voice's typical bar length.
+    """
+    lengths: dict[int, list[Fraction]] = defaultdict(list)
+    section: int | None = None
+    bar: list[list[EncodedSymbol]] = []
+    for chord in [*voice, SymbolChord([EncodedSymbol("barline")])]:
+        if chord.is_barline():
+            length = _bar_length_evidence(bar)
+            if section is not None and length > Fraction(0):
+                lengths[section].append(length)
+            bar = []
+            continue
+        for symbol in chord.symbols:
+            if symbol.rhythm.startswith("timeSignature/"):
+                section = id(symbol)
+        bar.append(chord.symbols)
+    return {key: _median(values) for key, values in lengths.items()}
+
+
+def _median(values: list[Fraction]) -> Fraction:
+    """np.median's value, kept exact: the middle value, or the mean of the middle two."""
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2
 
 
 _BEFORE_NOTES_ORDER = ["clef", "keySignature", "timeSignature"]

@@ -34,6 +34,18 @@ The contract is strict by design: consumers must not infer pitch, repair links,
 or synthesize missing noteheads. All of that work happens inside homr, where the
 source image is still available.
 
+The sidecar also reports, for every rest in the MusicXML, whether a printed rest
+backs it. Segmentation has no rest class, so homr looks for free-standing ink of a
+rest's shape where the transformer placed the rest. Rests without such ink, and
+notes read without a pitch that MusicXML would otherwise write as rests, are marked
+unsupported, so a viewer can show them as rests the page does not print.
+
+It likewise reads each linked note's value from the page — a hollow or filled
+notehead, a stem, the flags or beams at the stem's end, an augmentation dot — and
+reports where that printed value disagrees with the recognized one. The reader
+reports nothing where any of its checks is in doubt, such as two voices sharing a
+notehead. Like the rest report, it never changes the MusicXML.
+
 ### Recognition and geometry repairs
 
 Making that one-to-one guarantee hold on real scores required fixing a number of
@@ -64,6 +76,172 @@ and applies `argmax` once, at the end. On a 31-page pitch-reference corpus with
 identical models and settings, total errors dropped from 8 to 5 and exactly
 matched pages rose from 27 to 28, **with no page regressing**. See
 `docs/source/recognition_findings.rst` for the full method and provenance.
+
+### Note timing in MusicXML
+
+This also affects everyone. The transformer's tokens say which notes start
+together, not when. The MusicXML writer starts each group after the shortest note
+it has just written. Wherever one hand moves under a note the other hand still
+holds, the notes after it start late and the bar overflows: one late hiccup, after
+which the notes keep their spacing.
+
+Upstream homr starts each group when the earliest sounding note ends instead,
+which puts such hands on their beats but trusts every length. Where one note is
+read shorter than printed while the other hand holds a note, such as a bass 16th
+read as a 32nd under a whole-note chord, the next group starts off the beat. From
+there each group starts at whichever of two ends comes first: the rest of the bar
+rushes, and the staff falls silent before the barline. Pages read right rush too,
+where a staff holds three voices and an inner one ends before the melody does, as
+in Chopin's Op. 25 No. 3. So this fork places a bar by the earliest end only where
+the bar proves it: its meter is trusted, read on the page or carried from the
+previous page (see below), and that placement ends every staff exactly on the
+barline where starting after the shortest note does not. Every other bar is placed
+after the shortest note. A guessed meter proves nothing, so without
+`--read-time-signatures` every bar is placed that way. No note changes its value.
+
+A staff whose only content in a bar is a rest is written as a measure rest filling
+the bar, whatever glyph was read. Where both the rest as read and the bar's other
+staves are shorter than the meter, as in a pickup, a cadenza or under a meter
+guessed too long, the rest lasts as long as the longer of the two, and keeps its
+value where that is its own. Symbols the transformer chords with notes, such as a
+barline, are no longer written as rests.
+
+The time signature's beat count, when it is guessed, comes as in upstream homr from
+one typical bar for the page: the sum of each chord's shortest note, which every
+hand moving under a held note lengthens. With `--guess-meter-per-section`, each time
+signature gets the typical length of the bars it governs instead, each bar measured
+by the earliest end and without a staff whose only content is a rest.
+
+Measured against MuseScore scores of 26 pieces (1,943 bars; see below), bars as long
+as the score's rose from 1,192 to 1,209 with the default options, and to 1,423 with
+all of this fork's options as the viewer runs homr (`--guess-meter-per-section
+--repair-shared-notehead-timing --read-time-signatures --repair-tuplets`). On the
+240-page corpus, the pieces with such a score (1,549 bars) went from 895 to 920 and
+1,081. Either way no bar on the MuseScore pages ends earlier than before, and on the
+corpus one does, where the comparison errs: aligned by pitch, a repeated figure
+matches the bar before, and the bar is right. One bar on the MuseScore pages and one
+on the corpus end later, where a grace note read in one chord with a note made the
+notes after it start with that chord; they now start when the note ends. With the
+default options, every other bar that changed length on these pages and on 131
+video-game pages got shorter and ends on the meter printed for it, here or on an
+earlier page, except one corpus bar that now overruns its meter by half a beat
+instead of a whole one.
+
+### Notes after a shared notehead
+
+Two voices that sound one pitch at the same moment often share a printed
+notehead: an eighth note on the first note of a 16th run, or a held melody note
+on the first note of an arpeggio. The transformer reads such a head once,
+usually with the longer value, so the notes after it started late and the bar
+overflowed; in Chopin's Op. 25 No. 9, 38 of 51 bars did.
+
+With `--repair-shared-notehead-timing` (and `--output-visual-sidecar`), homr reads
+both stems of such a head on the page. Where one carries a shorter value than the
+token, the notes after the head start when that shorter value ends, as printed. No
+note is added and none changes its value. A bar's repairs are applied together,
+and only when the bar, placed as it is written (see above), overflows or falls
+short as recognized and adds up exactly to its time signature with them. Tuplets
+are not read, so where the shorter note is an unmarked triplet the notes after it
+start after a plain eighth, as the transformer reads the rest of that run. Each
+shared notehead and what became of it is recorded in the sidecar.
+
+Measured with the meter guessed per section, on the 240-page corpus this changes
+13 pages of 8 pieces. The 124 repairs were each checked against the page: every
+one sits on a shared notehead, and in all but one the next notes now start after
+the value printed on its shorter stem. That one reads a triplet eighth's stem as a
+16th, and its bar's bass ends a 16th early. Bars in which a staff runs past the
+time signature fall from 1,022 to 968 of 3,885, and no other page gains a bar that
+runs over or falls short. On 131 engraved pages with MIDI exports of their source
+files, the 5 affected bars now start every note where the MIDI does, from 14–42%
+of notes before, and no note in any other bar moved.
+
+### Printed time signatures and tuplets
+
+On classical pages the largest duration error is a missed tuplet: the transformer
+writes a tuplet's notes with their plain values and no ratio, so six 16ths under one
+beam in a beat become six plain 16ths and the bar runs long. On 26 pieces with exact
+MuseScore scores, a quarter of the notes were written that way. Most such groups
+print no numeral, and the long bars throw off the meter too. The transformer's
+time-signature token holds only the bottom number, so the writer guesses the top
+one from the bar lengths: 4/4 written as 3/2. Every page guesses its own, so
+18% of bars were written under the wrong meter in the joined score, and 32.6% page by
+page.
+
+With `--read-time-signatures` (and `--output-visual-sidecar`), homr reads the time
+signature printed on the page, as two stacked numbers, common time or cut time, and
+writes it instead of the guess; common and cut time keep their symbols. A read counts only when every staff of the system and
+two passes over the page agree, and when the transformer saw a time signature with
+the same bottom number there. A program that runs homr page by page can pass the
+meter each page ends in (`ProcessingResult.time_signature_at_end`) on to the next
+(`XmlGeneratorArguments(time_signature_from_previous_page=...)`), which then starts in
+it and restates it unprinted. A time signature the transformer reads where nothing is
+printed, as at a key change, is left out.
+
+With `--repair-tuplets` as well, notes the page shows are a tuplet are written as
+one. A group under one beam whose plain values add up to three, six or another count
+of its smallest value that plain values cannot make is a triplet. The notes under a
+bracketed "3", "5", "6" or "7" take its ratio. A bar's repairs apply only under a
+printed or carried time signature, never a guessed one. The staves they touch must
+fall short or overflow as read, whether groups start after the shortest note or when
+the earliest note ends, and add up exactly with them as the bar is written. No staff
+may end further off, and at least three bars of the page must add up to the same
+length. A beam group is left alone when anything on the page says it may be something
+else: a lone short note beside it, uneven spacing, a notehead off its stem, or a
+printed value that disagrees with its token. Each time signature and tuplet, and what
+became of it, is recorded in the sidecar.
+
+Both options are off unless asked for. On the 26 pieces (123 pages, each page starting
+in the meter the page before ended in):
+
+- Bars written under the wrong meter fell from 18.0% to 0.5% in the joined score, and
+  from 32.6% to 2.0% page by page. The first page wrote the printed meter in 25 pieces
+  instead of 19.
+- Notes with the score's exact duration rose from 73.0% to 79.9%, and notes missing
+  their tuplet fell from 25.4% to 18.5%.
+- Every one of the 2,727 repaired notes the score could judge now has the score's
+  value; none was repaired wrongly.
+- Measured bar by bar against the scores, 127 staff-bars got better and none got worse.
+
+On 131 pages of 70 video-game pieces with MIDI exports, 98 repaired notes now start
+where the MIDI does, and none moved away from it; the MIDI agrees with 95 more either
+way and cannot judge the other 17. On the 240-page corpus, 2,896 notes on 33 pages were
+repaired; in a sample checked against the page every repair was right but one run that
+the page leaves unclear. With the options off, the MusicXML is unchanged on all of
+these pages. The rules were found on these same pieces, so on music not yet checked
+some repairs may still be wrong.
+
+The page is read while the transformer runs. Together the two options add about 1.5 s
+to a page, 8% of its time, measured on 30 pages processed one at a time with a GPU.
+
+### Printed metronome marks
+
+The transformer reads the staff, not the text above it, so homr's MusicXML had no
+tempo and players fell back to their own default, usually quarter = 120. That
+distorted more than the speed. Lucca's Theme from Chrono Trigger prints dotted
+quarter = 140 for its 6/8 bars and quarter = 140 where it changes to 2/4, keeping
+the beat steady; at a fixed quarter rate its 6/8 bars played with a beat a third
+slower than its 2/4 bars.
+
+With `--output-visual-sidecar`, homr now reads the metronome marks printed above
+each system, such as "♩ = 120", "Allegro (♩ = 120)" or "♩. = 140", and writes
+each as a metronome with a sound tempo in quarters per minute at the start of the
+measure its text begins over; text that begins between two measures belongs to
+the next one. The note is read from its shape on the page (hollow or filled
+head, stem, flags, dot) and only the digits go to OCR. A mark whose note cannot
+be read is left out, so that part of the page has no tempo, as before. A range
+such as "64-68" plays at its first number, as notation programs play it. Marks
+without a number ("Allegro", "Met - 96") and equivalences without one
+("♩. = ♩") are not read. A tempo given with `--output-metronome` wins over the
+printed ones. Each mark and what became of it is recorded in the sidecar.
+
+On the 240-page corpus and 28 pages of 19 further pieces, 96 marks were written
+on 91 pages of 84 pieces, and each was checked against the page for its note,
+its number and its measure. Two marks of an old engraving were left unread, and
+one restated tempo was not written because its measure already had a mark.
+Nothing else in the MusicXML changed on any page. For 74 of the 80 tempos
+written in pieces with MIDI exports of their source files, the MIDI holds the
+same tempo; the other 6 match their printed marks where the MIDI plays another
+tempo, such as Super Mario Bros' 1-Up, which prints quarter = 225 and plays at 100.
 
 ### Evaluation tooling
 

@@ -6,8 +6,14 @@ from homr.model import Note
 from homr.transformer.vocabulary import EncodedSymbol
 
 if TYPE_CHECKING:
+    from homr.model import Staff
     from homr.visual_sidecar.annotation_geometry import GeometryDiagnostic
     from homr.visual_sidecar.annotation_recovery import StaffRepair
+    from homr.visual_sidecar.note_values import NoteValueReading
+    from homr.visual_sidecar.rests import RestVerdict
+    from homr.visual_sidecar.tempo_marks import TempoMark
+    from homr.visual_sidecar.timing_repairs import SharedNoteheadRecord
+    from homr.visual_sidecar.tuplet_numerals import Numeral
 
 VISUAL_SIDECAR_VERSION = 3
 CROSS_STAFF_ALIGNMENT_METHOD = "cross_staff_repair"
@@ -106,6 +112,17 @@ class MusicXmlNoteRecord:
 
 
 @dataclass
+class MusicXmlRestRecord:
+    rest_id: str
+    part: int
+    measure: int
+    musicxml_staff_number: int
+    voice: int
+    duration: str
+    verdict: "RestVerdict | None"
+
+
+@dataclass
 class VisualMatch:
     symbol: EncodedSymbol
     visual_id: str | None
@@ -149,5 +166,31 @@ class SidecarState:
     unmatched_visual_group_ids: set[str] = field(default_factory=set)
     moment_id_by_symbol_id: dict[int, str] = field(default_factory=dict)
     next_musicxml_note_id: int = 1
+    rest_verdicts_by_symbol_id: dict[int, "RestVerdict"] = field(default_factory=dict)
+    source_staffs: dict[int, "Staff"] = field(default_factory=dict)
+    note_value_readings: list["NoteValueReading"] = field(default_factory=list)
+    musicxml_rests: list[MusicXmlRestRecord] = field(default_factory=list)
+    next_musicxml_rest_id: int = 1
     next_recovered_visual_id: int = 1
     next_transformer_recovered_visual_id: int = 1
+    #: Whether the shared-notehead timing repair was on when the MusicXML was written,
+    #: or None when the writer never asked.
+    timing_repairs_enabled: bool | None = None
+    #: The linked visual group and what became of each token whose notehead has two stems.
+    shared_notehead_records: list[tuple[str | None, "SharedNoteheadRecord"]] = field(
+        default_factory=list
+    )
+    #: The system each staff group belongs to, as staff parsing numbered them.
+    system_index_by_staff_group: dict[int, int] = field(default_factory=dict)
+    #: The page's metronome marks and what became of each, or None when the writer never
+    #: asked for them.
+    tempo_marks: list["TempoMark"] | None = None
+    #: The time-signature block, or None when the page's time signatures were not read.
+    time_signatures: dict[str, Any] | None = None
+    #: Whether the tuplet repair ran; the page's bracketed numerals, the beam groups and
+    #: numerals it weighed, and the linked visual group and record of each note it repaired
+    #: or declined to repair.
+    tuplet_repairs_enabled: bool = False
+    tuplet_numerals: list["Numeral"] = field(default_factory=list)
+    tuplet_groups: list[dict[str, Any]] = field(default_factory=list)
+    tuplet_repair_records: list[tuple[str | None, dict[str, Any]]] = field(default_factory=list)

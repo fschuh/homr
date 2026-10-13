@@ -52,6 +52,8 @@ from homr.visual_sidecar import (
     VisualSidecarBuilder,
     write_visual_sidecar,
 )
+from homr.visual_sidecar.rests import SegmentationMasks
+from homr.visual_sidecar.tempo_marks import read_tempo_marks_in_background
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
@@ -216,6 +218,9 @@ class ProcessingConfig:
 class ProcessingResult:
     musicxml_path: Path
     visual_sidecar_path: Path | None
+    # The trusted meter in force at the page's end, for the score's next page, when the
+    # page's time signatures were read; see homr.visual_sidecar.time_signatures.
+    time_signature_at_end: tuple[int, int] | None = None
 
 
 def process_image(
@@ -224,6 +229,8 @@ def process_image(
     xml_generator_args: XmlGeneratorArguments,
 ) -> ProcessingResult:
     eprint("Processing " + image_path)
+    if xml_generator_args.read_time_signatures and not config.write_visual_sidecar:
+        raise ValueError("Reading time signatures needs the visual sidecar")
     xml_file = replace_extension(image_path, ".musicxml")
     visual_sidecar_file: str | None = None
     debug_cleanup: Debug | None = None
@@ -251,6 +258,7 @@ def process_image(
             stem_fragments: list[RotatedBoundingBox] = []
             notehead_mask = None
             notehead_candidates: list[NoteheadWithStem] = []
+            segmentation_masks: SegmentationMasks | None = None
             title_future: Future[str] = Future()
             title_future.set_result("")
         else:
@@ -263,8 +271,14 @@ def process_image(
                 stem_fragments,
                 notehead_mask,
                 notehead_candidates,
+                segmentation_masks,
             ) = detect_staffs_in_image(image_path, config)
         debug_cleanup = debug
+        tempo_marks = (
+            read_tempo_marks_in_background(image_path, multi_staffs, coordinate_transform)
+            if config.write_visual_sidecar
+            else None
+        )
 
         transformer_config = Config()
         transformer_config.use_gpu_inference = config.transformer_use_gpu
@@ -277,10 +291,13 @@ def process_image(
                 notehead_mask,
                 notehead_candidates,
                 source_image=image,
+                segmentation_masks=segmentation_masks,
             )
             if config.write_visual_sidecar
             else None
         )
+        if visual_sidecar is not None:
+            visual_sidecar.start_meter_reads(image_path, multi_staffs, xml_generator_args)
         result_staffs = parse_staffs(
             debug,
             multi_staffs,
@@ -295,6 +312,10 @@ def process_image(
 
         eprint("Writing XML", result_staffs)
         xml = generate_xml(xml_generator_args, result_staffs, title, visual_sidecar=visual_sidecar)
+        if visual_sidecar is not None and tempo_marks is not None:
+            visual_sidecar.write_tempo_marks(
+                xml, tempo_marks.result(60), explicit_tempo=bool(xml_generator_args.metronome)
+            )
         xml.write(xml_file)
         if visual_sidecar is not None:
             visual_sidecar_file = replace_extension(image_path, ".homr.visual.json")
@@ -313,6 +334,9 @@ def process_image(
             musicxml_path=Path(xml_file).resolve(),
             visual_sidecar_path=(
                 Path(visual_sidecar_file).resolve() if visual_sidecar_file is not None else None
+            ),
+            time_signature_at_end=(
+                visual_sidecar.time_signature_at_end() if visual_sidecar is not None else None
             ),
         )
     except:
@@ -333,6 +357,7 @@ def detect_staffs_in_image(image_path: str, config: ProcessingConfig) -> tuple[
     list[RotatedBoundingBox],
     NDArray,
     list[NoteheadWithStem],
+    SegmentationMasks,
 ]:
     predictions, debug, coordinate_transform = load_and_preprocess_predictions(
         image_path,
@@ -408,6 +433,13 @@ def detect_staffs_in_image(image_path: str, config: ProcessingConfig) -> tuple[
         symbols.stems_rest,
         predictions.notehead,
         noteheads_with_stems,
+        SegmentationMasks(
+            staff=predictions.staff,
+            stems_rest=predictions.stems_rest,
+            notehead=predictions.notehead,
+            clefs_keys=predictions.clefs_keys,
+            symbols=predictions.symbols,
+        ),
     )
 
 
@@ -498,6 +530,32 @@ def main() -> None:
         help="Writes input.homr.visual.json beside the MusicXML with visual note geometry.",
     )
     parser.add_argument(
+        "--repair-shared-notehead-timing",
+        action="store_true",
+        help="With --output-visual-sidecar, notes after a notehead that two voices share "
+        + "start when the shorter voice's note ends, as printed, instead of as recognized.",
+    )
+    parser.add_argument(
+        "--guess-meter-per-section",
+        action="store_true",
+        help="Infers the beat count of each time signature from the bars it governs, "
+        + "measured by when their notes end, instead of one for the page from the sum of "
+        + "each chord's shortest note.",
+    )
+    parser.add_argument(
+        "--read-time-signatures",
+        action="store_true",
+        help="With --output-visual-sidecar, writes the time signature printed on the page "
+        + "instead of the one homr infers from the bar lengths.",
+    )
+    parser.add_argument(
+        "--repair-tuplets",
+        action="store_true",
+        help="With --read-time-signatures, writes as tuplets the notes the page shows are "
+        + "one: under a beam whose notes add up to a triplet, or a bracketed numeral, where "
+        + "the bar then adds up to its time signature.",
+    )
+    parser.add_argument(
         "--write-staff-positions",
         action="store_true",
         help="Writes the position of all detected staffs to a txt file.",
@@ -524,6 +582,12 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.repair_shared_notehead_timing and not args.output_visual_sidecar:
+        parser.error("--repair-shared-notehead-timing needs --output-visual-sidecar")
+    if args.read_time_signatures and not args.output_visual_sidecar:
+        parser.error("--read-time-signatures needs --output-visual-sidecar")
+    if args.repair_tuplets and not args.read_time_signatures:
+        parser.error("--repair-tuplets needs --read-time-signatures")
 
     force_gpu = args.gpu == GpuSupport.FORCE
     auto_gpu = args.gpu == GpuSupport.AUTO
@@ -556,7 +620,13 @@ def main() -> None:
     )
 
     xml_generator_args = XmlGeneratorArguments(
-        args.output_large_page, args.output_metronome, args.output_tempo
+        args.output_large_page,
+        args.output_metronome,
+        args.output_tempo,
+        repair_shared_notehead_timing=args.repair_shared_notehead_timing,
+        read_time_signatures=args.read_time_signatures,
+        repair_tuplets=args.repair_tuplets,
+        guess_meter_per_section=args.guess_meter_per_section,
     )
     if args.debug:
         eprint(f"Using Log Level {2} for OnnxRuntime")
