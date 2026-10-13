@@ -245,4 +245,5 @@ class VisualSidecarSerializer:
 
 def write_visual_sidecar(path: str, document: dict[str, Any]) -> None:
     visual_sidecar_path = Path(path)
-    visual_sidecar_path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    # Compact: indenting the outline points makes the file about three times larger.
+    visual_sidecar_path.write_text(json.dumps(document, separators=(",", ":")), encoding="utf-8")
